@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id              String  @id @default(cuid())
+  tokenIdentifier String  @unique
+  name            String?
+  email           String? @db.VarChar(320)
+
+  @@map("users")
+}
+
+model Contact {
+  id                 String              @id @default(cuid())
+  name               String
+  firstName          String?
+  lastName           String?
+  fullName           String?
+  email              String?             @db.VarChar(320)
+  uniqueKey          String?             @unique
+  sms                String?             @db.VarChar(64)
+  whatsapp           String?             @db.VarChar(64)
+  landlineNumber     String?             @db.VarChar(64)
+  company            String?
+  designation        String?
+  jobTitle           String?
+  linkedin           String?             @db.VarChar(500)
+  location           String?
+  country            String?
+  contactTimezone    String?
+  contactOwner       String?
+  extId              String?
+  lists              Json?
+  associatedCompany  String?
+  appliedJobTitle    String?
+  jobId              String?
+  dateApplied        String?
+  doubleOptIn        String?
+  optIn              String?
+  status             String              @db.VarChar(64)
+  source             String?             @db.VarChar(64)
+  createdAt          String?             @db.VarChar(64)
+  campaignRecipients CampaignRecipient[]
+
+  @@index([email])
+  @@index([uniqueKey])
+  @@index([status])
+  @@map("contacts")
+}
+
+model ContactStats {
+  id           String @id @default(cuid())
+  total        Int
+  active       Int
+  unsubscribed Int
+  bounced      Int
+
+  @@map("contact_stats")
+}
+
+model Campaign {
+  id             String              @id @default(cuid())
+  name           String
+  subject        String              @db.VarChar(255)
+  body           String              @db.LongText
+  status         String              @db.VarChar(64)
+  recipientCount Int
+  sentCount      Int
+  sentAt         String?
+  recipients     CampaignRecipient[]
+  emailEvents    EmailEvent[]
+
+  @@index([status])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id          String   @id @default(cuid())
+  campaignId  String
+  contactId   String
+  email       String   @db.VarChar(320)
+  status      String   @db.VarChar(64)
+  sentAt      String?
+  deliveredAt String?
+  openedAt    String?
+  clickedAt   String?
+  campaign    Campaign @relation(fields: [campaignId], references: [id])
+  contact     Contact  @relation(fields: [contactId], references: [id])
+
+  @@index([campaignId])
+  @@index([contactId])
+  @@index([campaignId, email])
+  @@map("campaign_recipients")
+}
+
+model EmailEvent {
+  id         String    @id @default(cuid())
+  campaignId String?
+  email      String    @db.VarChar(320)
+  eventType  String    @db.VarChar(64)
+  userAgent  String?   @db.VarChar(500)
+  linkUrl    String?   @db.VarChar(1000)
+  timestamp  String
+  campaign   Campaign? @relation(fields: [campaignId], references: [id])
+
+  @@index([email])
+  @@index([eventType])
+  @@index([campaignId])
+  @@index([timestamp])
+  @@map("email_events")
+}
