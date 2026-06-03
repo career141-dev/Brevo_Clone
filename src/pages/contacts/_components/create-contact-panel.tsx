@@ -115,7 +115,7 @@ export default function CreateContactPanel({ open, onClose }: Props) {
     contactTimezone: "none",
     jobTitle: "",
     linkedin: "",
-    status: "active",
+    status: "subscribed",
   });
 
   function set(field: keyof FormState, value: string) {
@@ -130,7 +130,7 @@ export default function CreateContactPanel({ open, onClose }: Props) {
       company: "", location: "", appliedJobTitle: "", jobId: "",
       dateApplied: "", doubleOptIn: "none", optIn: "none",
       country: "", contactTimezone: "none", jobTitle: "", linkedin: "",
-      status: "active",
+      status: "subscribed",
     });
     setShowAdvanced(false);
   }
@@ -552,7 +552,7 @@ export default function CreateContactPanel({ open, onClose }: Props) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="subscribed">Subscribed</SelectItem>
                     <SelectItem value="unsubscribed">Unsubscribed</SelectItem>
                     <SelectItem value="bounced">Bounced</SelectItem>
                   </SelectContent>

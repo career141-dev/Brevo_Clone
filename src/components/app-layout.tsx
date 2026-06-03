@@ -1,4 +1,4 @@
-import { Outlet, NavLink, useNavigate } from "react-router-dom";
+import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
@@ -7,6 +7,7 @@ import {
   Menu,
   X,
   ChevronDown,
+  ChevronRight,
   Settings,
   Bell,
   HelpCircle,
@@ -15,11 +16,15 @@ import {
   ShoppingCart,
   BarChart2,
   Bot,
+  Database,
+  List,
+  Filter,
+  Building2,
+  FileText,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils.ts";
-import { useAuth } from "@/hooks/use-auth.ts";
-import { SignInButton } from "@/components/ui/signin.tsx";
+import { Show, SignInButton, SignUpButton, useUser, useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button.tsx";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
 import { ThemeToggle } from "@/components/theme-toggle.tsx";
@@ -42,6 +47,51 @@ type NavGroup = {
   }[];
 };
 
+type CrmSubItem = {
+  to: string;
+  label: string;
+};
+
+type CrmTreeItem = {
+  label: string;
+  icon: React.ElementType;
+  children: CrmSubItem[];
+};
+
+const CRM_TREE: CrmTreeItem[] = [
+  {
+    label: "Contacts",
+    icon: Users,
+    children: [
+      { to: "/contacts", label: "Contacts" },
+      { to: "/crm/lists", label: "Lists" },
+      { to: "/crm/segments", label: "Segments" },
+    ],
+  },
+  {
+    label: "Companies",
+    icon: Building2,
+    children: [
+      { to: "/crm/companies", label: "Companies" },
+    ],
+  },
+  {
+    label: "Campaigns",
+    icon: Mail,
+    children: [
+      { to: "/campaigns", label: "Campaigns" },
+      { to: "/crm/templates", label: "Email Templates" },
+    ],
+  },
+  {
+    label: "Analytics",
+    icon: BarChart2,
+    children: [
+      { to: "/analytics", label: "Analytics" },
+    ],
+  },
+];
+
 const NAV_GROUPS: NavGroup[] = [
   {
     items: [
@@ -51,8 +101,6 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "MARKETING",
     items: [
-      { to: "/campaigns", label: "Campaigns", icon: Mail },
-      { to: "/contacts", label: "Contacts", icon: Users },
       { to: "/automations", label: "Automations", icon: Zap },
     ],
   },
@@ -110,11 +158,34 @@ function NavItem({
 }
 
 function Sidebar({ onClose }: { onClose?: () => void }) {
-  const { user, isAuthenticated, signout } = useAuth();
+  const { user } = useUser();
+  const { signOut } = useAuth();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const [crmOpen, setCrmOpen] = useState(
+    pathname.startsWith("/crm") ||
+    pathname === "/contacts" ||
+    pathname === "/campaigns" ||
+    pathname === "/analytics"
+  );
+  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    CRM_TREE.forEach((item) => {
+      if (item.children.some((c) => pathname === c.to)) {
+        initial[item.label] = true;
+      }
+    });
+    return initial;
+  });
 
-  const initials = user?.profile.name
-    ? user.profile.name
+  const toggleParent = (label: string) => {
+    setExpandedParents((prev) => ({ ...prev, [label]: !prev[label] }));
+  };
+
+  const displayName = user?.fullName ?? user?.firstName ?? "User";
+  const email = user?.emailAddresses?.[0]?.emailAddress ?? "";
+  const initials = displayName !== "User"
+    ? displayName
         .split(" ")
         .map((w) => w[0])
         .join("")
@@ -123,7 +194,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
     : "U";
 
   const handleSignOut = async () => {
-    await signout();
+    await signOut();
     navigate("/");
   };
 
@@ -153,18 +224,105 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
-        {NAV_GROUPS.map((group, gi) => (
-          <div key={gi} className="space-y-0.5">
-            {group.label && (
+        {/* MARKETING */}
+        {NAV_GROUPS[0] && (
+          <div className="space-y-0.5">
+            {NAV_GROUPS[0].label && (
               <p className="px-3 pt-1 pb-1.5 text-[10px] font-semibold tracking-widest text-sidebar-foreground/35 uppercase">
-                {group.label}
+                {NAV_GROUPS[0].label}
               </p>
             )}
-            {group.items.map((item) => (
+            {NAV_GROUPS[0].items.map((item) => (
               <NavItem key={item.to} {...item} onClick={onClose} />
             ))}
           </div>
-        ))}
+        )}
+
+        {/* CRM tree */}
+        <div className="space-y-0.5">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setCrmOpen(!crmOpen)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCrmOpen(!crmOpen); } }}
+            className={cn(
+              "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer",
+              crmOpen || pathname.startsWith("/crm") || pathname === "/contacts" || pathname === "/campaigns" || pathname === "/analytics"
+                ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
+                : "text-sidebar-foreground/65 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+            )}
+          >
+            <Database className={cn(
+              "size-4 shrink-0 transition-colors",
+              crmOpen || pathname.startsWith("/crm") || pathname === "/contacts" || pathname === "/campaigns" || pathname === "/analytics"
+                ? "text-green-600"
+                : "text-sidebar-foreground/50"
+            )} />
+            <span className="flex-1">CRM</span>
+            <ChevronDown className={cn(
+              "size-3.5 transition-transform",
+              crmOpen ? "rotate-0" : "-rotate-90"
+            )} />
+          </div>
+
+          {crmOpen && CRM_TREE.map((parent) => {
+            const isExpanded = expandedParents[parent.label] ?? parent.children.some((c) => pathname === c.to);
+            const anyChildActive = parent.children.some((c) => pathname === c.to);
+            const Icon = parent.icon;
+            return (
+              <div key={parent.label} className="ml-2 space-y-0.5">
+                <button
+                  onClick={() => toggleParent(parent.label)}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                    anyChildActive
+                      ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
+                      : "text-sidebar-foreground/65 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                  )}
+                >
+                  <Icon className="size-4 shrink-0" />
+                  <span className="flex-1 text-left">{parent.label}</span>
+                  {parent.children.length > 1 && (
+                    <ChevronRight className={cn("size-3 transition-transform", isExpanded && "rotate-90")} />
+                  )}
+                </button>
+                {isExpanded && parent.children.map((child) => {
+                  const active = pathname === child.to;
+                  return (
+                    <NavLink
+                      key={child.to}
+                      to={child.to}
+                      end
+                      onClick={onClose}
+                      className={cn(
+                        "flex items-center gap-3 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ml-7",
+                        active
+                          ? "bg-sidebar-accent text-sidebar-primary font-semibold"
+                          : "text-sidebar-foreground/65 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                      )}
+                    >
+                      <span>{child.label}</span>
+                    </NavLink>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ENGAGEMENT */}
+        {NAV_GROUPS[1] && (
+          <div className="space-y-0.5">
+            {NAV_GROUPS[1].label && (
+              <p className="px-3 pt-1 pb-1.5 text-[10px] font-semibold tracking-widest text-sidebar-foreground/35 uppercase">
+                {NAV_GROUPS[1].label}
+              </p>
+            )}
+            {NAV_GROUPS[1].items.map((item) => (
+              <NavItem key={item.to} {...item} onClick={onClose} />
+            ))}
+          </div>
+        )}
       </nav>
 
       {/* Bottom user block */}
@@ -172,7 +330,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
         <NavItem to="/settings" label="Settings" icon={Settings} onClick={onClose} />
         <NavItem to="/help" label="Help & Support" icon={HelpCircle} onClick={onClose} />
 
-        {isAuthenticated && (
+        <Show when="signed-in">
           <div className="mt-2 pt-2 border-t border-sidebar-border">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -184,10 +342,10 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
                   </Avatar>
                   <div className="flex-1 min-w-0 text-left">
                     <p className="text-xs font-semibold truncate text-sidebar-foreground">
-                      {user?.profile.name ?? "User"}
+                      {displayName}
                     </p>
                     <p className="text-[10px] text-sidebar-foreground/45 truncate">
-                      {user?.profile.email}
+                      {email}
                     </p>
                   </div>
                   <ChevronDown className="size-3.5 text-sidebar-foreground/40 shrink-0" />
@@ -201,13 +359,18 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-        )}
+        </Show>
 
-        {!isAuthenticated && (
-          <div className="px-1 pt-2">
-            <SignInButton className="w-full" />
+        <Show when="signed-out">
+          <div className="px-1 pt-2 space-y-1">
+            <SignInButton mode="modal">
+              <Button className="w-full">Sign In</Button>
+            </SignInButton>
+            <SignUpButton mode="modal">
+              <Button variant="outline" className="w-full">Sign Up</Button>
+            </SignUpButton>
           </div>
-        )}
+        </Show>
       </div>
     </div>
   );

@@ -4,23 +4,29 @@ import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { toast } from "sonner";
-import { X, Upload, Key, Check, AlertCircle, Loader2 } from "lucide-react";
+import { X, Upload, Key, Check, AlertCircle, Loader2, List } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { api } from "@/lib/api.ts";
+import { useQueryClient } from "@tanstack/react-query";
 
 type Props = { open: boolean; onClose: () => void };
 type Step = "choose" | "brevo" | "csv" | "importing" | "done";
+type Mode = "full" | "lists";
 
-type ImportResult = { imported: number; skipped: number; total: number };
+type FullResult = { imported: number; skipped: number; total: number; listsImported: number; contactsLinked: number };
+type ListsResult = { contactsLinked: number; listsFound: number };
 
 export default function ImportContactsModal({ open, onClose }: Props) {
+  const queryClient = useQueryClient();
   const [step, setStep] = useState<Step>("choose");
+  const [mode, setMode] = useState<Mode>("full");
   const [brevoKey, setBrevoKey] = useState("");
-  const [result, setResult] = useState<ImportResult | null>(null);
+  const [result, setResult] = useState<FullResult | ListsResult | null>(null);
   const [error, setError] = useState("");
 
   function reset() {
     setStep("choose");
+    setMode("full");
     setBrevoKey("");
     setResult(null);
     setError("");
@@ -39,10 +45,23 @@ export default function ImportContactsModal({ open, onClose }: Props) {
     setError("");
     setStep("importing");
     try {
-      const res = await api.brevo.import(brevoKey.trim());
-      setResult(res);
-      setStep("done");
-      toast.success(`Imported ${res.imported.toLocaleString()} contacts from Brevo`);
+      if (mode === "lists") {
+        const res = await api.brevo.linkLists(brevoKey.trim());
+        setResult(res);
+        setStep("done");
+        queryClient.invalidateQueries({ queryKey: ["lists"] });
+        queryClient.invalidateQueries({ queryKey: ["segments"] });
+        toast.success(`Linked ${res.contactsLinked} contacts to lists`);
+      } else {
+        const res = await api.brevo.import(brevoKey.trim());
+        setResult(res);
+        setStep("done");
+        queryClient.invalidateQueries({ queryKey: ["contacts"] });
+        queryClient.invalidateQueries({ queryKey: ["contact-stats"] });
+        queryClient.invalidateQueries({ queryKey: ["lists"] });
+        queryClient.invalidateQueries({ queryKey: ["segments"] });
+        toast.success(`Imported ${res.imported.toLocaleString()} contacts from Brevo`);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Import failed";
       setError(msg);
@@ -83,19 +102,33 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                 {step === "choose" && (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground mb-4">
-                      Choose how you'd like to import your contacts:
+                      Choose what you'd like to import:
                     </p>
                     <button
-                      className="w-full flex items-start gap-4 p-4 border-2 border-primary rounded-xl bg-primary/5 cursor-pointer text-left"
-                      onClick={() => setStep("brevo")}
+                      className="w-full flex items-start gap-4 p-4 border-2 border-primary rounded-xl bg-primary/5 cursor-pointer text-left transition-colors"
+                      onClick={() => { setMode("full"); setStep("brevo"); }}
                     >
                       <div className="size-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                         <Key className="size-5 text-primary" />
                       </div>
                       <div>
-                        <p className="font-semibold text-sm">Import from Brevo API</p>
+                        <p className="font-semibold text-sm">Full import (contacts + lists)</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          Connect your Brevo account and automatically pull all contacts including all attributes
+                          Pull all contacts, lists & segments from Brevo. Duplicates are skipped.
+                        </p>
+                      </div>
+                    </button>
+                    <button
+                      className="w-full flex items-start gap-4 p-4 border border-border rounded-xl hover:border-primary/50 hover:bg-muted/40 cursor-pointer text-left transition-colors"
+                      onClick={() => { setMode("lists"); setStep("brevo"); }}
+                    >
+                      <div className="size-10 rounded-lg bg-muted flex items-center justify-center shrink-0 mt-0.5">
+                        <List className="size-5 text-muted-foreground" />
+                      </div>
+                      <div>
+                        <p className="font-semibold text-sm">Link Lists & Segments only</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Link existing contacts to their Brevo lists & segments. No contact data is modified.
                         </p>
                       </div>
                     </button>
@@ -123,8 +156,8 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                 {step === "brevo" && (
                   <div className="space-y-4">
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Key className="size-4 text-primary" />
-                      <span>Brevo API import</span>
+                      {mode === "lists" ? <List className="size-4 text-primary" /> : <Key className="size-4 text-primary" />}
+                      <span>{mode === "lists" ? "Link Lists & Segments" : "Brevo API import"}</span>
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -147,12 +180,23 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                         <span>{error}</span>
                       </div>
                     )}
-                    <div className="bg-muted/50 rounded-lg p-3 text-xs text-muted-foreground space-y-1">
-                      <p className="font-medium text-foreground">What will be imported:</p>
-                      <p>• All contacts with email, name, WhatsApp, company, designation</p>
-                      <p>• Duplicate emails will be automatically skipped</p>
-                      <p>• Blacklisted contacts will be marked as unsubscribed</p>
-                    </div>
+                    {mode === "lists" ? (
+                      <div className="bg-muted/50 rounded-lg p-3 text-xs text-muted-foreground space-y-1">
+                        <p className="font-medium text-foreground">What will happen:</p>
+                        <p>• Each list & segment in Brevo is scanned for members</p>
+                        <p>• Matching contacts in your database are linked</p>
+                        <p>• No contact data is added or modified</p>
+                        <p className="mt-2 text-[11px]">Quick: only iterates lists (~200), not all contacts.</p>
+                      </div>
+                    ) : (
+                      <div className="bg-muted/50 rounded-lg p-3 text-xs text-muted-foreground space-y-1">
+                        <p className="font-medium text-foreground">What will be imported:</p>
+                        <p>• All contacts with email, name, WhatsApp, company, designation</p>
+                        <p>• Lists & segments are imported and contacts are linked</p>
+                        <p>• Duplicate emails will be automatically skipped</p>
+                        <p>• Blacklisted contacts will be marked as unsubscribed</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -175,10 +219,21 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                   <div className="flex flex-col items-center py-10 gap-4">
                     <Loader2 className="size-10 animate-spin text-primary" />
                     <div className="text-center">
-                      <p className="font-medium text-sm">Importing contacts from Brevo...</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Fetching and saving page by page. This can take several minutes for 84,000+ contacts.
-                      </p>
+                      {mode === "lists" ? (
+                        <>
+                          <p className="font-medium text-sm">Linking contacts to lists & segments...</p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Scanning each list in Brevo and creating links.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="font-medium text-sm">Importing contacts from Brevo...</p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Fetching and saving page by page. This can take several minutes for large accounts.
+                          </p>
+                        </>
+                      )}
                       <p className="text-xs text-muted-foreground mt-2 font-medium">
                         Please keep this window open until complete.
                       </p>
@@ -194,22 +249,48 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                     </div>
                     <div className="text-center">
                       <p className="font-semibold">Import complete!</p>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {result.imported.toLocaleString()} contacts imported, {result.skipped.toLocaleString()} duplicates skipped
+                      {"listsFound" in result ? (
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {result.contactsLinked} contacts linked across {result.listsFound} lists & segments
+                        </p>
+                      ) : (
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {result.imported.toLocaleString()} contacts imported, {result.skipped.toLocaleString()} duplicates skipped
+                        </p>
+                      )}
+                    </div>
+                    {"listsFound" in result ? (
+                      <div className="grid grid-cols-3 gap-3 w-full">
+                        {[
+                          { label: "Lists & Segments", value: result.listsFound.toLocaleString(), color: "text-emerald-600" },
+                          { label: "Contacts Linked", value: result.contactsLinked.toLocaleString() },
+                        ].map((s) => (
+                          <div key={s.label} className="bg-muted rounded-lg p-3 text-center">
+                            <p className={cn("text-xl font-bold", s.color ?? "text-foreground")}>{s.value}</p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">{s.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4 gap-3 w-full">
+                        {[
+                          { label: "Total in Brevo", value: result.total?.toLocaleString() ?? "—" },
+                          { label: "Imported", value: result.imported?.toLocaleString() ?? "—", color: "text-emerald-600" },
+                          { label: "Skipped", value: result.skipped?.toLocaleString() ?? "—", color: "text-muted-foreground" },
+                          { label: "Contacts Linked", value: result.contactsLinked?.toLocaleString() ?? "—" },
+                        ].map((s) => (
+                          <div key={s.label} className="bg-muted rounded-lg p-3 text-center">
+                            <p className={cn("text-xl font-bold", s.color ?? "text-foreground")}>{s.value}</p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">{s.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {"listsImported" in result && (
+                      <p className="text-xs text-muted-foreground">
+                        {result.listsImported} lists & segments imported from Brevo
                       </p>
-                    </div>
-                    <div className="grid grid-cols-3 gap-3 w-full">
-                      {[
-                        { label: "Total in Brevo", value: result.total.toLocaleString() },
-                        { label: "Imported", value: result.imported.toLocaleString(), color: "text-emerald-600" },
-                        { label: "Skipped", value: result.skipped.toLocaleString(), color: "text-muted-foreground" },
-                      ].map((s) => (
-                        <div key={s.label} className="bg-muted rounded-lg p-3 text-center">
-                          <p className={cn("text-xl font-bold", s.color ?? "text-foreground")}>{s.value}</p>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">{s.label}</p>
-                        </div>
-                      ))}
-                    </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -227,7 +308,7 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                       Back
                     </Button>
                     <Button size="sm" onClick={handleBrevoImport} className="cursor-pointer">
-                      Start import
+                      {mode === "lists" ? "Start linking" : "Start import"}
                     </Button>
                   </>
                 )}

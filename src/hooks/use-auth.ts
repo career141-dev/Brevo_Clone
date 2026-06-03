@@ -1,1 +1,1 @@
-export { useUser, useAuth } from "@/components/providers/auth.tsx";
+export { useUser, useAuth } from "@clerk/react";

@@ -134,7 +134,7 @@ export default function ContactTable() {
                   )}
                 >
                   <TableCell className="px-3 py-2.5 font-medium text-sm truncate max-w-[160px]">
-                    {c.name || c.email || "—"}
+                    {c.fullName || `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim() || c.email || "—"}
                   </TableCell>
                   <TableCell className="px-3 py-2.5 text-muted-foreground text-sm truncate max-w-[200px]">
                     {c.email || "—"}

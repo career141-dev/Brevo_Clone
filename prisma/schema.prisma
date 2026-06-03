@@ -6,111 +6,190 @@ datasource db {
   provider = "mysql"
 }
 
-model User {
-  id              String  @id @default(cuid())
-  tokenIdentifier String  @unique
-  name            String?
-  email           String? @db.VarChar(320)
+enum ContactStatus {
+  subscribed
+  unsubscribed
+  bounced
+  complained
+}
 
-  @@map("users")
+enum AudienceType {
+  list
+  segment
+}
+
+enum CampaignStatus {
+  draft
+  scheduled
+  sending
+  sent
+  paused
+}
+
+enum EventType {
+  sent
+  delivered
+  opened
+  clicked
+  bounced
+  complained
+  unsubscribed
 }
 
 model Contact {
-  id                 String              @id @default(cuid())
-  name               String
-  firstName          String?
-  lastName           String?
-  fullName           String?
-  email              String?             @db.VarChar(320)
-  uniqueKey          String?             @unique
-  sms                String?             @db.VarChar(64)
-  whatsapp           String?             @db.VarChar(64)
-  landlineNumber     String?             @db.VarChar(64)
-  company            String?
-  designation        String?
-  jobTitle           String?
-  linkedin           String?             @db.VarChar(500)
-  location           String?
-  country            String?
-  contactTimezone    String?
-  contactOwner       String?
-  extId              String?
-  lists              Json?
-  associatedCompany  String?
-  appliedJobTitle    String?
-  jobId              String?
-  dateApplied        String?
-  doubleOptIn        String?
-  optIn              String?
-  status             String              @db.VarChar(64)
-  source             String?             @db.VarChar(64)
-  createdAt          String?             @db.VarChar(64)
-  campaignRecipients CampaignRecipient[]
+  id          Int           @id @default(autoincrement())
+  email       String        @unique
+  firstName   String?
+  lastName    String?
+  fullName    String?
+  phone       String?
+  company     String?
+  designation String?
+  industry    String?
+  website     String?
+  country     String?
+  city        String?
+  address     String?
+  linkedin    String?
+  twitter     String?
+  facebook    String?
+  whatsapp    String?
+  sms         String?
+  notes       String?       @db.Text
+  source      String?
+  status      ContactStatus @default(subscribed)
+  blocked     Boolean       @default(false)
+  tags        String?
+  ownerId     String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  contactLists ContactList[]
+  emailEvents  EmailEvent[]
+  contactAutomations ContactAutomation[]
 
-  @@index([email])
-  @@index([uniqueKey])
   @@index([status])
+  @@index([company])
   @@map("contacts")
 }
 
-model ContactStats {
-  id           String @id @default(cuid())
-  total        Int
-  active       Int
-  unsubscribed Int
-  bounced      Int
+model Folder {
+  id        Int      @id @default(autoincrement())
+  brevoId   Int?     @unique
+  name      String
+  createdAt DateTime @default(now())
+  lists     List[]
 
-  @@map("contact_stats")
+  @@map("folders")
+}
+
+model List {
+  id           Int           @id @default(autoincrement())
+  brevoId      Int?          @unique
+  name         String
+  type         String?       @default("list")
+  folderId     Int?
+  createdAt    DateTime      @default(now())
+  folder       Folder?       @relation(fields: [folderId], references: [id])
+  contactLists ContactList[]
+
+  @@map("lists")
+}
+
+model ContactList {
+  contactId Int
+  listId    Int
+  contact   Contact @relation(fields: [contactId], references: [id])
+  list      List    @relation(fields: [listId], references: [id])
+
+  @@id([contactId, listId])
+  @@map("contact_lists")
 }
 
 model Campaign {
-  id             String              @id @default(cuid())
+  id             Int            @id @default(autoincrement())
   name           String
-  subject        String              @db.VarChar(255)
-  body           String              @db.LongText
-  status         String              @db.VarChar(64)
-  recipientCount Int
-  sentCount      Int
-  sentAt         String?
-  recipients     CampaignRecipient[]
-  emailEvents    EmailEvent[]
+  subject        String
+  fromName       String
+  fromEmail      String
+  templateHtml   String         @db.LongText
+  audienceType   AudienceType
+  audienceId     Int
+  status         CampaignStatus @default(draft)
+  scheduledAt    DateTime?
+  sentAt         DateTime?
+  totalRecipients Int           @default(0)
+  createdAt      DateTime       @default(now())
 
-  @@index([status])
   @@map("campaigns")
 }
 
-model CampaignRecipient {
-  id          String   @id @default(cuid())
-  campaignId  String
-  contactId   String
-  email       String   @db.VarChar(320)
-  status      String   @db.VarChar(64)
-  sentAt      String?
-  deliveredAt String?
-  openedAt    String?
-  clickedAt   String?
-  campaign    Campaign @relation(fields: [campaignId], references: [id])
-  contact     Contact  @relation(fields: [contactId], references: [id])
-
-  @@index([campaignId])
-  @@index([contactId])
-  @@index([campaignId, email])
-  @@map("campaign_recipients")
-}
-
 model EmailEvent {
-  id         String    @id @default(cuid())
-  campaignId String?
-  email      String    @db.VarChar(320)
-  eventType  String    @db.VarChar(64)
+  id         Int       @id @default(autoincrement())
+  email      String
+  campaignId Int?
+  eventType  EventType
+  url        String?   @db.VarChar(2000)
   userAgent  String?   @db.VarChar(500)
-  linkUrl    String?   @db.VarChar(1000)
-  timestamp  String
-  campaign   Campaign? @relation(fields: [campaignId], references: [id])
+  timestamp  DateTime  @default(now())
+  contact    Contact?  @relation(fields: [email], references: [email])
 
   @@index([email])
-  @@index([eventType])
   @@index([campaignId])
+  @@index([eventType])
   @@index([timestamp])
   @@map("email_events")
+}
+
+model Automation {
+  id        Int      @id @default(autoincrement())
+  name      String
+  trigger   String?
+  stepsJson String?
+  createdAt DateTime @default(now())
+  contactAutomations ContactAutomation[]
+
+  @@map("automations")
+}
+
+model ContactAutomation {
+  contactId     Int
+  automationId  Int
+  enrolledAt    DateTime @default(now())
+  contact       Contact    @relation(fields: [contactId], references: [id])
+  automation    Automation @relation(fields: [automationId], references: [id])
+
+  @@id([contactId, automationId])
+  @@map("contact_automations")
+}
+
+model Company {
+  id                Int      @id @default(autoincrement())
+  brevoId           String   @unique
+  name              String
+  domain            String?
+  owner             String?
+  phoneNumber       String?
+  revenue           Float?
+  industry          String?
+  numberOfEmployees Int?
+  numberOfContacts  Int      @default(0)
+  linkedContactsIds Json?
+  linkedDealsIds    Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([name])
+  @@map("companies")
+}
+
+model Segment {
+  id           Int      @id @default(autoincrement())
+  brevoId      Int      @unique
+  name         String
+  segmentType  String?
+  contactCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("segments")
 }

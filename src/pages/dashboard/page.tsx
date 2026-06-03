@@ -1,14 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
-import { SignInButton } from "@/components/ui/signin.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Users, Mail, Send, TrendingUp, Plus, ArrowRight, Calendar } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "@/hooks/use-auth.ts";
+import { useUser } from "@clerk/react";
+import { useEffect } from "react";
 import { api } from "@/lib/api.ts";
 
 const container = {
@@ -37,7 +37,7 @@ function StatCard({
 }) {
   return (
     <motion.div variants={item}>
-      <Card className="border shadow-sm hover:shadow-md transition-shadow duration-200">
+      <Card className={`border shadow-sm hover:shadow-md transition-shadow duration-200 ${bg}`}>
         <CardContent className="pt-5 pb-5">
           <div className="flex items-start justify-between">
             <div>
@@ -49,7 +49,7 @@ function StatCard({
               </p>
               <p className="text-xs text-muted-foreground mt-1">{sub}</p>
             </div>
-            <div className={`p-2.5 rounded-xl ${bg}`}>
+            <div className="p-2.5 rounded-xl bg-background/60 dark:bg-background/40">
               <Icon className={`size-5 ${color}`} />
             </div>
           </div>
@@ -66,7 +66,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 function DashboardInner() {
-  const { user } = useAuth();
+  const { user } = useUser();
   const { data: recentCampaigns, isLoading } = useQuery({
     queryKey: ["campaigns"],
     queryFn: () => api.campaigns.list(),
@@ -81,7 +81,7 @@ function DashboardInner() {
   });
   const navigate = useNavigate();
 
-  const firstName = user?.profile.name?.split(" ")[0] ?? "there";
+  const firstName = user?.firstName ?? "there";
   const today = format(new Date(), "EEEE, d MMMM yyyy");
 
   const stats = [
@@ -90,32 +90,32 @@ function DashboardInner() {
       value: contactStats?.total ?? 0,
       sub: `${contactStats?.subscribed ?? 0} subscribed`,
       icon: Users,
-      color: "text-violet-600 dark:text-violet-400",
-      bg: "bg-violet-100 dark:bg-violet-500/15",
+      color: "text-[#00F59B]",
+      bg: "bg-[#D7FEC8] dark:bg-[#00F59B]/15",
     },
     {
       label: "Active Contacts",
       value: contactStats?.subscribed ?? 0,
       sub: `${contactStats?.unsubscribed ?? 0} unsubscribed`,
       icon: TrendingUp,
-      color: "text-emerald-600 dark:text-emerald-400",
-      bg: "bg-emerald-100 dark:bg-emerald-500/15",
+      color: "text-[#00F59B]",
+      bg: "bg-[#D7FEC8] dark:bg-[#00F59B]/15",
     },
     {
       label: "Campaigns Sent",
       value: campaignStats?.sent ?? 0,
       sub: `${campaignStats?.draft ?? 0} in draft`,
       icon: Send,
-      color: "text-blue-600 dark:text-blue-400",
-      bg: "bg-blue-100 dark:bg-blue-500/15",
+      color: "text-[#00F59B]",
+      bg: "bg-[#D7FEC8] dark:bg-[#00F59B]/15",
     },
     {
       label: "Emails Delivered",
       value: 0,
       sub: `${campaignStats?.total ?? 0} sent campaigns`,
       icon: Mail,
-      color: "text-amber-600 dark:text-amber-400",
-      bg: "bg-amber-100 dark:bg-amber-500/15",
+      color: "text-[#00F59B]",
+      bg: "bg-[#D7FEC8] dark:bg-[#00F59B]/15",
     },
   ];
 
@@ -307,9 +307,16 @@ function cn(...classes: (string | undefined | false)[]) {
 }
 
 export default function DashboardPage() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isLoaded, isSignedIn } = useUser();
+  const navigate = useNavigate();
 
-  if (isLoading) {
+  useEffect(() => {
+    if (isLoaded && !isSignedIn) {
+      navigate("/login");
+    }
+  }, [isLoaded, isSignedIn, navigate]);
+
+  if (!isLoaded) {
     return (
       <div className="px-6 py-6 space-y-6">
         <Skeleton className="h-7 w-44" />
@@ -323,43 +330,11 @@ export default function DashboardPage() {
     );
   }
 
-  if (!isAuthenticated) {
-    return <SignInPage />;
+  if (!isSignedIn) {
+    return null;
   }
 
   return <DashboardInner />;
 }
 
-function SignInPage() {
-  return (
-    <div className="min-h-[calc(100vh-3rem)] flex items-center justify-center px-4">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-        className="w-full max-w-sm"
-      >
-        <Card className="border shadow-lg">
-          <CardContent className="pt-8 pb-8 px-8">
-            <div className="flex flex-col items-center text-center space-y-5">
-              <div className="size-12 rounded-xl bg-primary/10 flex items-center justify-center">
-                <Mail className="size-6 text-primary" />
-              </div>
-              <div>
-                <h1 className="text-lg font-bold">Welcome to Career141</h1>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Sign in to access your email marketing platform
-                </p>
-              </div>
-              <SignInButton className="w-full" />
-              <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
-                Supports email OTP, Google, and other providers via Hercules Auth.
-                Only authorised Career141 team members can access this platform.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
-    </div>
-  );
-}
+
