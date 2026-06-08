@@ -61,7 +61,7 @@ export default function LoginPage() {
         navigate("/");
       } else if (signInAttempt.status === "needs_first_factor") {
         // Prepare email verification if required
-        const factor: any = signInAttempt.supportedFirstFactors.find(
+        const factor: any = signInAttempt.supportedFirstFactors?.find(
           (f: any) => f.strategy === "email_code"
         );
         if (factor) {
@@ -72,7 +72,7 @@ export default function LoginPage() {
           setPendingVerification(true);
           toast.success("Verification code sent to your email!");
         } else {
-          toast.error("Strategies available: " + JSON.stringify(signInAttempt.supportedFirstFactors.map((f:any)=>f.strategy)));
+          toast.error("Strategies available: " + JSON.stringify(signInAttempt.supportedFirstFactors?.map((f:any)=>f.strategy)));
         }
       } else if (signInAttempt.status === "needs_second_factor") {
         const factor: any = signInAttempt.supportedSecondFactors?.find(
