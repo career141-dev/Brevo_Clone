@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { List as ListIcon, ChevronLeft, ChevronRight, Search, MoreHorizontal, Plus, Loader2 } from "lucide-react";
+import { List as ListIcon, ChevronLeft, ChevronRight, Search, MoreHorizontal, Plus, Loader2, Trash2, Eye, Pencil, UserPlus } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox.tsx";
 import {
   Table,
   TableBody,
@@ -41,7 +42,18 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
 } from "@/components/ui/dialog.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog.tsx";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -75,6 +87,14 @@ export default function ListsPage() {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [folderNameError, setFolderNameError] = useState("");
+
+  // Dialog Delete List Confirmation State
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [listToDelete, setListToDelete] = useState<any | null>(null);
+
+  // Dialog Add Contacts to List State
+  const [addContactsModalOpen, setAddContactsModalOpen] = useState(false);
+  const [listForAddingContacts, setListForAddingContacts] = useState<any | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -244,6 +264,27 @@ export default function ListsPage() {
     createFolderMutation.mutate({ name: newFolderName.trim() });
   };
 
+  // Mutation to delete list
+  const deleteListMutation = useMutation({
+    mutationFn: (id: number) => api.lists.delete(id),
+    onSuccess: () => {
+      toast.success("List deleted successfully");
+      queryClient.invalidateQueries({ queryKey: ["lists"] });
+      queryClient.invalidateQueries({ queryKey: ["lists-stats"] });
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+      setDeleteConfirmOpen(false);
+      setListToDelete(null);
+    },
+    onError: (err: any) => {
+      toast.error(err.message || "Failed to delete list");
+    },
+  });
+
+  const handleDeleteList = () => {
+    if (!listToDelete) return;
+    deleteListMutation.mutate(listToDelete.id);
+  };
+
   return (
     <div className="px-6 py-6 max-w-6xl mx-auto space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -295,8 +336,11 @@ export default function ListsPage() {
                 <SelectTrigger className="h-10 text-xs">
                   <SelectValue placeholder="Select folder" />
                 </SelectTrigger>
-                <SelectContent className="max-h-[360px] overflow-hidden flex flex-col p-0">
-                  <div className="overflow-y-auto max-h-[300px] p-2.5 space-y-1 flex-1">
+                <SelectContent
+                  className="max-h-[400px] overflow-hidden flex flex-col p-0"
+                  viewportClassName="flex flex-col h-auto max-h-none overflow-visible"
+                >
+                  <div className="max-h-[260px] overflow-y-auto p-2.5 space-y-1">
                     <SelectItem value="all">
                       <div className="flex flex-col text-left py-1">
                         <span className="font-semibold text-xs">All folders</span>
@@ -424,8 +468,9 @@ export default function ListsPage() {
                             <MoreHorizontal className="size-4" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
+                        <DropdownMenuContent align="end" className="w-44">
                           <DropdownMenuItem onClick={() => navigate(`/contacts?listId=${list.brevoId || list.id}&listName=${encodeURIComponent(list.name)}`)}>
+                            <Eye className="size-4 mr-2 text-muted-foreground" />
                             View Contacts
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => {
@@ -436,7 +481,25 @@ export default function ListsPage() {
                             setEditFolderError("");
                             setEditDialogOpen(true);
                           }}>
+                            <Pencil className="size-4 mr-2 text-muted-foreground" />
                             Edit List
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => {
+                            setListForAddingContacts(list);
+                            setAddContactsModalOpen(true);
+                          }}>
+                            <UserPlus className="size-4 mr-2 text-muted-foreground" />
+                            Add Contact
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-red-600 focus:text-red-600 focus:bg-red-50 dark:focus:bg-red-950/30"
+                            onClick={() => {
+                              setListToDelete(list);
+                              setDeleteConfirmOpen(true);
+                            }}
+                          >
+                            <Trash2 className="size-4 mr-2" />
+                            Delete List
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -733,6 +796,270 @@ export default function ListsPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Dialog Modal for Confirming List Deletion */}
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete list permanently?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete the list{" "}
+              <strong className="text-foreground">"{listToDelete?.name}"</strong>? 
+              This will unlink all contacts from this list. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteListMutation.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleDeleteList();
+              }}
+              disabled={deleteListMutation.isPending}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground animate-none"
+            >
+              {deleteListMutation.isPending ? (
+                <>
+                  <Loader2 className="size-4 animate-spin mr-2" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AddContactsModal
+        open={addContactsModalOpen}
+        onClose={() => {
+          setAddContactsModalOpen(false);
+          setListForAddingContacts(null);
+        }}
+        list={listForAddingContacts}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["lists"] });
+          queryClient.invalidateQueries({ queryKey: ["lists-stats"] });
+          queryClient.invalidateQueries({ queryKey: ["folders"] });
+        }}
+      />
     </div>
+  );
+}
+
+type AddContactsModalProps = {
+  open: boolean;
+  onClose: () => void;
+  list: any;
+  onSuccess: () => void;
+};
+
+function AddContactsModal({ open, onClose, list, onSuccess }: AddContactsModalProps) {
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Fetch contacts
+  const { data, isLoading } = useQuery({
+    queryKey: ["contacts-to-add", page, debouncedSearch, open],
+    queryFn: () => api.contacts.list({ page, pageSize, q: debouncedSearch || undefined }),
+    enabled: open && !!list,
+  });
+
+  const contacts = data?.data ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = data?.totalPages ?? 0;
+
+  // Reset states when modal opens
+  useEffect(() => {
+    if (open) {
+      setSelectedIds([]);
+      setSearch("");
+      setPage(1);
+    }
+  }, [open]);
+
+  const handleSelectOne = (id: number) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllPage = () => {
+    const pageIds = contacts.map((c: any) => c.id);
+    const allSelected = pageIds.every((id) => selectedIds.includes(id));
+    if (allSelected) {
+      setSelectedIds((prev) => prev.filter((id) => !pageIds.includes(id)));
+    } else {
+      setSelectedIds((prev) => Array.from(new Set([...prev, ...pageIds])));
+    }
+  };
+
+  const isAllPageSelected = contacts.length > 0 && contacts.every((c: any) => selectedIds.includes(c.id));
+
+  const handleSave = async () => {
+    if (selectedIds.length === 0 || !list) return;
+    setSubmitting(true);
+    try {
+      const targetListId = list.id;
+      await api.contacts.addToList(selectedIds, [targetListId]);
+      toast.success(`Successfully added ${selectedIds.length} contact(s) to "${list.name}"`);
+      onSuccess();
+      onClose();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add contacts to list");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(val) => !val && onClose()}>
+      <DialogContent className="sm:max-w-xl flex flex-col max-h-[85vh]">
+        <DialogHeader className="pb-2 border-b">
+          <DialogTitle className="text-lg font-semibold flex items-center gap-2">
+            <UserPlus className="size-5 text-primary" />
+            Add Contacts to "{list?.name}"
+          </DialogTitle>
+          <span className="text-xs text-muted-foreground text-left block mt-1">
+            Search and select contacts from your directory to populate this list.
+          </span>
+        </DialogHeader>
+
+        <div className="py-4 flex-1 flex flex-col min-h-0 space-y-4">
+          {/* Search bar */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <Input
+              placeholder="Search contacts by name, email, or company..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9 h-10 text-sm"
+            />
+          </div>
+
+          {/* Contacts table */}
+          <div className="flex-1 overflow-y-auto border rounded-lg min-h-0 relative">
+            {isLoading ? (
+              <div className="flex flex-col items-center justify-center h-48 space-y-2">
+                <Loader2 className="size-6 animate-spin text-primary" />
+                <span className="text-xs text-muted-foreground">Loading contacts...</span>
+              </div>
+            ) : contacts.length === 0 ? (
+              <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
+                No contacts found.
+              </div>
+            ) : (
+              <div className="w-full">
+                {/* Header row */}
+                <div className="flex items-center px-4 py-2 bg-muted/40 border-b text-xs font-semibold text-muted-foreground select-none">
+                  <div className="w-10 flex items-center">
+                    <Checkbox
+                      checked={isAllPageSelected}
+                      onCheckedChange={handleSelectAllPage}
+                    />
+                  </div>
+                  <div className="flex-1">Name & Email</div>
+                  <div className="w-32 hidden sm:block">Company</div>
+                </div>
+
+                {/* Rows */}
+                <div className="divide-y">
+                  {contacts.map((contact: any) => {
+                    const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unnamed Contact";
+                    return (
+                      <label
+                        key={contact.id}
+                        className="flex items-center px-4 py-2.5 hover:bg-muted/30 cursor-pointer text-sm transition-colors"
+                      >
+                        <div className="w-10 flex items-center" onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            checked={selectedIds.includes(contact.id)}
+                            onCheckedChange={() => handleSelectOne(contact.id)}
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0 pr-4">
+                          <div className="font-medium text-foreground text-left truncate">{fullName}</div>
+                          <div className="text-xs text-muted-foreground text-left truncate">{contact.email}</div>
+                        </div>
+                        <div className="w-32 hidden sm:block text-xs text-muted-foreground text-left truncate">
+                          {contact.company || "—"}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Pagination controls */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between text-xs text-muted-foreground px-1 select-none">
+              <span>
+                Showing {((page - 1) * pageSize) + 1}–{Math.min(page * pageSize, total)} of {total} contacts
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  disabled={page <= 1}
+                  onClick={() => setPage(page - 1)}
+                >
+                  <ChevronLeft className="size-3.5" />
+                </Button>
+                <span>Page {page} of {totalPages}</span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(page + 1)}
+                >
+                  <ChevronRight className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter className="border-t pt-3 flex items-center justify-between sm:justify-between w-full">
+          <div className="text-xs text-muted-foreground font-medium">
+            {selectedIds.length} contact(s) selected
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button onClick={handleSave} disabled={selectedIds.length === 0 || submitting} className="min-w-[120px]">
+              {submitting ? (
+                <>
+                  <Loader2 className="size-4 animate-spin mr-2" />
+                  Adding...
+                </>
+              ) : (
+                `Add Contacts (${selectedIds.length})`
+              )}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

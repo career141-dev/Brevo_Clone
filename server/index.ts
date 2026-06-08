@@ -75,13 +75,40 @@ app.get("/api/contacts", async (req, res) => {
   }
 });
 
-app.get("/api/contacts/stats", async (_req, res) => {
+app.get("/api/contacts/stats", async (req, res) => {
   try {
+    const listIdQuery = req.query.listId ? Number(req.query.listId) : undefined;
+    const baseWhere: any = {};
+    if (listIdQuery) {
+      const targetList = await prisma.list.findFirst({
+        where: {
+          OR: [
+            { id: listIdQuery },
+            { brevoId: listIdQuery }
+          ]
+        },
+        select: { id: true }
+      });
+      if (targetList) {
+        baseWhere.contactLists = {
+          some: {
+            listId: targetList.id,
+          },
+        };
+      } else {
+        baseWhere.contactLists = {
+          some: {
+            listId: -1,
+          },
+        };
+      }
+    }
+
     const [total, subscribed, unsubscribed, bounced] = await Promise.all([
-      prisma.contact.count(),
-      prisma.contact.count({ where: { status: "subscribed" } }),
-      prisma.contact.count({ where: { status: "unsubscribed" } }),
-      prisma.contact.count({ where: { status: "bounced" } }),
+      prisma.contact.count({ where: baseWhere }),
+      prisma.contact.count({ where: { ...baseWhere, status: "subscribed" } }),
+      prisma.contact.count({ where: { ...baseWhere, status: "unsubscribed" } }),
+      prisma.contact.count({ where: { ...baseWhere, status: "bounced" } }),
     ]);
     res.json({ total, subscribed, unsubscribed, bounced });
   } catch (err) {
@@ -179,7 +206,7 @@ app.get("/api/lists", async (req, res) => {
     const q = (req.query.q as string ?? "").toLowerCase();
     const folderId = req.query.folderId ? Number(req.query.folderId) : undefined;
     const page = Math.max(1, Number(req.query.page) || 1);
-    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
+    const pageSize = Math.min(10000, Math.max(1, Number(req.query.pageSize) || 10));
 
     const baseWhere: any = {};
     if (type) baseWhere.type = type;
@@ -314,6 +341,31 @@ app.put("/api/lists/:id", async (req, res) => {
     if (err?.code === "P2025") return res.status(404).json({ error: "List not found" });
     console.error("Update list error:", err);
     res.status(500).json({ error: "Failed to update list.", detail: err?.message });
+  }
+});
+
+app.delete("/api/lists/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid list ID" });
+
+    // Delete associations in ContactList first, then the list itself
+    await prisma.$transaction([
+      prisma.contactList.deleteMany({
+        where: { listId: id },
+      }),
+      prisma.list.delete({
+        where: { id },
+      }),
+    ]);
+
+    res.json({ success: true });
+  } catch (err: any) {
+    if (err?.code === "P2025") {
+      return res.status(404).json({ error: "List not found" });
+    }
+    console.error("Delete list error:", err);
+    res.status(500).json({ error: "Failed to delete list." });
   }
 });
 
@@ -470,6 +522,292 @@ app.get("/api/segments/stats", async (_req, res) => {
     res.json({ total });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch segment stats" });
+  }
+});
+
+// ── Templates ────────────────────────────────────────────────────────
+
+// GET all templates
+app.get("/api/templates", async (req, res) => {
+  try {
+    const templates = await prisma.template.findMany({
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        subject: true,
+        previewText: true,
+        createdAt: true,
+      },
+    });
+    res.json(templates);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch templates" });
+  }
+});
+
+// GET single template (full HTML)
+app.get("/api/templates/:id", async (req, res) => {
+  try {
+    const template = await prisma.template.findUnique({
+      where: { id: Number(req.params.id) },
+    });
+    if (!template) return res.status(404).json({ error: "Not found" });
+    res.json(template);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch template" });
+  }
+});
+
+// POST create template
+app.post("/api/templates", async (req, res) => {
+  try {
+    const { name, subject, contentHtml, previewText } = req.body;
+    if (!name || !contentHtml) {
+      return res.status(400).json({ error: "name and contentHtml required" });
+    }
+    const template = await prisma.template.create({
+      data: { name, subject, contentHtml, previewText },
+    });
+    res.status(201).json(template);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create template" });
+  }
+});
+
+// PUT update template
+app.put("/api/templates/:id", async (req, res) => {
+  try {
+    const { name, subject, contentHtml, previewText } = req.body;
+    const template = await prisma.template.update({
+      where: { id: Number(req.params.id) },
+      data: { name, subject, contentHtml, previewText },
+    });
+    res.json(template);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update template" });
+  }
+});
+
+// DELETE template
+app.delete("/api/templates/:id", async (req, res) => {
+  try {
+    await prisma.template.delete({
+      where: { id: Number(req.params.id) },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete template" });
+  }
+});
+
+// ── Campaigns ────────────────────────────────────────────────────────
+
+// GET all campaigns
+app.get("/api/campaigns", async (req, res) => {
+  try {
+    const campaigns = await prisma.campaign.findMany({
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(campaigns);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch campaigns" });
+  }
+});
+
+// GET campaign stats
+app.get("/api/campaigns/stats", async (req, res) => {
+  try {
+    const [total, sent, draft, scheduled, sending] = await Promise.all([
+      prisma.campaign.count(),
+      prisma.campaign.count({ where: { status: "sent" } }),
+      prisma.campaign.count({ where: { status: "draft" } }),
+      prisma.campaign.count({ where: { status: "scheduled" } }),
+      prisma.campaign.count({ where: { status: "sending" } }),
+    ]);
+    res.json({ total, sent, draft, scheduled, sending });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch campaign stats" });
+  }
+});
+
+// POST create campaign draft
+app.post("/api/campaigns", async (req, res) => {
+  try {
+    const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId } = req.body;
+    if (!name || !subject || !fromName || !fromEmail) {
+      return res.status(400).json({ error: "name, subject, fromName, fromEmail required" });
+    }
+    const campaign = await prisma.campaign.create({
+      data: {
+        name,
+        subject,
+        fromName,
+        fromEmail,
+        templateHtml: templateHtml || "",
+        audienceType: audienceType || "list",
+        audienceId: audienceId || 0,
+        status: "draft",
+      },
+    });
+    res.status(201).json(campaign);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create campaign draft" });
+  }
+});
+
+// PUT update campaign
+app.put("/api/campaigns/:id", async (req, res) => {
+  try {
+    const data = req.body;
+    if (data.id !== undefined) delete data.id;
+    if (data.createdAt !== undefined) delete data.createdAt;
+    const campaign = await prisma.campaign.update({
+      where: { id: Number(req.params.id) },
+      data,
+    });
+    res.json(campaign);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update campaign" });
+  }
+});
+
+// DELETE campaign
+app.delete("/api/campaigns/:id", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+    if (campaign.status !== "draft") {
+      return res.status(400).json({ error: "Only draft campaigns can be deleted" });
+    }
+    await prisma.campaign.delete({
+      where: { id: campaignId },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete campaign" });
+  }
+});
+
+// POST duplicate campaign
+app.post("/api/campaigns/:id/duplicate", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+    const copy = await prisma.campaign.create({
+      data: {
+        name: `${campaign.name} (Copy)`,
+        subject: campaign.subject,
+        fromName: campaign.fromName,
+        fromEmail: campaign.fromEmail,
+        templateHtml: campaign.templateHtml,
+        audienceType: campaign.audienceType,
+        audienceId: campaign.audienceId,
+        status: "draft",
+      },
+    });
+    res.status(201).json(copy);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to duplicate campaign" });
+  }
+});
+
+// POST /api/campaigns/:id/send
+app.post("/api/campaigns/:id/send", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+
+    // 1. Fetch campaign record
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+    if (campaign.status === "sent") {
+      return res.status(400).json({ error: "Campaign already sent" });
+    }
+    if (!campaign.audienceId) {
+      return res.status(400).json({ error: "No audience selected" });
+    }
+    if (!campaign.templateHtml) {
+      return res.status(400).json({ error: "No template selected" });
+    }
+
+    // 2. Mark as sending
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: "sending" },
+    });
+
+    // 3. Fetch subscribed contacts from the selected list
+    const contacts = await prisma.contact.findMany({
+      where: {
+        status: "subscribed",
+        contactLists: { some: { listId: campaign.audienceId } },
+      },
+    });
+
+    let sent = 0;
+    const errors: string[] = [];
+
+    // Safety fallback: Ensure unsubscribe URL tag is present in campaign template
+    let template = campaign.templateHtml;
+    if (!template.includes("{{unsubscribe_url}}")) {
+      const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>If you wish to unsubscribe, you can <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">unsubscribe here</a>.</p></div>`;
+      if (/<\/body>/i.test(template)) {
+        template = template.replace(/<\/body>/i, `${fallbackUnsubHtml}</body>`);
+      } else {
+        template += fallbackUnsubHtml;
+      }
+    }
+
+    for (const contact of contacts) {
+      const unsubUrl = makeUnsubscribeUrl(contact.email);
+      let html = template
+        .replace(/{{first_name}}/g, contact.firstName || "")
+        .replace(/{{last_name}}/g, contact.lastName || "")
+        .replace(/{{full_name}}/g, contact.fullName || "")
+        .replace(/{{company}}/g, contact.company || "")
+        .replace(/{{designation}}/g, contact.designation || "")
+        .replace(/{{email}}/g, contact.email)
+        .replace(/{{unsubscribe_url}}/g, unsubUrl);
+
+      // Inject open-tracking pixel and rewrite links through click tracker
+      html = injectTracking(html, contact.email, campaignId);
+
+      try {
+        await sesClient.send(new SendEmailCommand({
+          Source: `${campaign.fromName} <${campaign.fromEmail}>`,
+          Destination: { ToAddresses: [contact.email] },
+          ConfigurationSetName: "career141-tracking",
+          Message: {
+            Subject: { Data: campaign.subject, Charset: "UTF-8" },
+            Body: { Html: { Data: html, Charset: "UTF-8" } },
+          },
+          Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
+        }));
+        sent++;
+      } catch (e: any) {
+        errors.push(`${contact.email}: ${e.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 72)); // 14/sec rate limit
+    }
+
+    // 4. Mark campaign as sent
+    const updatedCampaign = await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: "sent", sentAt: new Date(), totalRecipients: sent },
+    });
+
+    res.json({ sent, errors: errors.length, campaignId, campaign: updatedCampaign });
+  } catch (err: any) {
+    console.error("Send campaign error:", err);
+    res.status(500).json({ error: "Failed to send campaign", details: err.message });
   }
 });
 
@@ -646,8 +984,8 @@ async function fetchAndStoreSegments(apiKey: string): Promise<number> {
 
       const payload = {
         brevoId: segment.id,
-        name: segment.name ?? "Unknown",
-        segmentType: segment.category ?? null,
+        name: segment.segmentName ?? "Unknown",
+        segmentType: segment.categoryName ?? null,
         contactCount: segment.numberOfContacts ?? 0,
       };
 
@@ -1087,7 +1425,25 @@ app.post("/api/email/send", async (req, res) => {
     const unsubUrl = makeUnsubscribeUrl(contact.email);
 
     // 1. Personalise the template
-    let html = htmlTemplate
+    let html = htmlTemplate;
+    
+    // Automatically inject unsubscribe footer if no placeholder is present (like Brevo)
+    if (!html.includes("{{unsubscribe_url}}")) {
+      const defaultUnsubscribeFooter = `
+        <div style="font-family: Arial, sans-serif; font-size: 11px; color: #888888; text-align: center; padding: 20px; border-top: 1px solid #eeeeee; margin-top: 20px;">
+          You are receiving this email because you subscribed to updates. 
+          If you no longer wish to receive these emails, you can 
+          <a href="{{unsubscribe_url}}" style="color: #20a84a; font-weight: 600; text-decoration: underline;">unsubscribe here</a>.
+        </div>
+      `;
+      if (/<\/body>/i.test(html)) {
+        html = html.replace(/<\/body>/i, `${defaultUnsubscribeFooter}</body>`);
+      } else {
+        html += defaultUnsubscribeFooter;
+      }
+    }
+
+    html = html
       .replace(/{{first_name}}/g, contact.firstName ?? "")
       .replace(/{{last_name}}/g, contact.lastName ?? "")
       .replace(/{{company}}/g, contact.company ?? "")

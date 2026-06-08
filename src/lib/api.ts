@@ -31,7 +31,12 @@ export const api = {
       const suffix = qs.toString() ? `?${qs}` : "";
       return request<PaginatedResponse<any>>(`/contacts${suffix}`);
     },
-    stats: () => request<{ total: number; subscribed: number; unsubscribed: number; bounced: number }>("/contacts/stats"),
+    stats: (params?: { listId?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.listId) qs.set("listId", String(params.listId));
+      const suffix = qs.toString() ? `?${qs}` : "";
+      return request<{ total: number; subscribed: number; unsubscribed: number; bounced: number }>(`/contacts/stats${suffix}`);
+    },
     get: (id: string) => request<any>(`/contacts/${id}`),
     create: (data: any) => request<any>("/contacts", { method: "POST", body: JSON.stringify(data) }),
     update: (id: string, data: any) => request<any>(`/contacts/${id}`, { method: "PUT", body: JSON.stringify(data) }),
@@ -92,10 +97,24 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+    delete: (id: number) =>
+      request<{ success: boolean }>(`/lists/${id}`, {
+        method: "DELETE",
+      }),
   },
   campaigns: {
     list: () => request<any[]>("/campaigns"),
-    stats: () => request<{ total: number; sent: number; draft: number; scheduled: number }>("/campaigns/stats"),
+    stats: () => request<{ total: number; sent: number; draft: number; scheduled: number; sending: number }>("/campaigns/stats"),
+    create: (data: { name: string; subject: string; fromName: string; fromEmail: string; templateHtml?: string; audienceType?: string; audienceId?: number }) =>
+      request<any>("/campaigns", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: number, data: any) =>
+      request<any>(`/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    send: (id: number) =>
+      request<any>(`/campaigns/${id}/send`, { method: "POST" }),
+    delete: (id: number) =>
+      request<any>(`/campaigns/${id}`, { method: "DELETE" }),
+    duplicate: (id: number) =>
+      request<any>(`/campaigns/${id}/duplicate`, { method: "POST" }),
   },
   companies: {
     list: (params?: { q?: string; page?: number; pageSize?: number }) => {
@@ -114,6 +133,15 @@ export const api = {
   },
   automations: {
     list: () => request<any[]>("/automations"),
+  },
+  templates: {
+    list: () => request<any[]>("/templates"),
+    get: (id: number) => request<any>(`/templates/${id}`),
+    create: (data: { name: string; subject?: string; contentHtml: string; previewText?: string }) =>
+      request<any>("/templates", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: number, data: { name?: string; subject?: string; contentHtml?: string; previewText?: string }) =>
+      request<any>(`/templates/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    delete: (id: number) => request<any>(`/templates/${id}`, { method: "DELETE" }),
   },
   brevo: {
     import: (apiKey: string) =>

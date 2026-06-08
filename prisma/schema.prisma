@@ -193,3 +193,15 @@ model Segment {
 
   @@map("segments")
 }
+
+model Template {
+  id           Int      @id @default(autoincrement())
+  name         String
+  subject      String?
+  contentHtml  String   @db.LongText
+  previewText  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("templates")
+}

@@ -23,6 +23,12 @@ import { Card } from "@/components/ui/card.tsx";
 import { Checkbox } from "@/components/ui/checkbox.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu.tsx";
 
 type Contact = {
   id: number;
@@ -84,49 +90,41 @@ function RowActionsDropdown({
   onAddToAutomation: () => void;
   onDelete: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        ref.current && !ref.current.contains(e.target as Node) &&
-        btnRef.current && !btnRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
   return (
-    <div className="relative inline-flex">
-      <button
-        ref={btnRef}
-        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
-        className="size-7 inline-flex items-center justify-center rounded-md hover:bg-accent text-muted-foreground"
-      >
-        <MoreHorizontal className="size-4" />
-      </button>
-      {open && (
-        <div
-          ref={ref}
-          className="absolute right-0 top-full mt-1 z-[999] min-w-[180px] bg-popover border rounded-md shadow-lg py-1"
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-foreground">
+          <MoreHorizontal className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[180px] z-[9999]">
+        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(); }}>
+          Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onBlocklist(); }}>
+          Blocklist
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onAddToList(); }}>
+          Add to list
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onAssign(); }}>
+          Assign
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onExport(); }}>
+          Export
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onAddToAutomation(); }}>
+          Add to automation
+        </DropdownMenuItem>
+        <div className="my-1 border-t border-border/40" />
+        <DropdownMenuItem
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          className="text-destructive focus:text-destructive focus:bg-destructive/10"
         >
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent" onClick={() => { setOpen(false); onEdit(); }}>Edit</button>
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent" onClick={() => { setOpen(false); onBlocklist(); }}>Blocklist</button>
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent" onClick={() => { setOpen(false); onAddToList(); }}>Add to list</button>
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent" onClick={() => { setOpen(false); onAssign(); }}>Assign</button>
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent" onClick={() => { setOpen(false); onExport(); }}>Export</button>
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent" onClick={() => { setOpen(false); onAddToAutomation(); }}>Add to automation</button>
-          <hr className="my-1 border-t" />
-          <button className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent text-destructive" onClick={() => { setOpen(false); onDelete(); }}>Delete permanently</button>
-        </div>
-      )}
-    </div>
+          Delete permanently
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
