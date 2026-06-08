@@ -81,7 +81,10 @@ function DashboardInner() {
   });
   const navigate = useNavigate();
 
-  const firstName = user?.firstName ?? "there";
+  const email = user?.emailAddresses?.[0]?.emailAddress ?? "";
+  const nameFromEmail = email.split('@')[0];
+  const formattedName = nameFromEmail ? nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1) : "";
+  const firstName = user?.firstName || formattedName || "there";
   const today = format(new Date(), "EEEE, d MMMM yyyy");
 
   const stats = [

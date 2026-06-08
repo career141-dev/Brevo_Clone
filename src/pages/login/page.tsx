@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
-import { useClerk } from "@clerk/react";
+import { useState, type FormEvent, useEffect } from "react";
+import { useClerk, useAuth } from "@clerk/react";
 import { useNavigate, Link } from "react-router-dom";
+import { toast } from "sonner";
 
 const SOCIAL_PROOF_AVATARS = [
   "https://lh3.googleusercontent.com/aida-public/AB6AXuDJnM0S3JLXLUP_1UHojCrfH8cqKvpde-V87uSadPszzehY5ygY2Hr4pukpX09B6o8S3ec5zTsPia0qK0UO6TBPKowx_9QFLHKh7dBNHf66B-mOos-iSWXReciy6TtDmCc0ScDLaG2_HFNGm3VSARi7ONRBoVVTgWAHfHHKIWUbkcDagaoBDZfBB6PjljwU7S9_kEsOBwIaCZa8XwJltW3trezA-bCnr3ZbPXpmGQC0EJJ_ZS0r6-jeBYG_STq6Sn2SOgwInAkOro0S",
@@ -9,16 +10,21 @@ const SOCIAL_PROOF_AVATARS = [
 ];
 
 export default function LoginPage() {
+  const { isSignedIn } = useAuth();
   const clerk = useClerk();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (isSignedIn) {
+      navigate("/");
+    }
+  }, [isSignedIn, navigate]);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleOAuthSignIn = async (strategy: "oauth_google" | "oauth_apple") => {
-    setError("");
     try {
       await clerk.client.signIn.authenticateWithRedirect({
         strategy,
@@ -26,13 +32,21 @@ export default function LoginPage() {
         redirectUrlComplete: window.location.origin + "/",
       });
     } catch (err: any) {
-      setError(err?.errors?.[0]?.message || err?.message || "Sign in failed");
+      const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Sign in failed";
+      toast.error(errorMessage);
     }
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setError("");
+
+    if (!email.trim() || !email.includes("@")) {
+      return toast.error("Please enter a valid email address");
+    }
+    if (!password) {
+      return toast.error("Please enter your password");
+    }
+
     setLoading(true);
     try {
       const signInAttempt = await clerk.client.signIn.create({
@@ -41,12 +55,14 @@ export default function LoginPage() {
       });
       if (signInAttempt.status === "complete") {
         await clerk.setActive({ session: signInAttempt.createdSessionId });
+        toast.success("Welcome back! You have successfully logged in.");
         navigate("/");
       } else {
-        setError("Additional steps required. Check your email.");
+        toast.error("Additional steps required. Check your email.");
       }
     } catch (err: any) {
-      setError(err?.errors?.[0]?.message || err?.message || "Authentication failed");
+      const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Authentication failed";
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -114,12 +130,6 @@ export default function LoginPage() {
                 Log in to your account to continue
               </p>
             </div>
-
-            {error && (
-              <div className="mb-6 p-3 rounded-lg bg-error-container border border-error/20 text-on-error-container text-sm">
-                {error}
-              </div>
-            )}
 
             <div className="flex flex-col gap-3 mb-8">
               <button

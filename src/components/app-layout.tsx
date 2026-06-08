@@ -182,12 +182,16 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
     setExpandedParents((prev) => ({ ...prev, [label]: !prev[label] }));
   };
 
-  const displayName = user?.fullName ?? user?.firstName ?? "User";
   const email = user?.emailAddresses?.[0]?.emailAddress ?? "";
+  const nameFromEmail = email.split('@')[0];
+  const formattedName = nameFromEmail ? nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1) : "";
+  const displayName = user?.fullName || user?.firstName || formattedName || "User";
+  
   const initials = displayName !== "User"
     ? displayName
-        .split(" ")
+        .split(/[._-]/) // Split by common email separators or spaces if it was a real name
         .map((w) => w[0])
+        .filter(Boolean)
         .join("")
         .toUpperCase()
         .slice(0, 2)

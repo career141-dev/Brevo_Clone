@@ -1,20 +1,27 @@
-import { useState, type FormEvent } from "react";
-import { useClerk } from "@clerk/react";
+import { useState, type FormEvent, useEffect } from "react";
+import { useClerk, useAuth } from "@clerk/react";
 import { useNavigate, Link } from "react-router-dom";
 import zxcvbn from "zxcvbn";
+import { toast } from "sonner";
 
 const TEAM_IMAGE =
   "https://lh3.googleusercontent.com/aida-public/AB6AXuDmm3YMblp1Ns_cwXDgMdQuktUhbDYitGw7oU_UpWk3KocveTS25Y1I5r9Qhud_SeWCTtfls1s2jNgmUGXeeZi1C5lG6Hdb0LiNsuXzvlA1VQvpnNRlDSIV2NnQ0-hWiu1hazth7W8V3TeoswBBefgml9n-ftPsF_vV_fRt0MACIFt-3I2jSO4UAuYD1vOsJZDjknyln9a32uiKysKbJcwMuCR7OYd4LqO0rVAVJsexLdTA0R40nTjeeTA2vKnpzTJLQWUlnKJ3ThUT";
 
 export default function RegisterPage() {
+  const { isSignedIn } = useAuth();
   const clerk = useClerk();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (isSignedIn) {
+      navigate("/");
+    }
+  }, [isSignedIn, navigate]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [agreeTerms, setAgreeTerms] = useState(false);
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [pendingVerification, setPendingVerification] = useState(false);
   const [verificationCode, setVerificationCode] = useState("");
@@ -36,7 +43,6 @@ export default function RegisterPage() {
       : "border-error";
 
   const handleOAuthSignUp = async (strategy: "oauth_google" | "oauth_apple") => {
-    setError("");
     try {
       await clerk.client.signIn.authenticateWithRedirect({
         strategy,
@@ -44,44 +50,47 @@ export default function RegisterPage() {
         redirectUrlComplete: window.location.origin + "/",
       });
     } catch (err: any) {
-      setError(err?.errors?.[0]?.message || err?.message || "Sign up failed");
+      const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Sign up failed";
+      toast.error(errorMessage);
     }
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setError("");
 
+    if (!name.trim()) {
+      return toast.error("Please enter your full name");
+    }
+    if (!email.trim() || !email.includes("@")) {
+      return toast.error("Please enter a valid email address");
+    }
+    if (password.length < 8) {
+      return toast.error("Password must be at least 8 characters long");
+    }
+    if (!isPasswordStrong) {
+      return toast.error("Please choose a stronger password");
+    }
     if (!agreeTerms) {
-      setError("You must agree to the Terms of Use and Privacy Policy");
-      return;
+      return toast.error("You must agree to the Terms of Use and Privacy Policy");
     }
 
     setLoading(true);
     try {
-      const nameParts = name.trim().split(" ");
-      const firstName = nameParts[0] || "";
-      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
-
       const signUpAttempt = await clerk.client.signUp.create({
         emailAddress: email,
         password,
-        firstName,
-        lastName,
       });
       if (signUpAttempt.status === "complete") {
+        toast.success("Account created successfully!");
         navigate("/login");
       } else {
         await signUpAttempt.prepareEmailAddressVerification({ strategy: "email_code" });
         setPendingVerification(true);
-        setError("");
+        toast.success("Verification code sent to your email!");
       }
     } catch (err: any) {
-      console.error("Clerk sign-up error:", err);
-      if (err?.errors) {
-        console.error("Clerk errors details:", err.errors);
-      }
-      setError(err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Registration failed");
+      const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Registration failed";
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -89,19 +98,24 @@ export default function RegisterPage() {
 
   const handleVerify = async (e: FormEvent) => {
     e.preventDefault();
-    setError("");
+    if (verificationCode.length !== 6) {
+      return toast.error("Please enter a valid 6-digit verification code");
+    }
+
     setLoading(true);
     try {
       const signUpAttempt = await clerk.client.signUp.attemptEmailAddressVerification({
         code: verificationCode,
       });
       if (signUpAttempt.status === "complete") {
+        toast.success("Email verified successfully! Welcome to Career141.");
         navigate("/login");
       } else {
-        setError("Verification failed. Please try again.");
+        toast.error("Verification failed. Please try again.");
       }
     } catch (err: any) {
-      setError(err?.errors?.[0]?.message || err?.message || "Verification failed");
+      const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Verification failed";
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -118,12 +132,6 @@ export default function RegisterPage() {
               We sent a verification code to <strong className="text-primary">{email}</strong>
             </p>
           </div>
-
-          {error && (
-            <div className="mb-6 p-3 rounded-lg bg-error-container border border-error/20 text-on-error-container text-sm">
-              {error}
-            </div>
-          )}
 
           <form onSubmit={handleVerify} className="space-y-6">
             <input
@@ -202,12 +210,6 @@ export default function RegisterPage() {
               <h1 className="text-headline-lg text-primary mb-2" style={{ fontFamily: "Manrope" }}>Create your free account</h1>
               <p className="text-body-lg text-on-surface-variant" style={{ fontFamily: "Manrope" }}>Step into the future of mail management.</p>
             </div>
-
-            {error && (
-              <div className="mb-6 p-3 rounded-lg bg-error-container border border-error/20 text-on-error-container text-sm">
-                {error}
-              </div>
-            )}
 
             <form className="space-y-6" onSubmit={handleSubmit}>
               <div>
