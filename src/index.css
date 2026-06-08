@@ -50,6 +50,17 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
+  /* Material Design Mapping */
+  --color-on-primary: var(--primary-foreground);
+  --color-on-primary-container: var(--primary-foreground);
+  --color-primary-container: var(--primary);
+  --color-on-surface: var(--foreground);
+  --color-on-surface-variant: var(--muted-foreground);
+  --color-surface: var(--background);
+  --color-surface-container-lowest: var(--background);
+  --color-surface-container-low: var(--muted);
+  --color-surface-container: var(--card);
+
   --color-brevo-dark: #002e25;
   --color-brevo-green: #00523c;
   --color-brevo-mint: #00f59b;
