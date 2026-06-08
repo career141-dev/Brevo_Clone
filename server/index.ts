@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import express from "express"; // server restarted
 import cors from "cors";
 import { SendEmailCommand } from "@aws-sdk/client-ses";
@@ -1722,6 +1724,18 @@ app.get("/api/debug/events", async (_req, res) => {
     take: 50,
   });
   res.json(events);
+});
+
+// ── Static frontend (production) ────────────────────────────────────
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const distPath = path.resolve(__dirname, "../../dist");
+
+app.use(express.static(distPath));
+
+// All non-API routes return the React app so client-side routing works
+app.get(/^(?!\/api).*/, (_req, res) => {
+  res.sendFile(path.join(distPath, "index.html"));
 });
 
 // ── Start ───────────────────────────────────────────────────────────
