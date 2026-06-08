@@ -12,6 +12,20 @@ const PORT = process.env.PORT ?? 3001;
 app.use(cors());
 app.use(express.json());
 
+// ■■ Analytics Cache (5 min TTL) ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+const analyticsCache = new Map<string, { data: any; expiresAt: number }>();
+function getCached(key: string) {
+  const entry = analyticsCache.get(key);
+  if (!entry || Date.now() > entry.expiresAt) {
+    analyticsCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+function setCache(key: string, data: any, ttlMs = 5 * 60 * 1000) {
+  analyticsCache.set(key, { data, expiresAt: Date.now() + ttlMs });
+}
+
 // ── Contacts ────────────────────────────────────────────────────────
 
 app.get("/api/contacts", async (req, res) => {
@@ -819,6 +833,181 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
   }
 });
 
+// ── Analytics ───────────────────────────────────────────────────────
+
+app.get('/api/analytics/campaigns', async (req, res) => {
+  try {
+    const cached = getCached('analytics:campaigns');
+    if (cached) return res.json(cached);
+
+    const campaigns = await prisma.campaign.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const result = await Promise.all(
+      campaigns.map(async (campaign) => {
+        const events = await prisma.emailEvent.groupBy({
+          by: ['eventType'],
+          where: { campaignId: campaign.id },
+          _count: { eventType: true },
+        });
+
+        const c: Record<string, number> = {};
+        events.forEach(e => { c[e.eventType] = e._count.eventType; });
+
+        const recipients = campaign.totalRecipients || 0;
+        const delivered = c['delivered'] || 0;
+        const opened = c['opened'] || 0;
+        const clicked = c['clicked'] || 0;
+        const bounced = c['bounced'] || 0;
+        const unsub = c['unsubscribed'] || 0;
+        const complained = c['complained'] || 0;
+
+        const pct = (n: number, d: number) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
+
+        return {
+          id: campaign.id,
+          name: campaign.name,
+          subject: campaign.subject,
+          status: campaign.status,
+          fromEmail: campaign.fromEmail,
+          fromName: campaign.fromName,
+          sentAt: campaign.sentAt,
+          createdAt: campaign.createdAt,
+          stats: {
+            recipients,
+            delivered,
+            opened,
+            clicked,
+            bounced,
+            unsubscribed: unsub,
+            complained,
+            deliveryRate: pct(delivered, recipients),
+            openRate: pct(opened, delivered),
+            clickRate: pct(clicked, delivered),
+            bounceRate: pct(bounced, recipients),
+            unsubscribeRate: pct(unsub, delivered),
+            complaintRate: pct(complained, delivered),
+          },
+        };
+      })
+    );
+
+    setCache('analytics:campaigns', result);
+    res.json(result);
+  } catch (err: any) {
+    console.error("Analytics fetch error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/campaigns/:id', async (req, res) => {
+  try {
+    const campaignId = parseInt(req.params.id);
+    const cacheKey = `analytics:campaign:${campaignId}`;
+    const cached = getCached(cacheKey);
+    if (cached) return res.json(cached);
+
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+    const events = await prisma.emailEvent.groupBy({
+      by: ['eventType'],
+      where: { campaignId },
+      _count: { eventType: true },
+    });
+
+    const c: Record<string, number> = {};
+    events.forEach(e => { c[e.eventType] = e._count.eventType; });
+
+    const recipients = campaign.totalRecipients || 0;
+    const delivered = c['delivered'] || 0;
+    const opened = c['opened'] || 0;
+    const clicked = c['clicked'] || 0;
+    const bounced = c['bounced'] || 0;
+    const unsub = c['unsubscribed'] || 0;
+    const complained = c['complained'] || 0;
+
+    const pct = (n: number, d: number) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
+
+    const timeline = await prisma.emailEvent.findMany({
+      where: { campaignId },
+      orderBy: { timestamp: 'desc' },
+      take: 20,
+      select: { eventType: true, email: true, timestamp: true },
+    });
+
+    const result = {
+      campaign: {
+        id: campaign.id,
+        name: campaign.name,
+        subject: campaign.subject,
+        status: campaign.status,
+        fromEmail: campaign.fromEmail,
+        fromName: campaign.fromName,
+        sentAt: campaign.sentAt,
+        createdAt: campaign.createdAt,
+        audienceType: campaign.audienceType,
+        audienceId: campaign.audienceId,
+      },
+      stats: {
+        recipients,
+        delivered,
+        opened,
+        clicked,
+        bounced,
+        unsubscribed: unsub,
+        complained,
+        deliveryRate: pct(delivered, recipients),
+        openRate: pct(opened, delivered),
+        clickRate: pct(clicked, delivered),
+        clickToOpenRate: pct(clicked, opened),
+        bounceRate: pct(bounced, recipients),
+        unsubscribeRate: pct(unsub, delivered),
+        complaintRate: pct(complained, delivered),
+      },
+      timeline,
+    };
+
+    setCache(cacheKey, result, 5 * 60 * 1000);
+    res.json(result);
+  } catch (err: any) {
+    console.error("Analytics detail fetch error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/campaigns/:id/export', async (req, res) => {
+  try {
+    const campaignId = parseInt(req.params.id);
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) return res.status(404).json({ error: 'Not found' });
+
+    const events = await prisma.emailEvent.findMany({
+      where: { campaignId },
+      orderBy: { timestamp: 'asc' },
+    });
+
+    const filename = `campaign-${campaignId}-report.csv`;
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    res.write('Email,Event Type,Timestamp,URL\n');
+
+    events.forEach(e => {
+      res.write(`${e.email},${e.eventType},${e.timestamp.toISOString()},${e.url || ''}\n`);
+    });
+
+    res.end();
+  } catch (err: any) {
+    console.error("Analytics export error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Brevo Import ────────────────────────────────────────────────────
 
 const BREVO_BASE = "https://api.brevo.com/v3/contacts";
@@ -1332,6 +1521,19 @@ app.get("/api/track/open", async (req, res) => {
       email: string;
       campaignId: number | null;
     };
+
+    const ua = (req.headers["user-agent"] || "").toLowerCase();
+    const isBotOpen = (
+      ua.includes("cfnetwork") ||
+      ua.includes("darwin") ||
+      ua.includes("applemail") ||
+      ua.includes("mimestream") ||
+      (ua.includes("mozilla/5.0") && !ua.includes("chrome") &&
+       !ua.includes("firefox") && !ua.includes("safari/") &&
+       !ua.includes("android") && !ua.includes("iphone"))
+    );
+
+    if (isBotOpen) return;
 
     // De-duplicate: only log the first open per contact per campaign
     const already = await prisma.emailEvent.findFirst({

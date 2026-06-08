@@ -23,6 +23,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [pendingVerification, setPendingVerification] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
 
   const handleOAuthSignIn = async (strategy: "oauth_google" | "oauth_apple") => {
     try {
@@ -57,8 +59,44 @@ export default function LoginPage() {
         await clerk.setActive({ session: signInAttempt.createdSessionId });
         toast.success("Welcome back! You have successfully logged in.");
         navigate("/");
+      } else if (signInAttempt.status === "needs_first_factor") {
+        // Prepare email verification if required
+        const factor: any = signInAttempt.supportedFirstFactors.find(
+          (f: any) => f.strategy === "email_code"
+        );
+        if (factor) {
+          await clerk.client.signIn.prepareFirstFactor({
+            strategy: "email_code",
+            emailAddressId: factor.emailAddressId,
+          });
+          setPendingVerification(true);
+          toast.success("Verification code sent to your email!");
+        } else {
+          toast.error("Strategies available: " + JSON.stringify(signInAttempt.supportedFirstFactors.map((f:any)=>f.strategy)));
+        }
+      } else if (signInAttempt.status === "needs_second_factor") {
+        const factor: any = signInAttempt.supportedSecondFactors?.find(
+          (f: any) => f.strategy === "phone_code" || f.strategy === "email_code"
+        );
+        if (factor) {
+          if (factor.strategy === "phone_code") {
+            await clerk.client.signIn.prepareSecondFactor({
+              strategy: "phone_code",
+              phoneNumberId: factor.phoneNumberId,
+            });
+            toast.success("Verification code sent to your phone!");
+          } else {
+            await clerk.client.signIn.prepareSecondFactor({
+              strategy: factor.strategy,
+            });
+            toast.success("Verification code sent!");
+          }
+          setPendingVerification(true);
+        } else {
+          toast.error("Status: " + signInAttempt.status + " | 2FA Factors: " + JSON.stringify(signInAttempt.supportedSecondFactors?.map((f:any)=>f.strategy)));
+        }
       } else {
-        toast.error("Additional steps required. Check your email.");
+        toast.error("Status: " + signInAttempt.status + " | 1FA: " + JSON.stringify(signInAttempt.supportedFirstFactors?.map((f:any)=>f.strategy)) + " | 2FA: " + JSON.stringify(signInAttempt.supportedSecondFactors?.map((f:any)=>f.strategy)));
       }
     } catch (err: any) {
       const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Authentication failed";
@@ -67,6 +105,98 @@ export default function LoginPage() {
       setLoading(false);
     }
   };
+
+  const handleVerify = async (e: FormEvent) => {
+    e.preventDefault();
+    if (verificationCode.length !== 6) {
+      return toast.error("Please enter a valid 6-digit verification code");
+    }
+
+    setLoading(true);
+    try {
+      const status = clerk.client.signIn.status;
+      let signInAttempt;
+      
+      if (status === "needs_second_factor") {
+        signInAttempt = await clerk.client.signIn.attemptSecondFactor({
+          strategy: "phone_code",
+          code: verificationCode,
+        });
+        // Note: we assume phone_code here for second factor. If they used email_code, we can fallback.
+        // Actually, attemptSecondFactor accepts strategy. Let's just try phone_code then email_code if error, or just phone_code.
+      } else {
+        signInAttempt = await clerk.client.signIn.attemptFirstFactor({
+          strategy: "email_code",
+          code: verificationCode,
+        });
+      }
+
+      if (signInAttempt.status === "complete") {
+        await clerk.setActive({ session: signInAttempt.createdSessionId });
+        toast.success("Verification successful! Welcome back.");
+        navigate("/");
+      } else {
+        toast.error("Verification failed. Please try again.");
+      }
+    } catch (err: any) {
+      // Fallback for second factor if strategy was wrong
+      if (clerk.client.signIn.status === "needs_second_factor") {
+        try {
+          const retryAttempt = await clerk.client.signIn.attemptSecondFactor({
+            strategy: "email_code",
+            code: verificationCode,
+          });
+          if (retryAttempt.status === "complete") {
+            await clerk.setActive({ session: retryAttempt.createdSessionId });
+            toast.success("Verification successful! Welcome back.");
+            navigate("/");
+            return;
+          }
+        } catch (retryErr: any) {
+           // Ignore, throw original error
+        }
+      }
+      const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Verification failed";
+      toast.error(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (pendingVerification) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white px-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <span className="text-headline-lg font-bold text-primary" style={{ fontFamily: "Manrope" }}>CAREER141</span>
+            <h2 className="text-headline-md text-primary mt-6 mb-2" style={{ fontFamily: "Manrope" }}>Check your email</h2>
+            <p className="text-body-md text-on-surface-variant" style={{ fontFamily: "Manrope" }}>
+              We sent a verification code to <strong className="text-primary">{email}</strong>
+            </p>
+          </div>
+
+          <form onSubmit={handleVerify} className="space-y-6">
+            <input
+              type="text"
+              value={verificationCode}
+              onChange={(e) => setVerificationCode(e.target.value)}
+              placeholder="Enter verification code"
+              required
+              className="w-full px-4 py-3 rounded-lg border border-outline-variant focus:border-primary focus:ring-4 focus:ring-primary/5 outline-none transition-all text-body-lg text-center tracking-[0.5em] placeholder:tracking-normal"
+              maxLength={6}
+            />
+            <button
+              type="submit"
+              disabled={loading || verificationCode.length === 0}
+              className="w-full bg-primary text-on-primary text-label-md font-semibold py-4 rounded-full hover:shadow-lg active:scale-95 transition-all duration-200 disabled:opacity-60"
+            >
+              {loading ? "Verifying..." : "Verify email"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col">

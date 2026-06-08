@@ -155,6 +155,10 @@ export const api = {
         body: JSON.stringify({ apiKey }),
       }),
   },
+  analytics: {
+    campaigns: () => request<any[]>("/analytics/campaigns"),
+    campaignDetail: (id: number) => request<any>(`/analytics/campaigns/${id}`),
+  },
 };
 
 export async function downloadExport(contactIds: number[], format: "csv" | "json") {

@@ -10,6 +10,7 @@ import ContactsPage from "./pages/contacts/page.tsx";
 import CampaignsPage from "./pages/campaigns/page.tsx";
 import AutomationsPage from "./pages/automations/page.tsx";
 import AnalyticsPage from "./pages/analytics/page.tsx";
+import AnalyticsDetailPage from "./pages/analytics/detail.tsx";
 import SettingsPage from "./pages/settings/page.tsx";
 import CrmListsPage from "./pages/crm/lists/page.tsx";
 import CrmSegmentsPage from "./pages/crm/segments/page.tsx";
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/campaigns" element={<CampaignsPage />} />
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/analytics/:id" element={<AnalyticsDetailPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/transactional" element={<ComingSoonPage title="Transactional" />} />
             <Route path="/conversations" element={<ComingSoonPage title="Conversations" />} />
