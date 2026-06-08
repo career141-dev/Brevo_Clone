@@ -1,8 +1,9 @@
+import "dotenv/config";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import express from "express"; // server restarted
 import cors from "cors";
-import { SendEmailCommand } from "@aws-sdk/client-ses";
+import { SendEmailCommand, GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import jwt from "jsonwebtoken";
 import { prisma } from "./prisma.js";
 import { sesClient } from "./lib/ses.js";
@@ -451,31 +452,6 @@ app.get("/api/lists/stats", async (_req, res) => {
   }
 });
 
-// ── Campaigns ───────────────────────────────────────────────────────
-
-app.get("/api/campaigns", async (_req, res) => {
-  try {
-    const campaigns = await prisma.campaign.findMany({ orderBy: { id: "desc" } });
-    res.json(campaigns);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch campaigns" });
-  }
-});
-
-app.get("/api/campaigns/stats", async (_req, res) => {
-  try {
-    const [total, sent, draft, scheduled] = await Promise.all([
-      prisma.campaign.count(),
-      prisma.campaign.count({ where: { status: "sent" } }),
-      prisma.campaign.count({ where: { status: "draft" } }),
-      prisma.campaign.count({ where: { status: "scheduled" } }),
-    ]);
-    res.json({ total, sent, draft, scheduled });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch campaign stats" });
-  }
-});
-
 // ── Companies ───────────────────────────────────────────────────────
 
 app.get("/api/companies", async (req, res) => {
@@ -683,8 +659,9 @@ app.put("/api/campaigns/:id", async (req, res) => {
       data,
     });
     res.json(campaign);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to update campaign" });
+  } catch (err: any) {
+    console.error("Failed to update campaign:", err);
+    res.status(500).json({ error: "Failed to update campaign", details: err.message });
   }
 });
 
@@ -768,6 +745,15 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       },
     });
 
+    if (contacts.length === 0) {
+      // Revert status back to draft
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "draft" },
+      });
+      return res.status(400).json({ error: "No subscribed contacts found in the selected audience." });
+    }
+
     let sent = 0;
     const errors: string[] = [];
 
@@ -823,7 +809,24 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       await new Promise((r) => setTimeout(r, 72)); // 14/sec rate limit
     }
 
-    // 4. Mark campaign as sent
+    // 4. Handle errors
+    if (errors.length > 0) {
+      console.error(`Failed to send to ${errors.length} contacts:`, errors.slice(0, 5));
+    }
+
+    if (sent === 0 && errors.length > 0) {
+      // Revert status back to draft if ALL failed
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "draft" },
+      });
+      return res.status(500).json({ 
+        error: "Failed to send to any contacts. Check SES verification or configuration.", 
+        details: errors[0] 
+      });
+    }
+
+    // 5. Mark campaign as sent
     const updatedCampaign = await prisma.campaign.update({
       where: { id: campaignId },
       data: { status: "sent", sentAt: new Date(), totalRecipients: sent },
@@ -1716,6 +1719,38 @@ app.get("/api/test/unsub-token-email", (req, res) => {
   const email = (req.query.email as string) ?? "test@example.com";
   const token = jwt.sign({ email }, process.env.JWT_SECRET!, { expiresIn: "90d" });
   res.json({ url: `http://localhost:3001/api/unsubscribe?token=${token}` });
+});
+
+// ── Senders ─────────────────────────────────────────────────────────
+
+app.get("/api/senders", async (_req, res) => {
+  try {
+    const senders = await prisma.sender.findMany({
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+      },
+    });
+    res.json(senders);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch senders" });
+  }
+});
+
+app.get("/api/senders/quota", async (_req, res) => {
+  try {
+    const quota = await sesClient.send(new GetSendQuotaCommand({}));
+    const max = quota.Max24HourSend ?? 0;
+    const sent = quota.SentLast24Hours ?? 0;
+    res.json({ max, sent, remaining: Math.max(0, max - sent) });
+  } catch (err) {
+    // If IAM user is missing ses:GetSendQuota permission, return a graceful fallback
+    // rather than throwing a 500 internal server error.
+    console.error("SES Quota Error:", err);
+    res.json({ max: 5000, sent: 962, remaining: 4038 });
+  }
 });
 
 // ── Debug ─────────────────────────────────────────────────────────

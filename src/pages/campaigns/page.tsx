@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
+import { useNavigate } from "react-router-dom";
 import {
   Mail,
   Plus,
@@ -63,10 +64,18 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command.tsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select.tsx";
 import { toast } from "sonner";
 
 export default function CampaignsPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   // Wizard Drawer State
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -76,6 +85,7 @@ export default function CampaignsPage() {
   // Step 1: Details
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
+  const [previewText, setPreviewText] = useState("");
   const [fromName, setFromName] = useState("");
   const [fromEmail, setFromEmail] = useState("");
 
@@ -112,17 +122,29 @@ export default function CampaignsPage() {
     enabled: wizardOpen && step === 2,
   });
 
+  const { data: senders } = useQuery({
+    queryKey: ["senders-for-campaign"],
+    queryFn: () => api.senders.list(),
+    enabled: wizardOpen && step === 1,
+  });
+
   const { data: templates } = useQuery({
     queryKey: ["templates-for-campaign"],
     queryFn: () => api.templates.list(),
     enabled: wizardOpen && step === 3,
   });
 
-  // Contact Stats Query for Step 4
+  // Contact Stats Query for Step 2 & 5
   const { data: audienceStats, isLoading: isLoadingAudienceStats } = useQuery({
     queryKey: ["audience-stats", audienceId],
     queryFn: () => api.contacts.stats({ listId: Number(audienceId) }),
-    enabled: wizardOpen && step === 4 && !!audienceId,
+    enabled: wizardOpen && !!audienceId,
+  });
+
+  const { data: quotaData, isLoading: isLoadingQuota } = useQuery({
+    queryKey: ["ses-quota"],
+    queryFn: () => api.senders.quota(),
+    enabled: wizardOpen && step === 2,
   });
 
   const lists = listsData?.data ?? [];
@@ -199,6 +221,7 @@ export default function CampaignsPage() {
     setCampaignId(null);
     setName("");
     setSubject("");
+    setPreviewText("");
     setFromName("");
     setFromEmail("");
     setAudienceId("");
@@ -217,6 +240,7 @@ export default function CampaignsPage() {
     setCampaignId(campaign.id);
     setName(campaign.name || "");
     setSubject(campaign.subject || "");
+    setPreviewText(campaign.previewText || "");
     setFromName(campaign.fromName || "");
     setFromEmail(campaign.fromEmail || "");
     setAudienceId(campaign.audienceId ? String(campaign.audienceId) : "");
@@ -226,14 +250,49 @@ export default function CampaignsPage() {
   };
 
   const handleNextStep1 = () => {
-    if (!name || !subject || !fromName || !fromEmail) {
-      toast.error("Please fill in all fields.");
+    if (!fromName || !fromEmail) {
+      toast.error("Please provide a sender name and email.");
+      return;
+    }
+    if (campaignId) {
+      updateCampaignMutation.mutate(
+        { id: campaignId, data: { fromName, fromEmail } },
+        { onSuccess: () => setStep(2) }
+      );
+    } else {
+      setStep(2);
+    }
+  };
+
+  const handleNextStep2 = () => {
+    if (!audienceId) {
+      toast.error("Please select a target audience list.");
+      return;
+    }
+    if (campaignId) {
+      updateCampaignMutation.mutate(
+        { id: campaignId, data: { audienceType: "list", audienceId: Number(audienceId) } },
+        { onSuccess: () => setStep(3) }
+      );
+    } else {
+      setStep(3);
+    }
+  };
+
+  const handleNextStep3 = () => {
+    if (!subject) {
+      toast.error("Subject is missing. Please add a subject line before sending.");
+      return;
+    }
+    if (!name) {
+      toast.error("Campaign Name is missing.");
       return;
     }
 
     const payload = {
       name,
       subject,
+      previewText,
       fromName,
       fromEmail,
       audienceType: "list",
@@ -244,38 +303,15 @@ export default function CampaignsPage() {
     if (campaignId) {
       updateCampaignMutation.mutate(
         { id: campaignId, data: payload },
-        {
-          onSuccess: () => {
-            setStep(2);
-          },
-        }
+        { onSuccess: () => setStep(4) }
       );
     } else {
-      createCampaignMutation.mutate(payload);
-    }
-  };
-
-  const handleNextStep2 = () => {
-    if (!audienceId) {
-      toast.error("Please select a target audience list.");
-      return;
-    }
-
-    if (campaignId) {
-      updateCampaignMutation.mutate(
-        {
-          id: campaignId,
-          data: {
-            audienceType: "list",
-            audienceId: Number(audienceId),
-          },
-        },
-        {
-          onSuccess: () => {
-            setStep(3);
-          },
+      createCampaignMutation.mutate(payload, {
+        onSuccess: (data) => {
+          setCampaignId(data.id);
+          setStep(4);
         }
-      );
+      });
     }
   };
 
@@ -298,18 +334,19 @@ export default function CampaignsPage() {
     }
   };
 
-  const handleNextStep3 = () => {
+  const handleNextStep4 = () => {
     if (!selectedTemplateHtml) {
       toast.error("Please select an email template.");
       return;
     }
-    setStep(4);
+    setStep(5);
   };
 
   const handleNext = () => {
     if (step === 1) handleNextStep1();
     else if (step === 2) handleNextStep2();
     else if (step === 3) handleNextStep3();
+    else if (step === 4) handleNextStep4();
   };
 
   const handleSendCampaign = () => {
@@ -486,7 +523,7 @@ export default function CampaignsPage() {
             <SheetTitle className="text-xl font-bold flex items-center justify-between">
               <span>{campaignId ? "Edit Campaign" : "New Campaign"}</span>
               <span className="text-xs font-semibold px-2.5 py-1 bg-primary/10 text-primary rounded-full">
-                Step {step} of 4
+                Step {step} of 5
               </span>
             </SheetTitle>
           </SheetHeader>
@@ -495,54 +532,58 @@ export default function CampaignsPage() {
           <div className="w-full h-1 bg-muted">
             <div
               className="h-full bg-emerald-500 transition-all duration-300"
-              style={{ width: `${(step / 4) * 100}%` }}
+              style={{ width: `${(step / 5) * 100}%` }}
             />
           </div>
 
           <div className="flex-1 p-6 space-y-6">
-            {/* Step 1: Details */}
+            {/* Step 1: Sender */}
             {step === 1 && (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-lg font-semibold">Campaign Details</h3>
-                  <p className="text-xs text-muted-foreground">Define the campaign header attributes.</p>
+                  <h3 className="text-lg font-semibold">Who is sending this email campaign?</h3>
+                  <p className="text-xs text-muted-foreground">To preselect your default sender as the campaign sender, please verify it in your sender settings.</p>
                 </div>
                 <div className="space-y-3">
                   <div className="space-y-1">
-                    <Label htmlFor="camp-name">Campaign Name</Label>
-                    <Input
-                      id="camp-name"
-                      placeholder="e.g. June Monthly Newsletter"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="camp-subject">Email Subject Line</Label>
-                    <Input
-                      id="camp-subject"
-                      placeholder="e.g. Exclusive Deals Just For You!"
-                      value={subject}
-                      onChange={(e) => setSubject(e.target.value)}
-                    />
+                    <Label>Email address</Label>
+                    <Select
+                      value={fromEmail ? `${fromName}|${fromEmail}` : ""}
+                      onValueChange={(v) => {
+                        const [n, e] = v.split("|");
+                        setFromName(n);
+                        setFromEmail(e);
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select a sender..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {senders?.map((s) => (
+                          <SelectItem key={s.id} value={`${s.name}|${s.email}`}>
+                            {s.name} &lt;{s.email}&gt;
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <Label htmlFor="camp-from-name">From Name</Label>
+                      <Label htmlFor="camp-from-name">Name</Label>
                       <Input
                         id="camp-from-name"
-                        placeholder="e.g. Jane Doe"
+                        placeholder="Who is sending the campaign?"
                         value={fromName}
                         onChange={(e) => setFromName(e.target.value)}
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label htmlFor="camp-from-email">From Email</Label>
+                      <Label htmlFor="camp-from-email">Email (Read Only)</Label>
                       <Input
                         id="camp-from-email"
-                        placeholder="e.g. hello@company.com"
                         value={fromEmail}
-                        onChange={(e) => setFromEmail(e.target.value)}
+                        readOnly
+                        className="bg-muted"
                       />
                     </div>
                   </div>
@@ -550,16 +591,16 @@ export default function CampaignsPage() {
               </div>
             )}
 
-            {/* Step 2: Audience */}
+            {/* Step 2: Recipients */}
             {step === 2 && (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-lg font-semibold">Select Audience</h3>
-                  <p className="text-xs text-muted-foreground">Select which contact list you want to target.</p>
+                  <h3 className="text-lg font-semibold">Recipients</h3>
+                  <p className="text-xs text-muted-foreground">The people who receive your campaign</p>
                 </div>
                 <div className="space-y-3">
                   <div className="space-y-1">
-                    <Label>Contact List</Label>
+                    <Label>Send to</Label>
                     <Popover open={listPopoverOpen} onOpenChange={setListPopoverOpen}>
                       <PopoverTrigger asChild>
                         <Button
@@ -569,8 +610,8 @@ export default function CampaignsPage() {
                           className="w-full justify-between font-normal h-10"
                         >
                           {audienceId
-                            ? lists.find((l: any) => String(l.id) === audienceId)?.name ?? "Select a list..."
-                            : "Search and select a list..."}
+                            ? lists.find((l: any) => String(l.id) === audienceId)?.name ?? "Select list(s), segment(s) or individual contacts"
+                            : "Select list(s), segment(s) or individual contacts"}
                           <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
                         </Button>
                       </PopoverTrigger>
@@ -608,16 +649,126 @@ export default function CampaignsPage() {
                       </PopoverContent>
                     </Popover>
                   </div>
+                  
+                  <div className="flex items-center space-x-2 pt-2">
+                    <div className="h-4 w-8 bg-muted rounded-full relative">
+                       <div className="size-4 bg-gray-400 rounded-full absolute left-0" />
+                    </div>
+                    <Label className="font-normal text-sm">Don’t send to unengaged contacts</Label>
+                  </div>
+                  
+                  <div className="pt-2 text-sm font-semibold text-emerald-600 cursor-pointer">
+                    Advanced options
+                  </div>
+                  
+                  <div className="bg-muted/30 p-4 rounded-lg mt-4 text-xs text-muted-foreground">
+                     <p>
+                        <span className="font-bold text-black dark:text-white">
+                           {isLoadingAudienceStats ? <Loader2 className="inline size-3 animate-spin mr-1" /> : audienceStats?.subscribed ?? 0}
+                        </span> recipients
+                     </p>
+                     <p className="mt-1">
+                        <span className="font-bold text-black dark:text-white">
+                           {isLoadingQuota ? <Loader2 className="inline size-3 animate-spin mr-1" /> : (quotaData?.remaining ?? 0).toLocaleString()}
+                        </span> remaining emails
+                     </p>
+                     <p className="mt-1">Send to as many recipients as you wish, within your plan limits.</p>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Step 3: Template Selection */}
+            {/* Step 3: Subject */}
             {step === 3 && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="space-y-6">
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-lg font-semibold">Subject</h3>
+                      <p className="text-xs text-muted-foreground">Add a subject line for this campaign.</p>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <Label htmlFor="camp-subject">Subject line*</Label>
+                        <Input
+                          id="camp-subject"
+                          value={subject}
+                          onChange={(e) => setSubject(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="camp-preview">Preview text</Label>
+                        <Input
+                          id="camp-preview"
+                          value={previewText}
+                          onChange={(e) => setPreviewText(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4 pt-4 border-t border-border/60">
+                    <div>
+                      <h3 className="text-lg font-semibold">Internal Campaign Name</h3>
+                      <p className="text-xs text-muted-foreground">Name your campaign for internal reference.</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="camp-name">Campaign Name*</Label>
+                      <Input
+                        id="camp-name"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="bg-muted/10 border border-border rounded-xl p-4 flex flex-col justify-center">
+                  <div className="bg-white dark:bg-gray-900 border border-border shadow-sm rounded-lg overflow-hidden max-w-sm w-full mx-auto">
+                     <div className="bg-gray-100 dark:bg-gray-800 px-4 py-2 border-b border-border flex justify-between items-center text-xs text-muted-foreground">
+                        <span>9:47</span>
+                        <span className="font-semibold">Inbox</span>
+                        <span>100%</span>
+                     </div>
+                     <div className="p-4 flex gap-3 border-b border-border">
+                        <div className="size-10 bg-indigo-500 rounded-full flex items-center justify-center text-white font-bold shrink-0">
+                           {fromName ? fromName.charAt(0).toUpperCase() : "S"}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                           <div className="flex justify-between items-baseline mb-0.5">
+                              <span className="font-bold text-sm truncate">{fromName || "Sender"}</span>
+                              <span className="text-[10px] text-muted-foreground shrink-0 ml-2">17:45</span>
+                           </div>
+                           <div className="font-semibold text-sm truncate">{subject || "Message subject..."}</div>
+                           <div className="text-sm text-muted-foreground truncate">{previewText || "Your preview text"}</div>
+                        </div>
+                     </div>
+
+                  </div>
+                  <p className="text-[10px] text-center text-muted-foreground mt-4">Actual email preview may vary depending on the email client.</p>
+                </div>
+              </div>
+            )}
+
+            {/* Step 4: Design */}
+            {step === 4 && (
               <div className="space-y-4">
-                <div>
-                  <h3 className="text-lg font-semibold">Pick Email Template</h3>
-                  <p className="text-xs text-muted-foreground">Select a saved template. A copy of this HTML will be saved with the campaign.</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">Design</h3>
+                    <p className="text-xs text-muted-foreground">Create your email content.</p>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      setWizardOpen(false);
+                      navigate("/crm/templates");
+                    }}
+                  >
+                    <Plus className="size-4 mr-2" />
+                    Add Template
+                  </Button>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-1">
@@ -668,8 +819,8 @@ export default function CampaignsPage() {
               </div>
             )}
 
-            {/* Step 4: Review & Send */}
-            {step === 4 && (
+            {/* Step 5: Review & Send */}
+            {step === 5 && (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-lg font-semibold">Review & Send</h3>
@@ -731,7 +882,7 @@ export default function CampaignsPage() {
               <div />
             )}
 
-            {step < 4 ? (
+            {step < 5 ? (
               <Button onClick={handleNext} className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm">
                 {createCampaignMutation.isPending || updateCampaignMutation.isPending ? (
                   <>

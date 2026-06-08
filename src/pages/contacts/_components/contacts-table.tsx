@@ -128,6 +128,28 @@ function RowActionsDropdown({
   );
 }
 
+function StatusBadge({ status, blocked }: { status?: string; blocked?: boolean }) {
+  if (blocked || status === "bounced" || status === "complained") {
+    return (
+      <Badge variant="outline" className="bg-red-100 text-red-700 hover:bg-red-100 dark:bg-red-500/15 dark:text-red-400 border-red-200 dark:border-red-500/30 text-[10px] px-1.5 py-0 uppercase tracking-wider font-bold">
+        {blocked ? "Blocklisted" : status || "Blocklisted"}
+      </Badge>
+    );
+  }
+  if (status === "unsubscribed") {
+    return (
+      <Badge variant="outline" className="bg-gray-100 text-gray-700 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 border-gray-200 dark:border-gray-700 text-[10px] px-1.5 py-0 uppercase tracking-wider font-bold">
+        Unsubscribed
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline" className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/30 text-[10px] px-1.5 py-0 uppercase tracking-wider font-bold">
+      Subscribed
+    </Badge>
+  );
+}
+
 function ChannelBadges({ contact }: { contact: Contact }) {
   const channels: { label: string; active: boolean }[] = [
     { label: "Email", active: !!contact.email },
@@ -211,6 +233,7 @@ export default function ContactsTable({
                 />
               </TableHead>
               <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 h-9 px-3">Email</TableHead>
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 h-9 px-3">Status</TableHead>
               <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 h-9 px-3">Channels</TableHead>
               <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 h-9 px-3 hidden sm:table-cell">Phone</TableHead>
               <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 h-9 px-3 hidden md:table-cell">Created</TableHead>
@@ -224,7 +247,7 @@ export default function ContactsTable({
               Array.from({ length: 8 }).map((_, i) => (
                 <TableRow key={i} className="border-b border-border/40">
                   <TableCell className="px-3 py-2.5"><Skeleton className="size-4" /></TableCell>
-                  {Array.from({ length: 7 }).map((_, j) => (
+                  {Array.from({ length: 8 }).map((_, j) => (
                     <TableCell key={j} className="px-3 py-2.5">
                       <Skeleton className="h-3.5 w-full max-w-[100px]" />
                     </TableCell>
@@ -233,7 +256,7 @@ export default function ContactsTable({
               ))
             ) : !contacts || contacts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-60 text-center px-3">
+                <TableCell colSpan={9} className="h-60 text-center px-3">
                   <div className="flex flex-col items-center justify-center">
                     <Users className="size-7 text-muted-foreground/30 mb-2" />
                     <p className="text-sm font-medium text-muted-foreground/70">
@@ -266,12 +289,10 @@ export default function ContactsTable({
                   <TableCell className="px-3 py-2.5 text-sm truncate max-w-[200px]">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate">{c.email || "—"}</span>
-                      {c.blocked && (
-                        <Badge variant="destructive" className="text-[9px] px-1 py-0 leading-none shrink-0">
-                          Blocked
-                        </Badge>
-                      )}
                     </div>
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5">
+                    <StatusBadge status={c.status} blocked={c.blocked} />
                   </TableCell>
                   <TableCell className="px-3 py-2.5">
                     <ChannelBadges contact={c} />

@@ -111,6 +111,7 @@ model Campaign {
   subject        String
   fromName       String
   fromEmail      String
+  previewText    String?
   templateHtml   String         @db.LongText
   audienceType   AudienceType
   audienceId     Int
@@ -204,4 +205,13 @@ model Template {
   updatedAt    DateTime @updatedAt
 
   @@map("templates")
+}
+
+model Sender {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  createdAt DateTime @default(now())
+
+  @@map("senders")
 }

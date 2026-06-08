@@ -159,6 +159,10 @@ export const api = {
     campaigns: () => request<any[]>("/analytics/campaigns"),
     campaignDetail: (id: number) => request<any>(`/analytics/campaigns/${id}`),
   },
+  senders: {
+    list: () => request<{ id: number; name: string; email: string }[]>("/senders"),
+    quota: () => request<{ max: number; sent: number; remaining: number }>("/senders/quota"),
+  },
 };
 
 export async function downloadExport(contactIds: number[], format: "csv" | "json") {
