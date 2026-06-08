@@ -26,6 +26,11 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
     if ("blocked" in r) data.blocked = Boolean(r.blocked);
 
+    // Normalize email to lowercase for consistent webhook matching
+    if (data.email && typeof data.email === "string") {
+      data.email = data.email.toLowerCase().trim();
+    }
+
     const contact = await prisma.contact.update({ where: { id }, data });
     res.json(contact);
   } catch (err: any) {

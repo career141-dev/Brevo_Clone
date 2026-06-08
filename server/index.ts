@@ -141,7 +141,7 @@ app.post("/api/contacts", async (req, res) => {
     const r = req.body;
     const trim = (v: any) => (typeof v === "string" ? v.trim() || null : null);
 
-    const email = trim(r.email);
+    const email = trim(r.email)?.toLowerCase() ?? null;
     if (!email) {
       return res.status(400).json({ error: "Email is required" });
     }
@@ -791,6 +791,14 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
           },
           Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
         }));
+        // Log "sent" event with campaignId
+        await prisma.emailEvent.create({
+          data: {
+            email: contact.email.toLowerCase(),
+            campaignId,
+            eventType: "sent",
+          },
+        });
         sent++;
       } catch (e: any) {
         errors.push(`${contact.email}: ${e.message}`);
@@ -1270,7 +1278,7 @@ app.post(
       const type = msg.notificationType;
 
       if (type === "Bounce" && msg.bounce.bounceType === "Permanent") {
-        const email = msg.bounce.bouncedRecipients[0].emailAddress;
+        const email = msg.bounce.bouncedRecipients[0].emailAddress.toLowerCase();
         await prisma.contact.updateMany({
           where: { email },
           data: { status: "bounced" },
@@ -1281,7 +1289,7 @@ app.post(
       }
 
       if (type === "Complaint") {
-        const email = msg.complaint.complainedRecipients[0].emailAddress;
+        const email = msg.complaint.complainedRecipients[0].emailAddress.toLowerCase();
         await prisma.contact.updateMany({
           where: { email },
           data: { status: "unsubscribed" },
@@ -1292,7 +1300,7 @@ app.post(
       }
 
       if (type === "Delivery") {
-        const email = msg.delivery.recipients[0];
+        const email = msg.delivery.recipients[0].toLowerCase();
         await prisma.emailEvent.create({
           data: { email, eventType: "delivered" },
         });
@@ -1380,12 +1388,12 @@ app.get("/api/unsubscribe", async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET) as { email: string };
 
     await prisma.contact.updateMany({
-      where: { email: decoded.email },
+      where: { email: decoded.email.toLowerCase() },
       data: { status: "unsubscribed" },
     });
 
     await prisma.emailEvent.create({
-      data: { email: decoded.email, eventType: "unsubscribed" },
+      data: { email: decoded.email.toLowerCase(), eventType: "unsubscribed" },
     });
 
     return res.status(200).send(`
@@ -1450,7 +1458,7 @@ app.post("/api/email/send", async (req, res) => {
       .replace(/{{unsubscribe_url}}/g, unsubUrl);
 
     // 2. Inject open-pixel + rewrite links for tracking
-    html = injectTracking(html, contact.email, campaignId ?? null);
+    html = injectTracking(html, contact.email.toLowerCase(), campaignId ?? null);
 
     try {
       await sesClient.send(
@@ -1465,6 +1473,14 @@ app.post("/api/email/send", async (req, res) => {
           Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
         }),
       );
+      // Log "sent" event with campaignId for /api/email/send route
+      await prisma.emailEvent.create({
+        data: {
+          email: contact.email.toLowerCase(),
+          campaignId: campaignId ?? undefined,
+          eventType: "sent",
+        },
+      });
       sent++;
     } catch (e: any) {
       errors.push(contact.email + ": " + e.message);
