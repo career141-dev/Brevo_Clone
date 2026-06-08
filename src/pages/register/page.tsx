@@ -59,9 +59,15 @@ export default function RegisterPage() {
 
     setLoading(true);
     try {
+      const nameParts = name.trim().split(" ");
+      const firstName = nameParts[0] || "";
+      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+
       const signUpAttempt = await clerk.client.signUp.create({
         emailAddress: email,
         password,
+        firstName,
+        lastName,
       });
       if (signUpAttempt.status === "complete") {
         navigate("/login");
@@ -71,7 +77,11 @@ export default function RegisterPage() {
         setError("");
       }
     } catch (err: any) {
-      setError(err?.errors?.[0]?.message || err?.message || "Registration failed");
+      console.error("Clerk sign-up error:", err);
+      if (err?.errors) {
+        console.error("Clerk errors details:", err.errors);
+      }
+      setError(err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Registration failed");
     } finally {
       setLoading(false);
     }
