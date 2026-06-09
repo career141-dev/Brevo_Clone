@@ -17,6 +17,7 @@ import CrmSegmentsPage from "./pages/crm/segments/page.tsx";
 import CrmCompaniesPage from "./pages/crm/companies/page.tsx";
 import CrmTemplatesPage from "./pages/crm/templates/page.tsx";
 import { ComingSoonPage } from "./pages/_components/coming-soon.tsx";
+import GetStartedPage from "./pages/get-started/page.tsx";
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
 
           <Route element={<AppLayout />}>
             <Route path="/" element={<DashboardPage />} />
+            <Route path="/get-started" element={<GetStartedPage />} />
             <Route path="/contacts" element={<ContactsPage />} />
             <Route path="/campaigns" element={<CampaignsPage />} />
             <Route path="/automations" element={<AutomationsPage />} />

@@ -21,6 +21,7 @@ import {
   Filter,
   Building2,
   FileText,
+  Rocket,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils.ts";
@@ -96,11 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     items: [
       { to: "/", label: "Home", icon: LayoutDashboard, exact: true },
-    ],
-  },
-  {
-    label: "MARKETING",
-    items: [
+      { to: "/get-started", label: "Get Started", icon: Rocket },
       { to: "/automations", label: "Automations", icon: Zap },
     ],
   },
@@ -137,7 +134,7 @@ function NavItem({
         cn(
           "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer group",
           isActive
-            ? "bg-sidebar-accent text-sidebar-primary font-semibold"
+            ? "bg-sidebar-accent text-sidebar-accent-foreground font-semibold"
             : "text-sidebar-foreground/65 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
         )
       }
@@ -147,7 +144,7 @@ function NavItem({
           <Icon
             className={cn(
               "size-4 shrink-0 transition-colors",
-              isActive ? "text-sidebar-primary" : "text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80"
+              isActive ? "text-sidebar-accent-foreground" : "text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80"
             )}
           />
           <span>{label}</span>
@@ -186,15 +183,15 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
   const nameFromEmail = email.split('@')[0];
   const formattedName = nameFromEmail ? nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1) : "";
   const displayName = user?.fullName || user?.firstName || formattedName || "User";
-  
+
   const initials = displayName !== "User"
     ? displayName
-        .split(/[._-]/) // Split by common email separators or spaces if it was a real name
-        .map((w) => w[0])
-        .filter(Boolean)
-        .join("")
-        .toUpperCase()
-        .slice(0, 2)
+      .split(/[._-]/) // Split by common email separators or spaces if it was a real name
+      .map((w) => w[0])
+      .filter(Boolean)
+      .join("")
+      .toUpperCase()
+      .slice(0, 2)
     : "U";
 
   const handleSignOut = async () => {
@@ -207,12 +204,12 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
       {/* Brand header */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-sidebar-border">
         <div className="flex items-center gap-2">
-          <div className="size-7 rounded bg-primary flex items-center justify-center">
-            <Mail className="size-4 text-white" />
-          </div>
-          <span className="text-sm font-bold text-sidebar-foreground tracking-tight">
-            Career141
-          </span>
+          <img
+            src="/logo.svg"
+            alt="Career141"
+            className="h-10 w-auto object-contain"
+            style={{ filter: "brightness(0) saturate(100%) invert(39%) sepia(97%) saturate(558%) hue-rotate(96deg) brightness(94%) contrast(96%)" }}
+          />
         </div>
         {onClose && (
           <Button
@@ -301,7 +298,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
                       className={cn(
                         "flex items-center gap-3 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ml-7",
                         active
-                          ? "bg-sidebar-accent text-sidebar-primary font-semibold"
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground font-semibold"
                           : "text-sidebar-foreground/65 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
                       )}
                     >
@@ -441,10 +438,12 @@ export default function AppLayout() {
             <Menu className="size-4" />
           </Button>
           <div className="flex items-center gap-2">
-            <div className="size-6 rounded bg-primary flex items-center justify-center">
-              <Mail className="size-3.5 text-white" />
-            </div>
-            <span className="text-sm font-bold">Career141</span>
+            <img
+              src="/logo.svg"
+              alt="Career141"
+              className="h-9 w-auto object-contain"
+              style={{ filter: "brightness(0) saturate(100%) invert(39%) sepia(97%) saturate(558%) hue-rotate(96deg) brightness(94%) contrast(96%)" }}
+            />
           </div>
           <div className="ml-auto">
             <ThemeToggle className="size-8" />

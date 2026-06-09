@@ -472,23 +472,21 @@ export default function CampaignsPage() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-40">
                           {campaign.status === "draft" && (
-                            <>
-                              <DropdownMenuItem className="cursor-pointer" onClick={() => handleOpenEdit(campaign)}>
-                                <Edit className="size-4 mr-2" />
-                                Edit Draft
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                className="cursor-pointer text-destructive focus:text-destructive"
-                                onClick={() => {
-                                  setDeletingId(campaign.id);
-                                  setDeleteOpen(true);
-                                }}
-                              >
-                                <Trash2 className="size-4 mr-2" />
-                                Delete
-                              </DropdownMenuItem>
-                            </>
+                            <DropdownMenuItem className="cursor-pointer" onClick={() => handleOpenEdit(campaign)}>
+                              <Edit className="size-4 mr-2" />
+                              Edit Draft
+                            </DropdownMenuItem>
                           )}
+                          <DropdownMenuItem
+                            className="cursor-pointer text-destructive focus:text-destructive"
+                            onClick={() => {
+                              setDeletingId(campaign.id);
+                              setDeleteOpen(true);
+                            }}
+                          >
+                            <Trash2 className="size-4 mr-2" />
+                            Delete
+                          </DropdownMenuItem>
                           <DropdownMenuItem className="cursor-pointer" onClick={() => duplicateCampaignMutation.mutate(campaign.id)}>
                             <Copy className="size-4 mr-2" />
                             Duplicate
@@ -649,30 +647,30 @@ export default function CampaignsPage() {
                       </PopoverContent>
                     </Popover>
                   </div>
-                  
+
                   <div className="flex items-center space-x-2 pt-2">
                     <div className="h-4 w-8 bg-muted rounded-full relative">
-                       <div className="size-4 bg-gray-400 rounded-full absolute left-0" />
+                      <div className="size-4 bg-gray-400 rounded-full absolute left-0" />
                     </div>
                     <Label className="font-normal text-sm">Don’t send to unengaged contacts</Label>
                   </div>
-                  
+
                   <div className="pt-2 text-sm font-semibold text-emerald-600 cursor-pointer">
                     Advanced options
                   </div>
-                  
+
                   <div className="bg-muted/30 p-4 rounded-lg mt-4 text-xs text-muted-foreground">
-                     <p>
-                        <span className="font-bold text-black dark:text-white">
-                           {isLoadingAudienceStats ? <Loader2 className="inline size-3 animate-spin mr-1" /> : audienceStats?.subscribed ?? 0}
-                        </span> recipients
-                     </p>
-                     <p className="mt-1">
-                        <span className="font-bold text-black dark:text-white">
-                           {isLoadingQuota ? <Loader2 className="inline size-3 animate-spin mr-1" /> : (quotaData?.remaining ?? 0).toLocaleString()}
-                        </span> remaining emails
-                     </p>
-                     <p className="mt-1">Send to as many recipients as you wish, within your plan limits.</p>
+                    <p>
+                      <span className="font-bold text-black dark:text-white">
+                        {isLoadingAudienceStats ? <Loader2 className="inline size-3 animate-spin mr-1" /> : audienceStats?.subscribed ?? 0}
+                      </span> recipients
+                    </p>
+                    <p className="mt-1">
+                      <span className="font-bold text-black dark:text-white">
+                        {isLoadingQuota ? <Loader2 className="inline size-3 animate-spin mr-1" /> : (quotaData?.remaining ?? 0).toLocaleString()}
+                      </span> remaining emails
+                    </p>
+                    <p className="mt-1">Send to as many recipients as you wish, within your plan limits.</p>
                   </div>
                 </div>
               </div>
@@ -722,27 +720,27 @@ export default function CampaignsPage() {
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="bg-muted/10 border border-border rounded-xl p-4 flex flex-col justify-center">
                   <div className="bg-white dark:bg-gray-900 border border-border shadow-sm rounded-lg overflow-hidden max-w-sm w-full mx-auto">
-                     <div className="bg-gray-100 dark:bg-gray-800 px-4 py-2 border-b border-border flex justify-between items-center text-xs text-muted-foreground">
-                        <span>9:47</span>
-                        <span className="font-semibold">Inbox</span>
-                        <span>100%</span>
-                     </div>
-                     <div className="p-4 flex gap-3 border-b border-border">
-                        <div className="size-10 bg-indigo-500 rounded-full flex items-center justify-center text-white font-bold shrink-0">
-                           {fromName ? fromName.charAt(0).toUpperCase() : "S"}
+                    <div className="bg-gray-100 dark:bg-gray-800 px-4 py-2 border-b border-border flex justify-between items-center text-xs text-muted-foreground">
+                      <span>9:47</span>
+                      <span className="font-semibold">Inbox</span>
+                      <span>100%</span>
+                    </div>
+                    <div className="p-4 flex gap-3 border-b border-border">
+                      <div className="size-10 bg-indigo-500 rounded-full flex items-center justify-center text-white font-bold shrink-0">
+                        {fromName ? fromName.charAt(0).toUpperCase() : "S"}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-baseline mb-0.5">
+                          <span className="font-bold text-sm truncate">{fromName || "Sender"}</span>
+                          <span className="text-[10px] text-muted-foreground shrink-0 ml-2">17:45</span>
                         </div>
-                        <div className="flex-1 min-w-0">
-                           <div className="flex justify-between items-baseline mb-0.5">
-                              <span className="font-bold text-sm truncate">{fromName || "Sender"}</span>
-                              <span className="text-[10px] text-muted-foreground shrink-0 ml-2">17:45</span>
-                           </div>
-                           <div className="font-semibold text-sm truncate">{subject || "Message subject..."}</div>
-                           <div className="text-sm text-muted-foreground truncate">{previewText || "Your preview text"}</div>
-                        </div>
-                     </div>
+                        <div className="font-semibold text-sm truncate">{subject || "Message subject..."}</div>
+                        <div className="text-sm text-muted-foreground truncate">{previewText || "Your preview text"}</div>
+                      </div>
+                    </div>
 
                   </div>
                   <p className="text-[10px] text-center text-muted-foreground mt-4">Actual email preview may vary depending on the email client.</p>
@@ -758,9 +756,9 @@ export default function CampaignsPage() {
                     <h3 className="text-lg font-semibold">Design</h3>
                     <p className="text-xs text-muted-foreground">Create your email content.</p>
                   </div>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => {
                       setWizardOpen(false);
                       navigate("/crm/templates");
@@ -1007,7 +1005,7 @@ export default function CampaignsPage() {
           <DialogHeader>
             <DialogTitle>Are you absolutely sure?</DialogTitle>
             <DialogDescription>
-              This will permanently delete the draft campaign and cannot be undone.
+              This will permanently delete the campaign and cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">
