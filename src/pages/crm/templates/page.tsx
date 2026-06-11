@@ -29,6 +29,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog.tsx";
 import { toast } from "sonner";
+import TemplatePickerModal from "@/components/TemplatePickerModal.tsx";
+import SimpleEditor from "@/components/SimpleEditor.tsx";
 
 export default function TemplatesPage() {
   const queryClient = useQueryClient();
@@ -42,6 +44,10 @@ export default function TemplatesPage() {
   const [contentHtml, setContentHtml] = useState("");
   const [nameError, setNameError] = useState("");
   const [htmlError, setHtmlError] = useState("");
+
+  // Editor mode and Picker State
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"none" | "simple" | "html">("none");
 
   // Preview Modal State
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -83,7 +89,17 @@ export default function TemplatesPage() {
 
   const handleOpenCreate = () => {
     resetForm();
-    setDrawerOpen(true);
+    setPickerOpen(true);
+  };
+
+  const handleSelectOption = (option: "drag-drop" | "simple" | "html") => {
+    setPickerOpen(false);
+    if (option === "html") {
+      setEditorMode("html");
+      setDrawerOpen(true);
+    } else if (option === "simple") {
+      setEditorMode("simple");
+    }
   };
 
   const handleOpenEdit = async (template: any) => {
@@ -97,7 +113,8 @@ export default function TemplatesPage() {
       setContentHtml(fullTemplate.contentHtml || "");
       setNameError("");
       setHtmlError("");
-      setDrawerOpen(true);
+      // Default to Simple Editor
+      setEditorMode("simple");
     } catch (err: any) {
       toast.error("Failed to load template details");
     }
@@ -192,6 +209,22 @@ export default function TemplatesPage() {
     if (deletingId) {
       deleteMutation.mutate(deletingId);
     }
+  };
+
+  const handleSimpleEditorSave = (savedName: string, savedHtml: string) => {
+    const payload = {
+      name: savedName.trim() || "Untitled Template",
+      subject: null,
+      previewText: null,
+      contentHtml: savedHtml.trim(),
+    };
+
+    if (editingTemplate) {
+      updateMutation.mutate({ id: editingTemplate.id, data: payload });
+    } else {
+      createMutation.mutate(payload);
+    }
+    setEditorMode("none");
   };
 
   return (
@@ -548,6 +581,21 @@ export default function TemplatesPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <TemplatePickerModal
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onSelectOption={handleSelectOption}
+      />
+
+      {editorMode === "simple" && (
+        <SimpleEditor
+          initialName={name}
+          initialHtml={contentHtml}
+          onSave={handleSimpleEditorSave}
+          onCancel={() => setEditorMode("none")}
+        />
+      )}
     </div>
   );
 }

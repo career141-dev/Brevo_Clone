@@ -161,7 +161,14 @@ export const api = {
   },
   senders: {
     list: () => request<{ id: number; name: string; email: string }[]>("/senders"),
+    create: (data: { name: string; email: string }) => request<any>("/senders", { method: "POST", body: JSON.stringify(data) }),
+    delete: (id: number) => request<{ success: boolean }>(`/senders/${id}`, { method: "DELETE" }),
     quota: () => request<{ max: number; sent: number; remaining: number }>("/senders/quota"),
+    status: (identities: string[]) => request<Record<string, any>>("/senders/status", { method: "POST", body: JSON.stringify({ identities }) }),
+  },
+  domains: {
+    getDnsRecords: (domain: string) =>
+      request<{ records: { type: string; name: string; value: string }[] }>(`/domains/dns-records?domain=${encodeURIComponent(domain)}`),
   },
 };
 

@@ -889,11 +889,11 @@ app.get('/api/analytics/campaigns', async (req, res) => {
             unsubscribed: unsub,
             complained,
             deliveryRate: pct(delivered, recipients),
-            openRate: pct(opened, delivered),
-            clickRate: pct(clicked, delivered),
+            openRate: pct(opened, delivered || recipients),
+            clickRate: pct(clicked, delivered || recipients),
             bounceRate: pct(bounced, recipients),
-            unsubscribeRate: pct(unsub, delivered),
-            complaintRate: pct(complained, delivered),
+            unsubscribeRate: pct(unsub, delivered || recipients),
+            complaintRate: pct(complained, delivered || recipients),
           },
         };
       })
@@ -1739,6 +1739,84 @@ app.get("/api/senders", async (_req, res) => {
   }
 });
 
+app.post("/api/senders", async (req, res) => {
+  try {
+    const { name, email } = req.body;
+    if (!name || !email) return res.status(400).json({ error: "Name and email are required" });
+
+    const newSender = await prisma.sender.create({
+      data: { name, email },
+    });
+    res.status(201).json(newSender);
+  } catch (err) {
+    console.error("Create sender error:", err);
+    res.status(500).json({ error: "Failed to create sender" });
+  }
+});
+
+app.delete("/api/senders/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid sender ID" });
+
+    await prisma.sender.delete({ where: { id } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete sender error:", err);
+    res.status(500).json({ error: "Failed to delete sender" });
+  }
+});
+
+app.post("/api/senders/status", async (req, res) => {
+  try {
+    const { identities } = req.body;
+    if (!identities || !Array.isArray(identities)) return res.json({});
+    
+    // We want to check both the full email address AND the domain
+    const domains = identities.map((id: string) => id.split("@")[1]).filter(Boolean);
+    const allIdentities = Array.from(new Set([...identities, ...domains]));
+    
+    const { GetIdentityVerificationAttributesCommand, GetIdentityDkimAttributesCommand } = await import("@aws-sdk/client-ses");
+    
+    const verifyRes = await sesClient.send(new GetIdentityVerificationAttributesCommand({ Identities: allIdentities }));
+    const dkimRes = await sesClient.send(new GetIdentityDkimAttributesCommand({ Identities: allIdentities }));
+    
+    const result: Record<string, any> = {};
+    for (const id of allIdentities) {
+      const vStatus = verifyRes.VerificationAttributes?.[id]?.VerificationStatus || "Unverified";
+      const dStatus = dkimRes.DkimAttributes?.[id]?.DkimVerificationStatus || "Unverified";
+      const dEnabled = dkimRes.DkimAttributes?.[id]?.DkimEnabled || false;
+
+      result[id] = {
+        verificationStatus: vStatus,
+        dkimStatus: dStatus,
+        dkimEnabled: dEnabled,
+      };
+    }
+    
+    // For emails, fallback to their domain's status if the email itself is unverified
+    for (const id of identities) {
+      if (id.includes("@")) {
+        const domain = id.split("@")[1];
+        if (result[id].verificationStatus === "Unverified" && result[domain]?.verificationStatus === "Success") {
+          result[id].verificationStatus = result[domain].verificationStatus;
+        }
+        if (result[id].dkimStatus === "Unverified" && result[domain]?.dkimStatus === "Success") {
+          result[id].dkimStatus = result[domain].dkimStatus;
+        }
+        if (!result[id].dkimEnabled && result[domain]?.dkimEnabled) {
+          result[id].dkimEnabled = result[domain].dkimEnabled;
+        }
+      }
+    }
+    
+    res.json(result);
+  } catch (err) {
+    console.error("AWS SES Status Error:", err);
+    res.status(500).json({ error: "Failed to fetch AWS status" });
+  }
+});
+
 app.get("/api/senders/quota", async (_req, res) => {
   try {
     const quota = await sesClient.send(new GetSendQuotaCommand({}));
@@ -1750,6 +1828,57 @@ app.get("/api/senders/quota", async (_req, res) => {
     // rather than throwing a 500 internal server error.
     console.error("SES Quota Error:", err);
     res.json({ max: 5000, sent: 962, remaining: 4038 });
+  }
+});
+
+app.get("/api/domains/dns-records", async (req, res) => {
+  try {
+    const domain = req.query.domain as string;
+    if (!domain) {
+      return res.status(400).json({ error: "Missing domain parameter" });
+    }
+
+    const { VerifyDomainIdentityCommand, VerifyDomainDkimCommand } = await import("@aws-sdk/client-ses");
+
+    // Initiate verification in platform's SES
+    const identityRes = await sesClient.send(new VerifyDomainIdentityCommand({ Domain: domain }));
+    const dkimRes = await sesClient.send(new VerifyDomainDkimCommand({ Domain: domain }));
+
+    const verificationToken = identityRes.VerificationToken;
+    const dkimTokens = dkimRes.DkimTokens || [];
+
+    if (!verificationToken || dkimTokens.length === 0) {
+      throw new Error("Failed to get verification tokens from SES");
+    }
+
+    const records = [];
+
+    // TXT record for SES Identity
+    records.push({
+      type: "TXT",
+      name: `_amazonses.${domain}`,
+      value: verificationToken,
+    });
+
+    // CNAME records for DKIM
+    for (const token of dkimTokens) {
+      records.push({
+        type: "CNAME",
+        name: `${token}._domainkey.${domain}`,
+        value: `${token}.dkim.amazonses.com`,
+      });
+    }
+
+    res.json({ records });
+  } catch (err: any) {
+    console.error("Fetch DNS Records Error:", err);
+    if (err.name === "AccessDenied" || err.Code === "AccessDenied" || err.message?.includes("AccessDenied")) {
+      return res.status(403).json({ 
+        error: "AWS IAM Permission Denied", 
+        detail: "Your AWS IAM user does not have permission to verify domains. Please add 'ses:VerifyDomainIdentity' and 'ses:VerifyDomainDkim' permissions to the 'career141User' in AWS IAM." 
+      });
+    }
+    res.status(500).json({ error: "Failed to fetch DNS records", detail: err.message });
   }
 });
 

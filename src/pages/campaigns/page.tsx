@@ -72,6 +72,8 @@ import {
   SelectValue,
 } from "@/components/ui/select.tsx";
 import { toast } from "sonner";
+import TemplatePickerModal from "@/components/TemplatePickerModal.tsx";
+import SimpleEditor from "@/components/SimpleEditor.tsx";
 
 export default function CampaignsPage() {
   const queryClient = useQueryClient();
@@ -89,6 +91,11 @@ export default function CampaignsPage() {
   const [fromName, setFromName] = useState("");
   const [fromEmail, setFromEmail] = useState("");
 
+  // Sender Domain Sheet State
+  const [sendersSheetOpen, setSendersSheetOpen] = useState(false);
+  const [newSenderName, setNewSenderName] = useState("");
+  const [newSenderEmail, setNewSenderEmail] = useState("");
+
   // Step 2: Audience
   const [audienceId, setAudienceId] = useState<string>("");
   const [listPopoverOpen, setListPopoverOpen] = useState(false);
@@ -96,6 +103,10 @@ export default function CampaignsPage() {
   // Step 3: Template
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [selectedTemplateHtml, setSelectedTemplateHtml] = useState<string>("");
+
+  // Template Picker / Editor State
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"none" | "simple">("none");
 
   // Report Modal State
   const [reportOpen, setReportOpen] = useState(false);
@@ -216,6 +227,19 @@ export default function CampaignsPage() {
     },
   });
 
+  const createSenderMutation = useMutation({
+    mutationFn: (data: { name: string; email: string }) => api.senders.create(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["senders-for-campaign"] });
+      toast.success("Sender added successfully!");
+      setNewSenderName("");
+      setNewSenderEmail("");
+    },
+    onError: () => {
+      toast.error("Failed to add sender.");
+    },
+  });
+
   const resetWizard = () => {
     setStep(1);
     setCampaignId(null);
@@ -320,6 +344,7 @@ export default function CampaignsPage() {
       const fullTemplate = await api.templates.get(template.id);
       setSelectedTemplateId(template.id);
       setSelectedTemplateHtml(fullTemplate.contentHtml || "");
+      setPickerOpen(false); // Close the modal
 
       if (campaignId) {
         updateCampaignMutation.mutate({
@@ -333,6 +358,42 @@ export default function CampaignsPage() {
       toast.error("Failed to fetch template HTML.");
     }
   };
+
+  const handleSelectOption = (option: "drag-drop" | "simple" | "html") => {
+    setPickerOpen(false);
+    if (option === "simple") {
+      setEditorMode("simple");
+      // Hide the wizard momentarily to show the full-screen editor
+      setWizardOpen(false);
+    } else {
+      toast.info(`${option} editor coming soon!`);
+    }
+  };
+
+  const handleSimpleEditorSave = async (savedName: string, savedHtml: string) => {
+    const payload = {
+      name: savedName.trim() || "Campaign Template",
+      subject: null,
+      previewText: null,
+      contentHtml: savedHtml.trim(),
+    };
+
+    // Create the template
+    createCampaignTemplateMutation.mutate(payload);
+  };
+
+  const createCampaignTemplateMutation = useMutation({
+    mutationFn: (data: any) => api.templates.create(data),
+    onSuccess: (newTemplate) => {
+      handleSelectTemplate(newTemplate);
+      setEditorMode("none");
+      setWizardOpen(true); // Bring back the wizard
+      toast.success("Template created and assigned!");
+    },
+    onError: () => {
+      toast.error("Failed to create template.");
+    }
+  });
 
   const handleNextStep4 = () => {
     if (!selectedTemplateHtml) {
@@ -544,7 +605,12 @@ export default function CampaignsPage() {
                 </div>
                 <div className="space-y-3">
                   <div className="space-y-1">
-                    <Label>Email address</Label>
+                    <div className="flex justify-between items-center">
+                      <Label>Email address</Label>
+                      <Button variant="link" size="sm" className="h-auto p-0 text-emerald-600 font-semibold" onClick={() => setSendersSheetOpen(true)}>
+                        <Plus className="size-3 mr-1" /> Add a new sender
+                      </Button>
+                    </div>
                     <Select
                       value={fromEmail ? `${fromName}|${fromEmail}` : ""}
                       onValueChange={(v) => {
@@ -759,43 +825,39 @@ export default function CampaignsPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      setWizardOpen(false);
-                      navigate("/crm/templates");
-                    }}
+                    onClick={() => setPickerOpen(true)}
                   >
                     <Plus className="size-4 mr-2" />
                     Add Template
                   </Button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 max-h-[350px] overflow-y-auto pr-1">
-                  {templates?.map((t: any) => (
-                    <Card
-                      key={t.id}
-                      onClick={() => handleSelectTemplate(t)}
-                      className={cn(
-                        "p-4 cursor-pointer hover:border-emerald-500 transition-all border flex flex-col justify-between",
-                        selectedTemplateId === t.id ? "border-emerald-600 bg-emerald-50/10 shadow-sm" : "border-border/60"
-                      )}
-                    >
-                      <div className="space-y-1">
-                        <div className="font-semibold text-sm line-clamp-1">{t.name}</div>
-                        <div className="text-xs text-muted-foreground line-clamp-2">{t.subject || "No subject"}</div>
-                      </div>
-                      <div className="flex items-center justify-between mt-4">
-                        <span className="text-[10px] text-muted-foreground">Updated {format(new Date(t.createdAt), "MMM d")}</span>
-                        {selectedTemplateId === t.id && (
-                          <span className="size-5 rounded-full bg-emerald-500 flex items-center justify-center text-white">
-                            <Check className="size-3" />
-                          </span>
-                        )}
-                      </div>
-                    </Card>
-                  ))}
-                  {(!templates || templates.length === 0) && (
-                    <div className="col-span-2 text-center py-8 text-sm text-muted-foreground">
-                      No templates found. Create one under "Email Templates" first.
+                <div className="mt-4">
+                  {selectedTemplateId ? (
+                    (() => {
+                      const t = templates?.find((tpl: any) => tpl.id === selectedTemplateId);
+                      if (!t) return null;
+                      return (
+                        <Card className="p-4 border-emerald-600 bg-emerald-50/10 shadow-sm flex flex-col justify-between">
+                          <div className="space-y-1">
+                            <div className="font-semibold text-sm line-clamp-1">{t.name}</div>
+                            <div className="text-xs text-muted-foreground line-clamp-2">{t.subject || "No subject"}</div>
+                          </div>
+                          <div className="flex items-center justify-between mt-4">
+                            <span className="text-[10px] text-muted-foreground">Updated {format(new Date(t.createdAt), "MMM d")}</span>
+                            <span className="size-5 rounded-full bg-emerald-500 flex items-center justify-center text-white">
+                              <Check className="size-3" />
+                            </span>
+                          </div>
+                        </Card>
+                      );
+                    })()
+                  ) : (
+                    <div className="text-center py-8 px-4 border rounded-lg border-dashed">
+                      <FileText className="size-8 mx-auto text-muted-foreground mb-3" />
+                      <h4 className="font-medium">No template selected</h4>
+                      <p className="text-xs text-muted-foreground mt-1 mb-4">You need an email design to send this campaign.</p>
+                      <Button onClick={() => setPickerOpen(true)}>Choose a Template</Button>
                     </div>
                   )}
                 </div>
@@ -917,6 +979,59 @@ export default function CampaignsPage() {
         </SheetContent>
       </Sheet>
 
+      {/* Senders Sheet */}
+      <Sheet open={sendersSheetOpen} onOpenChange={setSendersSheetOpen}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader className="mb-6">
+            <SheetTitle className="text-xl font-bold">Manage Senders</SheetTitle>
+          </SheetHeader>
+          <div className="space-y-6">
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold">Add New Sender</h3>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <Label>Sender Name</Label>
+                  <Input value={newSenderName} onChange={e => setNewSenderName(e.target.value)} placeholder="e.g. John Doe" />
+                </div>
+                <div className="space-y-1">
+                  <Label>Sender Email</Label>
+                  <Input value={newSenderEmail} onChange={e => setNewSenderEmail(e.target.value)} placeholder="e.g. john@example.com" />
+                </div>
+                <Button 
+                  disabled={!newSenderName || !newSenderEmail || createSenderMutation.isPending}
+                  onClick={() => createSenderMutation.mutate({ name: newSenderName, email: newSenderEmail })}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                >
+                  {createSenderMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : <Plus className="size-4 mr-2" />}
+                  Add Sender
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-3 border-t pt-6">
+              <h3 className="text-sm font-semibold">Previously Added Senders</h3>
+              {senders?.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No senders found.</p>
+              ) : (
+                <div className="space-y-2">
+                  {senders?.map((s) => (
+                    <div key={s.id} className="flex justify-between items-center p-3 border rounded-md">
+                      <div>
+                        <div className="font-medium text-sm">{s.name}</div>
+                        <div className="text-xs text-muted-foreground">{s.email}</div>
+                      </div>
+                      <Button variant="ghost" size="icon" className="text-destructive h-8 w-8 hover:bg-destructive/10 hover:text-destructive" onClick={() => api.senders.delete(s.id).then(() => { queryClient.invalidateQueries({ queryKey: ["senders-for-campaign"] }); toast.success("Sender deleted"); }).catch(() => toast.error("Failed to delete sender"))}>
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
       {/* View Report Dialog */}
       <Dialog open={reportOpen} onOpenChange={setReportOpen}>
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
@@ -1027,6 +1142,23 @@ export default function CampaignsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <TemplatePickerModal
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onSelectOption={handleSelectOption}
+        savedTemplates={templates || []}
+        onSelectSaved={handleSelectTemplate}
+      />
+
+      {editorMode === "simple" && (
+        <SimpleEditor
+          onSave={handleSimpleEditorSave}
+          onCancel={() => {
+            setEditorMode("none");
+            setWizardOpen(true);
+          }}
+        />
+      )}
     </div>
   );
 }
