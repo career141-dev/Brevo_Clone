@@ -1851,7 +1851,7 @@ app.get("/api/domains/dns-records", async (req, res) => {
       throw new Error("Failed to get verification tokens from SES");
     }
 
-    const records = [];
+    const records: { type: string; name: string; value: string }[] = [];
 
     // TXT record for SES Identity
     records.push({
