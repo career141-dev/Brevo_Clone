@@ -673,9 +673,12 @@ app.delete("/api/campaigns/:id", async (req, res) => {
       where: { id: campaignId },
     });
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
-    if (campaign.status !== "draft") {
-      return res.status(400).json({ error: "Only draft campaigns can be deleted" });
-    }
+    // First delete associated email events to clean up
+    await prisma.emailEvent.deleteMany({
+      where: { campaignId: campaignId },
+    });
+    
+    // Then delete the campaign
     await prisma.campaign.delete({
       where: { id: campaignId },
     });
@@ -791,6 +794,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             Subject: { Data: campaign.subject, Charset: "UTF-8" },
             Body: { Html: { Data: html, Charset: "UTF-8" } },
           },
+          Tags: [{ Name: "campaign_id", Value: campaignId.toString() }],
           // @ts-ignore
           Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
         }));
@@ -1471,6 +1475,9 @@ app.post(
     if (body.Type === "Notification") {
       const msg = JSON.parse(body.Message);
       const type = msg.notificationType;
+      
+      const campaignIdTag = msg.mail?.tags?.campaign_id?.[0];
+      const campaignId = campaignIdTag ? parseInt(campaignIdTag, 10) : null;
 
       if (type === "Bounce" && msg.bounce.bounceType === "Permanent") {
         const email = msg.bounce.bouncedRecipients[0].emailAddress.toLowerCase();
@@ -1479,7 +1486,7 @@ app.post(
           data: { status: "bounced" },
         });
         await prisma.emailEvent.create({
-          data: { email, eventType: "bounced" },
+          data: { email, eventType: "bounced", campaignId },
         });
       }
 
@@ -1490,14 +1497,14 @@ app.post(
           data: { status: "unsubscribed" },
         });
         await prisma.emailEvent.create({
-          data: { email, eventType: "complained" },
+          data: { email, eventType: "complained", campaignId },
         });
       }
 
       if (type === "Delivery") {
         const email = msg.delivery.recipients[0].toLowerCase();
         await prisma.emailEvent.create({
-          data: { email, eventType: "delivered" },
+          data: { email, eventType: "delivered", campaignId },
         });
       }
     }
@@ -1678,6 +1685,7 @@ app.post("/api/email/send", async (req, res) => {
             Subject: { Data: subject, Charset: "UTF-8" },
             Body: { Html: { Data: html, Charset: "UTF-8" } },
           },
+          Tags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
           // @ts-ignore
           Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
         }),
