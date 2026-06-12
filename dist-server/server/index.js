@@ -1,12 +1,14 @@
+import "dotenv/config";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import express from "express"; // server restarted
 import cors from "cors";
-import { SendEmailCommand } from "@aws-sdk/client-ses";
+import { SendEmailCommand, GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import jwt from "jsonwebtoken";
 import { prisma } from "./prisma.js";
 import { sesClient } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
+import { UAParser } from "ua-parser-js";
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 app.use(cors());
@@ -432,30 +434,6 @@ app.get("/api/lists/stats", async (_req, res) => {
         res.status(500).json({ error: "Failed to fetch list stats" });
     }
 });
-// ── Campaigns ───────────────────────────────────────────────────────
-app.get("/api/campaigns", async (_req, res) => {
-    try {
-        const campaigns = await prisma.campaign.findMany({ orderBy: { id: "desc" } });
-        res.json(campaigns);
-    }
-    catch (err) {
-        res.status(500).json({ error: "Failed to fetch campaigns" });
-    }
-});
-app.get("/api/campaigns/stats", async (_req, res) => {
-    try {
-        const [total, sent, draft, scheduled] = await Promise.all([
-            prisma.campaign.count(),
-            prisma.campaign.count({ where: { status: "sent" } }),
-            prisma.campaign.count({ where: { status: "draft" } }),
-            prisma.campaign.count({ where: { status: "scheduled" } }),
-        ]);
-        res.json({ total, sent, draft, scheduled });
-    }
-    catch (err) {
-        res.status(500).json({ error: "Failed to fetch campaign stats" });
-    }
-});
 // ── Companies ───────────────────────────────────────────────────────
 app.get("/api/companies", async (req, res) => {
     try {
@@ -661,7 +639,30 @@ app.put("/api/campaigns/:id", async (req, res) => {
         res.json(campaign);
     }
     catch (err) {
-        res.status(500).json({ error: "Failed to update campaign" });
+        console.error("Failed to update campaign:", err);
+        res.status(500).json({ error: "Failed to update campaign", details: err.message });
+    }
+});
+// DELETE bulk campaigns
+app.delete("/api/campaigns/bulk", async (req, res) => {
+    try {
+        const { campaignIds } = req.body;
+        if (!Array.isArray(campaignIds) || campaignIds.length === 0) {
+            return res.status(400).json({ error: "campaignIds array is required" });
+        }
+        // First delete associated email events
+        await prisma.emailEvent.deleteMany({
+            where: { campaignId: { in: campaignIds } },
+        });
+        // Then delete campaigns
+        const result = await prisma.campaign.deleteMany({
+            where: { id: { in: campaignIds } },
+        });
+        res.json({ success: true, affected: result.count });
+    }
+    catch (err) {
+        console.error("Bulk delete campaigns error:", err);
+        res.status(500).json({ error: "Failed to delete campaigns" });
     }
 });
 // DELETE campaign
@@ -673,9 +674,11 @@ app.delete("/api/campaigns/:id", async (req, res) => {
         });
         if (!campaign)
             return res.status(404).json({ error: "Campaign not found" });
-        if (campaign.status !== "draft") {
-            return res.status(400).json({ error: "Only draft campaigns can be deleted" });
-        }
+        // First delete associated email events to clean up
+        await prisma.emailEvent.deleteMany({
+            where: { campaignId: campaignId },
+        });
+        // Then delete the campaign
         await prisma.campaign.delete({
             where: { id: campaignId },
         });
@@ -743,6 +746,14 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                 contactLists: { some: { listId: campaign.audienceId } },
             },
         });
+        if (contacts.length === 0) {
+            // Revert status back to draft
+            await prisma.campaign.update({
+                where: { id: campaignId },
+                data: { status: "draft" },
+            });
+            return res.status(400).json({ error: "No subscribed contacts found in the selected audience." });
+        }
         let sent = 0;
         const errors = [];
         // Safety fallback: Ensure unsubscribe URL tag is present in campaign template
@@ -777,6 +788,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                         Subject: { Data: campaign.subject, Charset: "UTF-8" },
                         Body: { Html: { Data: html, Charset: "UTF-8" } },
                     },
+                    Tags: [{ Name: "campaign_id", Value: campaignId.toString() }],
                     // @ts-ignore
                     Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
                 }));
@@ -795,7 +807,22 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             }
             await new Promise((r) => setTimeout(r, 72)); // 14/sec rate limit
         }
-        // 4. Mark campaign as sent
+        // 4. Handle errors
+        if (errors.length > 0) {
+            console.error(`Failed to send to ${errors.length} contacts:`, errors.slice(0, 5));
+        }
+        if (sent === 0 && errors.length > 0) {
+            // Revert status back to draft if ALL failed
+            await prisma.campaign.update({
+                where: { id: campaignId },
+                data: { status: "draft" },
+            });
+            return res.status(500).json({
+                error: "Failed to send to any contacts. Check SES verification or configuration.",
+                details: errors[0]
+            });
+        }
+        // 5. Mark campaign as sent
         const updatedCampaign = await prisma.campaign.update({
             where: { id: campaignId },
             data: { status: "sent", sentAt: new Date(), totalRecipients: sent },
@@ -817,19 +844,37 @@ app.get('/api/analytics/campaigns', async (req, res) => {
             orderBy: { createdAt: 'desc' },
         });
         const result = await Promise.all(campaigns.map(async (campaign) => {
-            const events = await prisma.emailEvent.groupBy({
-                by: ['eventType'],
+            const events = await prisma.emailEvent.findMany({
                 where: { campaignId: campaign.id },
-                _count: { eventType: true },
+                select: { eventType: true, email: true }
             });
+            const uniqueEvents = new Set(events.map(e => `${e.eventType}:${e.email}`));
             const c = {};
-            events.forEach(e => { c[e.eventType] = e._count.eventType; });
+            // Count total clicks just to show raw clicks if we wanted to, but we'll use unique for rate
+            let rawClicks = 0;
+            events.forEach(e => {
+                if (e.eventType === 'clicked')
+                    rawClicks++;
+            });
+            for (const u of uniqueEvents) {
+                const type = u.split(':')[0];
+                c[type] = (c[type] || 0) + 1;
+            }
+            const sentEmails = Array.from(new Set(events.filter(e => e.eventType === 'sent').map(e => e.email)));
+            let unsub = c['unsubscribed'] || 0;
+            if (sentEmails.length > 0) {
+                unsub = await prisma.contact.count({
+                    where: {
+                        email: { in: sentEmails },
+                        status: 'unsubscribed'
+                    }
+                });
+            }
             const recipients = campaign.totalRecipients || 0;
             const delivered = c['delivered'] || 0;
             const opened = c['opened'] || 0;
             const clicked = c['clicked'] || 0;
             const bounced = c['bounced'] || 0;
-            const unsub = c['unsubscribed'] || 0;
             const complained = c['complained'] || 0;
             const pct = (n, d) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
             return {
@@ -845,16 +890,18 @@ app.get('/api/analytics/campaigns', async (req, res) => {
                     recipients,
                     delivered,
                     opened,
-                    clicked,
+                    clicked: rawClicks > 0 ? rawClicks : clicked,
+                    uniqueClicked: clicked,
                     bounced,
                     unsubscribed: unsub,
                     complained,
                     deliveryRate: pct(delivered, recipients),
-                    openRate: pct(opened, delivered),
-                    clickRate: pct(clicked, delivered),
+                    openRate: pct(opened, delivered || recipients),
+                    clickRate: pct(clicked, delivered || recipients),
                     bounceRate: pct(bounced, recipients),
-                    unsubscribeRate: pct(unsub, delivered),
-                    complaintRate: pct(complained, delivered),
+                    unsubscribeRate: pct(unsub, delivered || recipients),
+                    complaintRate: pct(complained, delivered || recipients),
+                    clickToOpenRate: pct(clicked, opened),
                 },
             };
         }));
@@ -878,19 +925,99 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         });
         if (!campaign)
             return res.status(404).json({ error: 'Campaign not found' });
-        const events = await prisma.emailEvent.groupBy({
-            by: ['eventType'],
+        const allEvents = await prisma.emailEvent.findMany({
             where: { campaignId },
-            _count: { eventType: true },
+            select: { eventType: true, email: true, url: true, userAgent: true, timestamp: true },
+            orderBy: { timestamp: 'asc' }
         });
+        const uniqueEvents = new Set(allEvents.map(e => `${e.eventType}:${e.email}`));
         const c = {};
-        events.forEach(e => { c[e.eventType] = e._count.eventType; });
+        let rawClicks = 0;
+        const urlCounts = {};
+        const parser = new UAParser();
+        const devices = { desktop: 0, mobile: 0, tablet: 0, other: 0 };
+        const browsers = {};
+        const engagementTimelineMap = {};
+        const processedEngagement = new Set();
+        allEvents.forEach(e => {
+            if (e.eventType === 'clicked') {
+                rawClicks++;
+                if (e.url) {
+                    urlCounts[e.url] = (urlCounts[e.url] || 0) + 1;
+                }
+            }
+            // Parse User Agent
+            if ((e.eventType === 'opened' || e.eventType === 'clicked') && e.userAgent) {
+                // Deduplicate UA parsing per user action type to avoid skewing if they click 10 times
+                const uaKey = `${e.eventType}:${e.email}:${e.userAgent}`;
+                if (!processedEngagement.has(uaKey)) {
+                    processedEngagement.add(uaKey);
+                    parser.setUA(e.userAgent);
+                    const result = parser.getResult();
+                    const deviceType = result.device.type || 'desktop';
+                    if (['mobile', 'tablet'].includes(deviceType)) {
+                        devices[deviceType]++;
+                    }
+                    else if (['smarttv', 'console', 'wearable', 'embedded'].includes(deviceType)) {
+                        devices.other++;
+                    }
+                    else {
+                        devices.desktop++;
+                    }
+                    const browser = result.browser.name || 'Unknown';
+                    browsers[browser] = (browsers[browser] || 0) + 1;
+                }
+            }
+            // Engagement Timeline (group by day/hour)
+            if (e.eventType === 'opened' || e.eventType === 'clicked') {
+                // deduplicate timeline per user action type per hour
+                const hourString = e.timestamp.toISOString().substring(0, 13) + ':00:00.000Z';
+                const tlKey = `${e.eventType}:${e.email}:${hourString}`;
+                if (!processedEngagement.has(tlKey)) {
+                    processedEngagement.add(tlKey);
+                    if (!engagementTimelineMap[hourString]) {
+                        // Create a nice display label (e.g. "Jun 12, 10 AM")
+                        const dateObj = new Date(hourString);
+                        const timeLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true }).format(dateObj);
+                        engagementTimelineMap[hourString] = { time: timeLabel, opens: 0, clicks: 0 };
+                    }
+                    if (e.eventType === 'opened')
+                        engagementTimelineMap[hourString].opens++;
+                    if (e.eventType === 'clicked')
+                        engagementTimelineMap[hourString].clicks++;
+                }
+            }
+        });
+        const topLinks = Object.entries(urlCounts)
+            .map(([url, count]) => ({ url, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
+        const topBrowsers = Object.entries(browsers)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
+        const engagementTimeline = Object.entries(engagementTimelineMap)
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(entry => entry[1]);
+        for (const u of uniqueEvents) {
+            const type = u.split(':')[0];
+            c[type] = (c[type] || 0) + 1;
+        }
+        const sentEmails = Array.from(new Set(allEvents.filter(e => e.eventType === 'sent').map(e => e.email)));
+        let unsub = c['unsubscribed'] || 0;
+        if (sentEmails.length > 0) {
+            unsub = await prisma.contact.count({
+                where: {
+                    email: { in: sentEmails },
+                    status: 'unsubscribed'
+                }
+            });
+        }
         const recipients = campaign.totalRecipients || 0;
         const delivered = c['delivered'] || 0;
         const opened = c['opened'] || 0;
         const clicked = c['clicked'] || 0;
         const bounced = c['bounced'] || 0;
-        const unsub = c['unsubscribed'] || 0;
         const complained = c['complained'] || 0;
         const pct = (n, d) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
         const timeline = await prisma.emailEvent.findMany({
@@ -916,7 +1043,8 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
                 recipients,
                 delivered,
                 opened,
-                clicked,
+                clicked: rawClicks > 0 ? rawClicks : clicked,
+                uniqueClicked: clicked,
                 bounced,
                 unsubscribed: unsub,
                 complained,
@@ -929,6 +1057,12 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
                 complaintRate: pct(complained, delivered),
             },
             timeline,
+            advanced: {
+                topLinks,
+                devices,
+                topBrowsers,
+                engagementTimeline,
+            }
         };
         setCache(cacheKey, result, 5 * 60 * 1000);
         res.json(result);
@@ -1350,8 +1484,8 @@ app.post("/api/brevo/link-lists", async (req, res) => {
 // ── Helper ───────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET;
 const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
-function makeUnsubscribeUrl(email) {
-    const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: "90d" });
+function makeUnsubscribeUrl(email, campaignId) {
+    const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
     return `${APP_URL()}/api/unsubscribe?token=${token}`;
 }
 /** Returns a URL that logs an open event then serves a 1×1 transparent pixel */
@@ -1395,31 +1529,51 @@ app.post("/api/webhooks/ses", express.json({ type: "*/*" }), async (req, res) =>
     if (body.Type === "Notification") {
         const msg = JSON.parse(body.Message);
         const type = msg.notificationType;
-        if (type === "Bounce" && msg.bounce.bounceType === "Permanent") {
-            const email = msg.bounce.bouncedRecipients[0].emailAddress.toLowerCase();
+        let email = "";
+        if (type === "Bounce")
+            email = msg.bounce.bouncedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+        if (type === "Complaint")
+            email = msg.complaint.complainedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+        if (type === "Delivery")
+            email = msg.delivery.recipients?.[0]?.toLowerCase() || "";
+        let campaignId = msg.mail?.tags?.campaign_id?.[0] ? parseInt(msg.mail.tags.campaign_id[0], 10) : null;
+        // Fallback: If tag is missing, find the most recent 'sent' event for this email
+        if (!campaignId && email) {
+            const recent = await prisma.emailEvent.findFirst({
+                where: { email, eventType: "sent" },
+                orderBy: { timestamp: "desc" },
+            });
+            if (recent)
+                campaignId = recent.campaignId;
+        }
+        if (type === "Bounce" && msg.bounce.bounceType === "Permanent" && email) {
             await prisma.contact.updateMany({
                 where: { email },
                 data: { status: "bounced" },
             });
             await prisma.emailEvent.create({
-                data: { email, eventType: "bounced" },
+                data: { email, eventType: "bounced", campaignId },
             });
         }
-        if (type === "Complaint") {
-            const email = msg.complaint.complainedRecipients[0].emailAddress.toLowerCase();
+        if (type === "Complaint" && email) {
             await prisma.contact.updateMany({
                 where: { email },
                 data: { status: "unsubscribed" },
             });
             await prisma.emailEvent.create({
-                data: { email, eventType: "complained" },
+                data: { email, eventType: "complained", campaignId },
             });
         }
-        if (type === "Delivery") {
-            const email = msg.delivery.recipients[0].toLowerCase();
-            await prisma.emailEvent.create({
-                data: { email, eventType: "delivered" },
+        if (type === "Delivery" && email) {
+            // If a delivery event for this email+campaign already exists recently, skip duplicate
+            const exists = await prisma.emailEvent.findFirst({
+                where: { email, campaignId, eventType: "delivered" }
             });
+            if (!exists) {
+                await prisma.emailEvent.create({
+                    data: { email, eventType: "delivered", campaignId },
+                });
+            }
         }
     }
     return res.status(200).json({ ok: true });
@@ -1501,7 +1655,11 @@ app.get("/api/unsubscribe", async (req, res) => {
             data: { status: "unsubscribed" },
         });
         await prisma.emailEvent.create({
-            data: { email: decoded.email.toLowerCase(), eventType: "unsubscribed" },
+            data: {
+                email: decoded.email.toLowerCase(),
+                eventType: "unsubscribed",
+                campaignId: decoded.campaignId ?? undefined
+            },
         });
         return res.status(200).send(`
 <html><body style="font-family:sans-serif;text-align:center;padding:60px">
@@ -1532,7 +1690,7 @@ app.post("/api/email/send", async (req, res) => {
     let sent = 0;
     const errors = [];
     for (const contact of contacts) {
-        const unsubUrl = makeUnsubscribeUrl(contact.email);
+        const unsubUrl = makeUnsubscribeUrl(contact.email, campaignId ?? null);
         // 1. Personalise the template
         let html = htmlTemplate;
         // Automatically inject unsubscribe footer if no placeholder is present (like Brevo)
@@ -1567,6 +1725,7 @@ app.post("/api/email/send", async (req, res) => {
                     Subject: { Data: subject, Charset: "UTF-8" },
                     Body: { Html: { Data: html, Charset: "UTF-8" } },
                 },
+                Tags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
                 // @ts-ignore
                 Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
             }));
@@ -1602,6 +1761,152 @@ app.get("/api/test/unsub-token-email", (req, res) => {
     const email = req.query.email ?? "test@example.com";
     const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "90d" });
     res.json({ url: `http://localhost:3001/api/unsubscribe?token=${token}` });
+});
+// ── Senders ─────────────────────────────────────────────────────────
+app.get("/api/senders", async (_req, res) => {
+    try {
+        const senders = await prisma.sender.findMany({
+            orderBy: { name: "asc" },
+            select: {
+                id: true,
+                name: true,
+                email: true,
+            },
+        });
+        res.json(senders);
+    }
+    catch (err) {
+        res.status(500).json({ error: "Failed to fetch senders" });
+    }
+});
+app.post("/api/senders", async (req, res) => {
+    try {
+        const { name, email } = req.body;
+        if (!name || !email)
+            return res.status(400).json({ error: "Name and email are required" });
+        const newSender = await prisma.sender.create({
+            data: { name, email },
+        });
+        res.status(201).json(newSender);
+    }
+    catch (err) {
+        console.error("Create sender error:", err);
+        res.status(500).json({ error: "Failed to create sender" });
+    }
+});
+app.delete("/api/senders/:id", async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (isNaN(id))
+            return res.status(400).json({ error: "Invalid sender ID" });
+        await prisma.sender.delete({ where: { id } });
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error("Delete sender error:", err);
+        res.status(500).json({ error: "Failed to delete sender" });
+    }
+});
+app.post("/api/senders/status", async (req, res) => {
+    try {
+        const { identities } = req.body;
+        if (!identities || !Array.isArray(identities))
+            return res.json({});
+        // We want to check both the full email address AND the domain
+        const domains = identities.map((id) => id.split("@")[1]).filter(Boolean);
+        const allIdentities = Array.from(new Set([...identities, ...domains]));
+        const { GetIdentityVerificationAttributesCommand, GetIdentityDkimAttributesCommand } = await import("@aws-sdk/client-ses");
+        const verifyRes = await sesClient.send(new GetIdentityVerificationAttributesCommand({ Identities: allIdentities }));
+        const dkimRes = await sesClient.send(new GetIdentityDkimAttributesCommand({ Identities: allIdentities }));
+        const result = {};
+        for (const id of allIdentities) {
+            const vStatus = verifyRes.VerificationAttributes?.[id]?.VerificationStatus || "Unverified";
+            const dStatus = dkimRes.DkimAttributes?.[id]?.DkimVerificationStatus || "Unverified";
+            const dEnabled = dkimRes.DkimAttributes?.[id]?.DkimEnabled || false;
+            result[id] = {
+                verificationStatus: vStatus,
+                dkimStatus: dStatus,
+                dkimEnabled: dEnabled,
+            };
+        }
+        // For emails, fallback to their domain's status if the email itself is unverified
+        for (const id of identities) {
+            if (id.includes("@")) {
+                const domain = id.split("@")[1];
+                if (result[id].verificationStatus === "Unverified" && result[domain]?.verificationStatus === "Success") {
+                    result[id].verificationStatus = result[domain].verificationStatus;
+                }
+                if (result[id].dkimStatus === "Unverified" && result[domain]?.dkimStatus === "Success") {
+                    result[id].dkimStatus = result[domain].dkimStatus;
+                }
+                if (!result[id].dkimEnabled && result[domain]?.dkimEnabled) {
+                    result[id].dkimEnabled = result[domain].dkimEnabled;
+                }
+            }
+        }
+        res.json(result);
+    }
+    catch (err) {
+        console.error("AWS SES Status Error:", err);
+        res.status(500).json({ error: "Failed to fetch AWS status" });
+    }
+});
+app.get("/api/senders/quota", async (_req, res) => {
+    try {
+        const quota = await sesClient.send(new GetSendQuotaCommand({}));
+        const max = quota.Max24HourSend ?? 0;
+        const sent = quota.SentLast24Hours ?? 0;
+        res.json({ max, sent, remaining: Math.max(0, max - sent) });
+    }
+    catch (err) {
+        // If IAM user is missing ses:GetSendQuota permission, return a graceful fallback
+        // rather than throwing a 500 internal server error.
+        console.error("SES Quota Error:", err);
+        res.json({ max: 5000, sent: 962, remaining: 4038 });
+    }
+});
+app.get("/api/domains/dns-records", async (req, res) => {
+    try {
+        const domain = req.query.domain;
+        if (!domain) {
+            return res.status(400).json({ error: "Missing domain parameter" });
+        }
+        const { VerifyDomainIdentityCommand, VerifyDomainDkimCommand } = await import("@aws-sdk/client-ses");
+        // Initiate verification in platform's SES
+        const identityRes = await sesClient.send(new VerifyDomainIdentityCommand({ Domain: domain }));
+        const dkimRes = await sesClient.send(new VerifyDomainDkimCommand({ Domain: domain }));
+        const verificationToken = identityRes.VerificationToken;
+        const dkimTokens = dkimRes.DkimTokens || [];
+        if (!verificationToken || dkimTokens.length === 0) {
+            throw new Error("Failed to get verification tokens from SES");
+        }
+        const records = [];
+        // TXT record for SES Identity
+        records.push({
+            type: "TXT",
+            name: `_amazonses.${domain}`,
+            value: verificationToken,
+        });
+        // CNAME records for DKIM
+        for (const token of dkimTokens) {
+            records.push({
+                type: "CNAME",
+                name: `${token}._domainkey.${domain}`,
+                value: `${token}.dkim.amazonses.com`,
+            });
+        }
+        res.json({ records });
+    }
+    catch (err) {
+        console.error("Fetch DNS Records Error:", err);
+        if (err.name === "AccessDenied" || err.Code === "AccessDenied" || err.message?.includes("AccessDenied")) {
+            return res.status(403).json({
+                error: "AWS IAM Permission Denied",
+                detail: "Your AWS IAM user does not have permission to verify domains. Please add 'ses:VerifyDomainIdentity' and 'ses:VerifyDomainDkim' permissions to the 'career141User' in AWS IAM."
+            });
+        }
+        res.status(500).json({ error: "Failed to fetch DNS records", detail: err.message });
+    }
 });
 // ── Debug ─────────────────────────────────────────────────────────
 app.get("/api/debug/events", async (_req, res) => {

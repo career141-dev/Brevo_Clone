@@ -798,7 +798,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
     }
 
     for (const contact of contacts) {
-      const unsubUrl = makeUnsubscribeUrl(contact.email);
+      const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
       let html = template
         .replace(/{{first_name}}/g, contact.firstName || "")
         .replace(/{{last_name}}/g, contact.lastName || "")
