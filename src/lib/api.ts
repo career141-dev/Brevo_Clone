@@ -113,6 +113,11 @@ export const api = {
       request<any>(`/campaigns/${id}/send`, { method: "POST" }),
     delete: (id: number) =>
       request<any>(`/campaigns/${id}`, { method: "DELETE" }),
+    deleteBulk: (campaignIds: number[]) =>
+      request<{ success: boolean; affected: number }>("/campaigns/bulk", {
+        method: "DELETE",
+        body: JSON.stringify({ campaignIds }),
+      }),
     duplicate: (id: number) =>
       request<any>(`/campaigns/${id}/duplicate`, { method: "POST" }),
   },

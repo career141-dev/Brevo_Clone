@@ -665,6 +665,31 @@ app.put("/api/campaigns/:id", async (req, res) => {
   }
 });
 
+// DELETE bulk campaigns
+app.delete("/api/campaigns/bulk", async (req, res) => {
+  try {
+    const { campaignIds } = req.body;
+    if (!Array.isArray(campaignIds) || campaignIds.length === 0) {
+      return res.status(400).json({ error: "campaignIds array is required" });
+    }
+    
+    // First delete associated email events
+    await prisma.emailEvent.deleteMany({
+      where: { campaignId: { in: campaignIds } },
+    });
+    
+    // Then delete campaigns
+    const result = await prisma.campaign.deleteMany({
+      where: { id: { in: campaignIds } },
+    });
+    
+    res.json({ success: true, affected: result.count });
+  } catch (err) {
+    console.error("Bulk delete campaigns error:", err);
+    res.status(500).json({ error: "Failed to delete campaigns" });
+  }
+});
+
 // DELETE campaign
 app.delete("/api/campaigns/:id", async (req, res) => {
   try {
@@ -1476,11 +1501,23 @@ app.post(
       const msg = JSON.parse(body.Message);
       const type = msg.notificationType;
       
-      const campaignIdTag = msg.mail?.tags?.campaign_id?.[0];
-      const campaignId = campaignIdTag ? parseInt(campaignIdTag, 10) : null;
+      let email = "";
+      if (type === "Bounce") email = msg.bounce.bouncedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+      if (type === "Complaint") email = msg.complaint.complainedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+      if (type === "Delivery") email = msg.delivery.recipients?.[0]?.toLowerCase() || "";
 
-      if (type === "Bounce" && msg.bounce.bounceType === "Permanent") {
-        const email = msg.bounce.bouncedRecipients[0].emailAddress.toLowerCase();
+      let campaignId = msg.mail?.tags?.campaign_id?.[0] ? parseInt(msg.mail.tags.campaign_id[0], 10) : null;
+
+      // Fallback: If tag is missing, find the most recent 'sent' event for this email
+      if (!campaignId && email) {
+        const recent = await prisma.emailEvent.findFirst({
+          where: { email, eventType: "sent" },
+          orderBy: { timestamp: "desc" },
+        });
+        if (recent) campaignId = recent.campaignId;
+      }
+
+      if (type === "Bounce" && msg.bounce.bounceType === "Permanent" && email) {
         await prisma.contact.updateMany({
           where: { email },
           data: { status: "bounced" },
@@ -1490,8 +1527,7 @@ app.post(
         });
       }
 
-      if (type === "Complaint") {
-        const email = msg.complaint.complainedRecipients[0].emailAddress.toLowerCase();
+      if (type === "Complaint" && email) {
         await prisma.contact.updateMany({
           where: { email },
           data: { status: "unsubscribed" },
@@ -1501,11 +1537,16 @@ app.post(
         });
       }
 
-      if (type === "Delivery") {
-        const email = msg.delivery.recipients[0].toLowerCase();
-        await prisma.emailEvent.create({
-          data: { email, eventType: "delivered", campaignId },
+      if (type === "Delivery" && email) {
+        // If a delivery event for this email+campaign already exists recently, skip duplicate
+        const exists = await prisma.emailEvent.findFirst({
+          where: { email, campaignId, eventType: "delivered" }
         });
+        if (!exists) {
+          await prisma.emailEvent.create({
+            data: { email, eventType: "delivered", campaignId },
+          });
+        }
       }
     }
 

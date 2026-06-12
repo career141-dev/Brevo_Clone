@@ -28,6 +28,7 @@ import { Card } from "@/components/ui/card.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
+import { Checkbox } from "@/components/ui/checkbox.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
 import { api } from "@/lib/api.ts";
@@ -115,6 +116,9 @@ export default function CampaignsPage() {
   // Delete Confirm State
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  // Bulk Delete State
+  const [selectedCampaigns, setSelectedCampaigns] = useState<number[]>([]);
 
   // Queries
   const { data: campaigns, isLoading: isLoadingCampaigns } = useQuery({
@@ -212,6 +216,19 @@ export default function CampaignsPage() {
     },
     onError: () => {
       toast.error("Failed to delete campaign.");
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: number[]) => api.campaigns.deleteBulk(ids),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
+      toast.success(`Deleted ${data.affected} campaigns.`);
+      setSelectedCampaigns([]);
+    },
+    onError: () => {
+      toast.error("Failed to delete selected campaigns.");
     },
   });
 
@@ -474,6 +491,20 @@ export default function CampaignsPage() {
 
       {/* Campaigns list */}
       <Card className="border border-border/50 overflow-hidden shadow-sm">
+        {selectedCampaigns.length > 0 && (
+          <div className="bg-muted/50 p-3 border-b border-border flex items-center justify-between">
+            <span className="text-sm font-medium">{selectedCampaigns.length} campaigns selected</span>
+            <Button 
+              variant="destructive" 
+              size="sm"
+              onClick={() => bulkDeleteMutation.mutate(selectedCampaigns)}
+              disabled={bulkDeleteMutation.isPending}
+            >
+              {bulkDeleteMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : <Trash2 className="size-4 mr-2" />}
+              Delete Selected
+            </Button>
+          </div>
+        )}
         {isLoadingCampaigns ? (
           <div className="p-6 space-y-4">
             <Skeleton className="h-8 w-1/4" />
@@ -499,6 +530,18 @@ export default function CampaignsPage() {
             <table className="w-full text-left border-collapse text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/30 text-muted-foreground font-medium">
+                  <th className="p-4 w-10">
+                    <Checkbox
+                      checked={campaigns.length > 0 && selectedCampaigns.length === campaigns.length}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          setSelectedCampaigns(campaigns.map((c: any) => c.id));
+                        } else {
+                          setSelectedCampaigns([]);
+                        }
+                      }}
+                    />
+                  </th>
                   <th className="p-4">Campaign Name</th>
                   <th className="p-4">Status</th>
                   <th className="p-4">Recipients</th>
@@ -507,8 +550,20 @@ export default function CampaignsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/40">
-                {campaigns.map((campaign) => (
+                {campaigns.map((campaign: any) => (
                   <tr key={campaign.id} className="hover:bg-muted/20 transition-colors">
+                    <td className="p-4 w-10">
+                      <Checkbox
+                        checked={selectedCampaigns.includes(campaign.id)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setSelectedCampaigns((prev) => [...prev, campaign.id]);
+                          } else {
+                            setSelectedCampaigns((prev) => prev.filter((id) => id !== campaign.id));
+                          }
+                        }}
+                      />
+                    </td>
                     <td className="p-4">
                       <div className="font-semibold text-gray-900 dark:text-gray-100">{campaign.name}</div>
                       <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{campaign.subject}</div>
