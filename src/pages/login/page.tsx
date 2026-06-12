@@ -25,6 +25,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [pendingVerification, setPendingVerification] = useState(false);
   const [verificationCode, setVerificationCode] = useState("");
+  const [verificationStrategy, setVerificationStrategy] = useState<string>("email_code");
 
   const handleOAuthSignIn = async (strategy: "oauth_google" | "oauth_apple") => {
     try {
@@ -69,10 +70,11 @@ export default function LoginPage() {
             strategy: "email_code",
             emailAddressId: factor.emailAddressId,
           });
+          setVerificationStrategy("email_code");
           setPendingVerification(true);
           toast.success("Verification code sent to your email!");
         } else {
-          toast.error("Strategies available: " + JSON.stringify(signInAttempt.supportedFirstFactors?.map((f:any)=>f.strategy)));
+          toast.error("No supported email verification methods found.");
         }
       } else if (signInAttempt.status === "needs_second_factor") {
         const factor: any = signInAttempt.supportedSecondFactors?.find(
@@ -85,18 +87,20 @@ export default function LoginPage() {
               phoneNumberId: factor.phoneNumberId,
             });
             toast.success("Verification code sent to your phone!");
+            setVerificationStrategy("phone_code");
           } else {
             await clerk.client.signIn.prepareSecondFactor({
               strategy: factor.strategy,
             });
             toast.success("Verification code sent!");
+            setVerificationStrategy(factor.strategy);
           }
           setPendingVerification(true);
         } else {
-          toast.error("Status: " + signInAttempt.status + " | 2FA Factors: " + JSON.stringify(signInAttempt.supportedSecondFactors?.map((f:any)=>f.strategy)));
+          toast.error("No supported 2FA verification methods found.");
         }
       } else {
-        toast.error("Status: " + signInAttempt.status + " | 1FA: " + JSON.stringify(signInAttempt.supportedFirstFactors?.map((f:any)=>f.strategy)) + " | 2FA: " + JSON.stringify(signInAttempt.supportedSecondFactors?.map((f:any)=>f.strategy)));
+        toast.error("Unsupported authentication state.");
       }
     } catch (err: any) {
       const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Authentication failed";
@@ -119,14 +123,12 @@ export default function LoginPage() {
       
       if (status === "needs_second_factor") {
         signInAttempt = await clerk.client.signIn.attemptSecondFactor({
-          strategy: "phone_code",
+          strategy: verificationStrategy as any,
           code: verificationCode,
         });
-        // Note: we assume phone_code here for second factor. If they used email_code, we can fallback.
-        // Actually, attemptSecondFactor accepts strategy. Let's just try phone_code then email_code if error, or just phone_code.
       } else {
         signInAttempt = await clerk.client.signIn.attemptFirstFactor({
-          strategy: "email_code",
+          strategy: verificationStrategy as any,
           code: verificationCode,
         });
       }
@@ -139,23 +141,6 @@ export default function LoginPage() {
         toast.error("Verification failed. Please try again.");
       }
     } catch (err: any) {
-      // Fallback for second factor if strategy was wrong
-      if (clerk.client.signIn.status === "needs_second_factor") {
-        try {
-          const retryAttempt = await clerk.client.signIn.attemptSecondFactor({
-            strategy: "email_code",
-            code: verificationCode,
-          });
-          if (retryAttempt.status === "complete") {
-            await clerk.setActive({ session: retryAttempt.createdSessionId });
-            toast.success("Verification successful! Welcome back.");
-            navigate("/");
-            return;
-          }
-        } catch (retryErr: any) {
-           // Ignore, throw original error
-        }
-      }
       const errorMessage = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || "Verification failed";
       toast.error(errorMessage);
     } finally {

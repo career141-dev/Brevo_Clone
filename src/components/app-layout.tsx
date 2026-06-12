@@ -107,7 +107,6 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/transactional", label: "Transactional", icon: MessageSquare },
       { to: "/conversations", label: "Conversations", icon: Bot },
       { to: "/commerce", label: "Commerce", icon: ShoppingCart },
-      { to: "/analytics", label: "Analytics", icon: BarChart2 },
     ],
   },
 ];

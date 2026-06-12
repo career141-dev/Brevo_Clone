@@ -84,18 +84,18 @@ export default function AnalyticsPage() {
                   </div>
 
                   {/* Stats Section */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-border md:w-[60%] shrink-0 bg-muted/20">
-                    <div className="p-4 flex flex-col items-center justify-center text-center">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 md:w-[60%] shrink-0 bg-muted/20">
+                    <div className="p-4 flex flex-col items-center justify-center text-center border-b sm:border-b-0 border-r border-border">
                       <Users className="size-4 text-muted-foreground mb-1.5" />
                       <span className="text-lg font-semibold">{c.stats.recipients.toLocaleString()}</span>
                       <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">Recipients</span>
                     </div>
-                    <div className="p-4 flex flex-col items-center justify-center text-center">
+                    <div className="p-4 flex flex-col items-center justify-center text-center border-b sm:border-b-0 sm:border-r border-border">
                       <MailOpen className="size-4 text-emerald-500 mb-1.5" />
                       <span className="text-lg font-semibold text-emerald-600">{c.stats.openRate}%</span>
                       <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">Opened</span>
                     </div>
-                    <div className="p-4 flex flex-col items-center justify-center text-center">
+                    <div className="p-4 flex flex-col items-center justify-center text-center border-r border-border">
                       <MousePointerClick className="size-4 text-blue-500 mb-1.5" />
                       <span className="text-lg font-semibold text-blue-600">{c.stats.clickRate}%</span>
                       <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">Clicked</span>

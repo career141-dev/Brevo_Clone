@@ -82,9 +82,13 @@ export default function SettingsPage() {
     retry: false,
   });
 
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard!");
+  const handleCopy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copied to clipboard!");
+    } catch (err) {
+      toast.error("Failed to copy to clipboard.");
+    }
   };
 
   // Derived Data
@@ -185,7 +189,16 @@ export default function SettingsPage() {
                         <Button variant="ghost" size="sm" className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-medium">
                           Edit
                         </Button>
-                        <Button variant="ghost" size="icon" className="text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => deleteSenderMutation.mutate(sender.id)}>
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          className="text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity" 
+                          onClick={() => {
+                            if (window.confirm("Are you sure you want to delete this sender?")) {
+                              deleteSenderMutation.mutate(sender.id);
+                            }
+                          }}
+                        >
                           <Trash2 className="size-4" />
                         </Button>
                       </div>
@@ -274,7 +287,8 @@ export default function SettingsPage() {
                   </tr>
                 ) : (
                   domains.map(domain => {
-                    const status = sendersStatus?.[domain] || {};
+                    const senderWithDomain = senders?.find((s: any) => s.email.endsWith("@" + domain));
+                    const status = sendersStatus?.[domain] || (senderWithDomain ? sendersStatus?.[senderWithDomain.email] : {}) || {};
                     const isVerified = status.verificationStatus === "Success" || status.dkimStatus === "Success";
 
                     return (

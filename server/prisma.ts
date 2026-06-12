@@ -2,15 +2,24 @@ import "dotenv/config";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 import { PrismaClient } from "@prisma/client";
 
-const url = new URL(process.env.DATABASE_URL!);
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL environment variable is required.");
+}
+
+let url: URL;
+try {
+  url = new URL(process.env.DATABASE_URL);
+} catch (err) {
+  throw new Error("Failed to parse DATABASE_URL. Please ensure it is a valid connection string.");
+}
 
 const adapter = new PrismaMariaDb({
   host: url.hostname,
-  port: Number(url.port),
+  port: url.port ? Number(url.port) : 3306,
   user: decodeURIComponent(url.username),
   password: decodeURIComponent(url.password),
   database: url.pathname.replace(/^\//, ""),
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: true },
   connectTimeout: 30000,
   connectionLimit: 30,
 });

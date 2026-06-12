@@ -224,7 +224,7 @@ app.get("/api/lists", async (req, res) => {
     const q = (req.query.q as string ?? "").toLowerCase();
     const folderId = req.query.folderId ? Number(req.query.folderId) : undefined;
     const page = Math.max(1, Number(req.query.page) || 1);
-    const pageSize = Math.min(10000, Math.max(1, Number(req.query.pageSize) || 10));
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
 
     const baseWhere: any = {};
     if (type) baseWhere.type = type;
@@ -652,12 +652,21 @@ app.post("/api/campaigns", async (req, res) => {
 // PUT update campaign
 app.put("/api/campaigns/:id", async (req, res) => {
   try {
-    const data = req.body;
-    if (data.id !== undefined) delete data.id;
-    if (data.createdAt !== undefined) delete data.createdAt;
+    const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId } = req.body;
+    
+    // Only allow updating safe fields to prevent mass assignment vulnerabilities
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (subject !== undefined) updateData.subject = subject;
+    if (fromName !== undefined) updateData.fromName = fromName;
+    if (fromEmail !== undefined) updateData.fromEmail = fromEmail;
+    if (templateHtml !== undefined) updateData.templateHtml = templateHtml;
+    if (audienceType !== undefined) updateData.audienceType = audienceType;
+    if (audienceId !== undefined) updateData.audienceId = audienceId;
+
     const campaign = await prisma.campaign.update({
       where: { id: Number(req.params.id) },
-      data,
+      data: updateData,
     });
     res.json(campaign);
   } catch (err: any) {
@@ -672,6 +681,9 @@ app.delete("/api/campaigns/bulk", async (req, res) => {
     const { campaignIds } = req.body;
     if (!Array.isArray(campaignIds) || campaignIds.length === 0) {
       return res.status(400).json({ error: "campaignIds array is required" });
+    }
+    if (campaignIds.length > 100) {
+      return res.status(400).json({ error: "Cannot delete more than 100 campaigns at once" });
     }
     
     // First delete associated email events
@@ -760,11 +772,15 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       return res.status(400).json({ error: "No template selected" });
     }
 
-    // 2. Mark as sending
-    await prisma.campaign.update({
-      where: { id: campaignId },
+    // 2. Mark as sending atomically to prevent race condition
+    const updateResult = await prisma.campaign.updateMany({
+      where: { id: campaignId, status: "draft" },
       data: { status: "sending" },
     });
+    
+    if (updateResult.count === 0) {
+      return res.status(400).json({ error: "Campaign is already sending or sent" });
+    }
 
     // 3. Fetch subscribed contacts from the selected list
     const contacts = await prisma.contact.findMany({
@@ -1154,8 +1170,22 @@ app.get('/api/analytics/campaigns/:id/export', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     res.write('Email,Event Type,Timestamp,URL\n');
 
+    const escapeCSV = (str: string) => {
+      if (!str) return "";
+      let escaped = String(str);
+      // Formula injection mitigation
+      if (/^[=+\-@\t\n\r]/.test(escaped)) {
+        escaped = "'" + escaped;
+      }
+      // Handle commas, quotes, carriage returns and newlines
+      if (escaped.includes(',') || escaped.includes('"') || escaped.includes('\n') || escaped.includes('\r')) {
+        escaped = `"${escaped.replace(/"/g, '""')}"`;
+      }
+      return escaped;
+    };
+
     events.forEach(e => {
-      res.write(`${e.email},${e.eventType},${e.timestamp.toISOString()},${e.url || ''}\n`);
+      res.write(`${escapeCSV(e.email)},${escapeCSV(e.eventType)},${e.timestamp.toISOString()},${escapeCSV(e.url || '')}\n`);
     });
 
     res.end();
@@ -1552,7 +1582,10 @@ app.post("/api/brevo/link-lists", async (req, res) => {
 
 // ── Helper ───────────────────────────────────────────────────────────
 
-const JWT_SECRET = process.env.JWT_SECRET!;
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable is required.");
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
 
 function makeUnsubscribeUrl(email: string, campaignId: number | null): string {
@@ -1615,7 +1648,10 @@ app.post(
     const body = req.body;
 
     if (body.Type === "SubscriptionConfirmation") {
-      await fetch(body.SubscribeURL);
+      const url = body.SubscribeURL;
+      if (typeof url === "string" && /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com\//.test(url)) {
+        await fetch(url);
+      }
       return res.status(200).json({ ok: true });
     }
 
@@ -1883,18 +1919,7 @@ app.post("/api/email/send", async (req, res) => {
   return res.json({ sent, errors });
 });
 
-// ── Test ────────────────────────────────────────────────────────────
-
-app.get("/api/test/unsub-token", (req, res) => {
-  const token = jwt.sign({ email: "test@example.com" }, process.env.JWT_SECRET!, { expiresIn: "90d" });
-  res.json({ url: `http://localhost:3001/api/unsubscribe?token=${token}` });
-});
-
-app.get("/api/test/unsub-token-email", (req, res) => {
-  const email = (req.query.email as string) ?? "test@example.com";
-  const token = jwt.sign({ email }, process.env.JWT_SECRET!, { expiresIn: "90d" });
-  res.json({ url: `http://localhost:3001/api/unsubscribe?token=${token}` });
-});
+// ── Test endpoints removed for security ──────────────────────────────
 
 // ── Senders ─────────────────────────────────────────────────────────
 
@@ -2002,7 +2027,7 @@ app.get("/api/senders/quota", async (_req, res) => {
     // If IAM user is missing ses:GetSendQuota permission, return a graceful fallback
     // rather than throwing a 500 internal server error.
     console.error("SES Quota Error:", err);
-    res.json({ max: 5000, sent: 962, remaining: 4038 });
+    res.status(403).json({ error: "Missing ses:GetSendQuota permission or AWS credentials invalid." });
   }
 });
 
@@ -2057,15 +2082,7 @@ app.get("/api/domains/dns-records", async (req, res) => {
   }
 });
 
-// ── Debug ─────────────────────────────────────────────────────────
-
-app.get("/api/debug/events", async (_req, res) => {
-  const events = await prisma.emailEvent.findMany({
-    orderBy: { timestamp: "desc" },
-    take: 50,
-  });
-  res.json(events);
-});
+// ── Debug endpoints removed for security ────────────────────────────
 
 // ── Static frontend (production) ────────────────────────────────────
 

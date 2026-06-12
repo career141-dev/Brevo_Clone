@@ -84,7 +84,7 @@ export default function EditContactDrawer({ open, onClose, contact, onSave }: Pr
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
 
   useEffect(() => {
-    if (contact) {
+    if (open && contact) {
       setForm({
         firstName: contact.firstName ?? "",
         lastName: contact.lastName ?? "",
@@ -104,7 +104,7 @@ export default function EditContactDrawer({ open, onClose, contact, onSave }: Pr
         ownerId: contact.ownerId ?? "",
       });
     }
-  }, [contact]);
+  }, [open, contact?.id]);
 
   function set(field: keyof FormState, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
