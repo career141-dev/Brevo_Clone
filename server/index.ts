@@ -8,6 +8,7 @@ import jwt from "jsonwebtoken";
 import { prisma } from "./prisma.js";
 import { sesClient } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
+import { UAParser } from "ua-parser-js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -900,12 +901,22 @@ app.get('/api/analytics/campaigns', async (req, res) => {
             c[type] = (c[type] || 0) + 1;
         }
 
+        const sentEmails = Array.from(new Set(events.filter(e => e.eventType === 'sent').map(e => e.email)));
+        let unsub = c['unsubscribed'] || 0;
+        if (sentEmails.length > 0) {
+          unsub = await prisma.contact.count({
+            where: {
+              email: { in: sentEmails },
+              status: 'unsubscribed'
+            }
+          });
+        }
+
         const recipients = campaign.totalRecipients || 0;
         const delivered = c['delivered'] || 0;
         const opened = c['opened'] || 0;
         const clicked = c['clicked'] || 0;
         const bounced = c['bounced'] || 0;
-        const unsub = c['unsubscribed'] || 0;
         const complained = c['complained'] || 0;
 
         const pct = (n: number, d: number) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
@@ -962,20 +973,101 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
 
     const allEvents = await prisma.emailEvent.findMany({
       where: { campaignId },
-      select: { eventType: true, email: true }
+      select: { eventType: true, email: true, url: true, userAgent: true, timestamp: true },
+      orderBy: { timestamp: 'asc' }
     });
 
     const uniqueEvents = new Set(allEvents.map(e => `${e.eventType}:${e.email}`));
     const c: Record<string, number> = {};
     
     let rawClicks = 0;
+    const urlCounts: Record<string, number> = {};
+    const parser = new UAParser();
+    const devices = { desktop: 0, mobile: 0, tablet: 0, other: 0 };
+    const browsers: Record<string, number> = {};
+    
+    const engagementTimelineMap: Record<string, { time: string; opens: number; clicks: number }> = {};
+    const processedEngagement = new Set<string>();
+
     allEvents.forEach(e => {
-        if (e.eventType === 'clicked') rawClicks++;
+        if (e.eventType === 'clicked') {
+            rawClicks++;
+            if (e.url) {
+                urlCounts[e.url] = (urlCounts[e.url] || 0) + 1;
+            }
+        }
+        
+        // Parse User Agent
+        if ((e.eventType === 'opened' || e.eventType === 'clicked') && e.userAgent) {
+            // Deduplicate UA parsing per user action type to avoid skewing if they click 10 times
+            const uaKey = `${e.eventType}:${e.email}:${e.userAgent}`;
+            if (!processedEngagement.has(uaKey)) {
+                processedEngagement.add(uaKey);
+                parser.setUA(e.userAgent);
+                const result = parser.getResult();
+                
+                const deviceType = result.device.type || 'desktop';
+                if (['mobile', 'tablet'].includes(deviceType)) {
+                    devices[deviceType as 'mobile' | 'tablet']++;
+                } else if (['smarttv', 'console', 'wearable', 'embedded'].includes(deviceType)) {
+                    devices.other++;
+                } else {
+                    devices.desktop++;
+                }
+                
+                const browser = result.browser.name || 'Unknown';
+                browsers[browser] = (browsers[browser] || 0) + 1;
+            }
+        }
+
+        // Engagement Timeline (group by day/hour)
+        if (e.eventType === 'opened' || e.eventType === 'clicked') {
+            // deduplicate timeline per user action type per hour
+            const hourString = e.timestamp.toISOString().substring(0, 13) + ':00:00.000Z';
+            const tlKey = `${e.eventType}:${e.email}:${hourString}`;
+            
+            if (!processedEngagement.has(tlKey)) {
+                processedEngagement.add(tlKey);
+                if (!engagementTimelineMap[hourString]) {
+                    // Create a nice display label (e.g. "Jun 12, 10 AM")
+                    const dateObj = new Date(hourString);
+                    const timeLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true }).format(dateObj);
+                    engagementTimelineMap[hourString] = { time: timeLabel, opens: 0, clicks: 0 };
+                }
+                if (e.eventType === 'opened') engagementTimelineMap[hourString].opens++;
+                if (e.eventType === 'clicked') engagementTimelineMap[hourString].clicks++;
+            }
+        }
     });
+    
+    const topLinks = Object.entries(urlCounts)
+        .map(([url, count]) => ({ url, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+        
+    const topBrowsers = Object.entries(browsers)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+        
+    const engagementTimeline = Object.entries(engagementTimelineMap)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(entry => entry[1]);
 
     for (const u of uniqueEvents) {
         const type = u.split(':')[0];
         c[type] = (c[type] || 0) + 1;
+    }
+
+    const sentEmails = Array.from(new Set(allEvents.filter(e => e.eventType === 'sent').map(e => e.email)));
+    let unsub = c['unsubscribed'] || 0;
+    if (sentEmails.length > 0) {
+      unsub = await prisma.contact.count({
+        where: {
+          email: { in: sentEmails },
+          status: 'unsubscribed'
+        }
+      });
     }
 
     const recipients = campaign.totalRecipients || 0;
@@ -983,7 +1075,6 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
     const opened = c['opened'] || 0;
     const clicked = c['clicked'] || 0;
     const bounced = c['bounced'] || 0;
-    const unsub = c['unsubscribed'] || 0;
     const complained = c['complained'] || 0;
 
     const pct = (n: number, d: number) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
@@ -1026,6 +1117,12 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         complaintRate: pct(complained, delivered),
       },
       timeline,
+      advanced: {
+        topLinks,
+        devices,
+        topBrowsers,
+        engagementTimeline,
+      }
     };
 
     setCache(cacheKey, result, 5 * 60 * 1000);
