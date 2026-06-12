@@ -1954,18 +1954,22 @@ app.post("/api/email/send", async (req, res) => {
     html = injectTracking(html, contact.email.toLowerCase(), campaignId ?? null);
 
     try {
-      await sesClient.send(
-        new SendEmailCommand({
-          Source: `${fromName} <${fromEmail}>`,
+      await sesv2Client.send(
+        new SendEmailV2Command({
+          FromEmailAddress: `${fromName} <${fromEmail}>`,
           Destination: { ToAddresses: [contact.email] },
           ConfigurationSetName: "career141-tracking",
-          Message: {
-            Subject: { Data: subject, Charset: "UTF-8" },
-            Body: { Html: { Data: html, Charset: "UTF-8" } },
+          Content: {
+            Simple: {
+              Subject: { Data: subject, Charset: "UTF-8" },
+              Body: { Html: { Data: html, Charset: "UTF-8" } },
+              Headers: [
+                { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+              ],
+            },
           },
-          Tags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
-          // @ts-ignore
-          Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
+          EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
         }),
       );
       // Log "sent" event with campaignId for /api/email/send route
