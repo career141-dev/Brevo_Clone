@@ -3,10 +3,11 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import express from "express"; // server restarted
 import cors from "cors";
-import { SendEmailCommand, GetSendQuotaCommand } from "@aws-sdk/client-ses";
+import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
+import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import jwt from "jsonwebtoken";
 import { prisma } from "./prisma.js";
-import { sesClient } from "./lib/ses.js";
+import { sesClient, sesv2Client } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
 
@@ -832,20 +833,24 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       html = injectTracking(html, contact.email, campaignId);
 
       try {
-        await sesClient.send(new SendEmailCommand({
-          Source: `${campaign.fromName} <${campaign.fromEmail}>`,
+        await sesv2Client.send(new SendEmailV2Command({
+          FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
           Destination: { ToAddresses: [contact.email] },
+          // Use config set ONLY for bounce/complaint/delivery SNS events.
+          // Click and open tracking must be DISABLED in the config set so AWS does
+          // NOT double-wrap our own tracking URLs with awstrack.me redirects.
           ConfigurationSetName: "career141-tracking",
-          Message: {
-            Subject: { Data: campaign.subject, Charset: "UTF-8" },
-            Body: { Html: { Data: html, Charset: "UTF-8" } },
+          Content: {
+            Simple: {
+              Subject: { Data: campaign.subject, Charset: "UTF-8" },
+              Body: { Html: { Data: html, Charset: "UTF-8" } },
+              Headers: [
+                { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+              ],
+            },
           },
-          Tags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-          // @ts-ignore
-          Headers: [
-            { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-            { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" }
-          ],
+          EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
         }));
         // Log "sent" event with campaignId
         await prisma.emailEvent.create({
@@ -1083,13 +1088,16 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
     const clicked = c['clicked'] || 0;
     const bounced = c['bounced'] || 0;
     const complained = c['complained'] || 0;
+    const rejected = c['rejected'] || 0;
+    const renderingFailures = c['rendering_failure'] || 0;
+    const delayed = c['delayed'] || 0;
 
     const pct = (n: number, d: number) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
 
     const timeline = await prisma.emailEvent.findMany({
       where: { campaignId },
       orderBy: { timestamp: 'desc' },
-      take: 20,
+      take: 50,
       select: { eventType: true, email: true, timestamp: true },
     });
 
@@ -1115,6 +1123,9 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         bounced,
         unsubscribed: unsub,
         complained,
+        rejected,
+        renderingFailures,
+        delayed,
         deliveryRate: pct(delivered, recipients),
         openRate: pct(opened, delivered),
         clickRate: pct(clicked, delivered),
@@ -1122,6 +1133,8 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         bounceRate: pct(bounced, recipients),
         unsubscribeRate: pct(unsub, delivered),
         complaintRate: pct(complained, delivered),
+        rejectedRate: pct(rejected, recipients),
+        delayRate: pct(delayed, recipients),
       },
       timeline,
       advanced: {
@@ -1645,16 +1658,25 @@ app.post(
 
     if (body.Type === "Notification") {
       const msg = JSON.parse(body.Message);
-      const type = msg.notificationType;
+      // AWS SES uses `notificationType` for old format, `eventType` for new format
+      const type = msg.notificationType || msg.eventType || "";
       
+      // Extract email — differs per event type
       let email = "";
-      if (type === "Bounce") email = msg.bounce.bouncedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
-      if (type === "Complaint") email = msg.complaint.complainedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
-      if (type === "Delivery") email = msg.delivery.recipients?.[0]?.toLowerCase() || "";
+      if (type === "Bounce")          email = msg.bounce?.bouncedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+      if (type === "Complaint")       email = msg.complaint?.complainedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+      if (type === "Delivery")        email = msg.delivery?.recipients?.[0]?.toLowerCase() || "";
+      if (type === "Send")            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+      if (type === "Reject")          email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+      if (type === "RenderingFailure") email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+      if (type === "DeliveryDelay")   email = msg.deliveryDelay?.delayedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+      if (type === "Subscription")    email = msg.mail?.destination?.[0]?.toLowerCase() || "";
 
-      let campaignId = msg.mail?.tags?.campaign_id?.[0] ? parseInt(msg.mail.tags.campaign_id[0], 10) : null;
+      let campaignId: number | null = msg.mail?.tags?.campaign_id?.[0] 
+        ? parseInt(msg.mail.tags.campaign_id[0], 10) 
+        : null;
 
-      // Fallback: If tag is missing, find the most recent 'sent' event for this email
+      // Fallback: find most recent 'sent' event for this email
       if (!campaignId && email) {
         const recent = await prisma.emailEvent.findFirst({
           where: { email, eventType: "sent" },

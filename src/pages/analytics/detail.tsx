@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
-import { ArrowLeft, Download, MailOpen, MousePointerClick, Send, AlertTriangle, UserMinus, ShieldAlert, Globe, MonitorSmartphone } from "lucide-react";
+import { ArrowLeft, Download, MailOpen, MousePointerClick, Send, AlertTriangle, UserMinus, ShieldAlert, Globe, MonitorSmartphone, Clock, Ban, FileX } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import {
   LineChart,
@@ -162,8 +162,8 @@ export default function AnalyticsDetailPage() {
         </Card>
       </div>
 
-      {/* Secondary Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Secondary Metrics — 6 metrics in 2 rows of 3 */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <Card className="shadow-sm bg-muted/20">
           <CardContent className="p-5 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -197,6 +197,42 @@ export default function AnalyticsDetailPage() {
             <div className="text-right">
               <span className="text-lg font-bold">{stats.complained.toLocaleString()}</span>
               <span className="text-xs text-muted-foreground ml-1">({stats.complaintRate}%)</span>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="shadow-sm bg-muted/20">
+          <CardContent className="p-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Clock className="size-5 text-yellow-500" />
+              <span className="font-medium text-sm">Delivery Delays</span>
+            </div>
+            <div className="text-right">
+              <span className="text-lg font-bold">{(stats.delayed ?? 0).toLocaleString()}</span>
+              <span className="text-xs text-muted-foreground ml-1">({stats.delayRate ?? 0}%)</span>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="shadow-sm bg-muted/20">
+          <CardContent className="p-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Ban className="size-5 text-gray-500" />
+              <span className="font-medium text-sm">Rejected</span>
+            </div>
+            <div className="text-right">
+              <span className="text-lg font-bold">{(stats.rejected ?? 0).toLocaleString()}</span>
+              <span className="text-xs text-muted-foreground ml-1">({stats.rejectedRate ?? 0}%)</span>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="shadow-sm bg-muted/20">
+          <CardContent className="p-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <FileX className="size-5 text-rose-400" />
+              <span className="font-medium text-sm">Render Failures</span>
+            </div>
+            <div className="text-right">
+              <span className="text-lg font-bold">{(stats.renderingFailures ?? 0).toLocaleString()}</span>
+              <span className="text-xs text-muted-foreground ml-1 block">of {stats.recipients}</span>
             </div>
           </CardContent>
         </Card>
@@ -318,21 +354,50 @@ export default function AnalyticsDetailPage() {
           <CardTitle className="text-lg font-semibold">Recent Events</CardTitle>
         </CardHeader>
         <CardContent>
-          {timeline && timeline.length > 0 ? (
-            <div className="space-y-4">
-              {timeline.map((event: any, i: number) => (
-                <div key={i} className="flex items-center justify-between border-b last:border-0 pb-4 last:pb-0">
-                  <div className="flex items-center gap-3">
-                    <Badge variant="outline" className="uppercase text-[10px] w-20 justify-center">
-                      {event.eventType}
-                    </Badge>
-                    <span className="text-sm font-medium">{event.email}</span>
+        {timeline && timeline.length > 0 ? (
+            <div className="space-y-3">
+              {timeline.map((event: any, i: number) => {
+                const badgeColors: Record<string, string> = {
+                  sent:              "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                  delivered:         "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
+                  opened:            "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                  clicked:           "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+                  bounced:           "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
+                  complained:        "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+                  unsubscribed:      "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400",
+                  rejected:          "bg-gray-100 text-gray-600 dark:bg-gray-900/30 dark:text-gray-400",
+                  rendering_failure: "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400",
+                  delayed:           "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
+                };
+                const label: Record<string, string> = {
+                  sent:              "sent",
+                  delivered:         "delivered",
+                  opened:            "opened",
+                  clicked:           "clicked",
+                  bounced:           "bounced",
+                  complained:        "spam",
+                  unsubscribed:      "unsub",
+                  rejected:          "rejected",
+                  rendering_failure: "render err",
+                  delayed:           "delayed",
+                };
+                return (
+                  <div key={i} className="flex items-center justify-between border-b last:border-0 pb-3 last:pb-0">
+                    <div className="flex items-center gap-3">
+                      <span className={cn(
+                        "inline-flex items-center justify-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider min-w-[72px]",
+                        badgeColors[event.eventType] || "bg-muted text-muted-foreground"
+                      )}>
+                        {label[event.eventType] || event.eventType}
+                      </span>
+                      <span className="text-sm font-medium">{event.email}</span>
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0 ml-4">
+                      {format(new Date(event.timestamp), "MMM d, h:mm:ss a")}
+                    </span>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {format(new Date(event.timestamp), "MMM d, h:mm:ss a")}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <p className="text-sm text-muted-foreground text-center py-6">No events recorded yet.</p>
