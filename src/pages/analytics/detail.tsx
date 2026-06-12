@@ -36,6 +36,8 @@ export default function AnalyticsDetailPage() {
     queryKey: ["analytics", "campaign", id],
     queryFn: () => api.analytics.campaignDetail(Number(id)),
     enabled: !!id,
+    refetchInterval: 20_000, // auto-refresh every 20 seconds
+    refetchIntervalInBackground: false,
   });
 
   if (isLoading) {

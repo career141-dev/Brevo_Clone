@@ -16,7 +16,7 @@ const PORT = process.env.PORT ?? 3001;
 app.use(cors());
 app.use(express.json());
 
-// ■■ Analytics Cache (5 min TTL) ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+// ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
 const analyticsCache = new Map<string, { data: any; expiresAt: number }>();
 function getCached(key: string) {
   const entry = analyticsCache.get(key);
@@ -26,8 +26,12 @@ function getCached(key: string) {
   }
   return entry.data;
 }
-function setCache(key: string, data: any, ttlMs = 5 * 60 * 1000) {
+function setCache(key: string, data: any, ttlMs = 30 * 1000) {
   analyticsCache.set(key, { data, expiresAt: Date.now() + ttlMs });
+}
+function invalidateAnalyticsCache(campaignId?: number) {
+  analyticsCache.delete('analytics:campaigns');
+  if (campaignId) analyticsCache.delete(`analytics:campaign:${campaignId}`);
 }
 
 // ── Contacts ────────────────────────────────────────────────────────
@@ -920,16 +924,8 @@ app.get('/api/analytics/campaigns', async (req, res) => {
             c[type] = (c[type] || 0) + 1;
         }
 
-        const sentEmails = Array.from(new Set(events.filter(e => e.eventType === 'sent').map(e => e.email)));
-        let unsub = c['unsubscribed'] || 0;
-        if (sentEmails.length > 0) {
-          unsub = await prisma.contact.count({
-            where: {
-              email: { in: sentEmails },
-              status: 'unsubscribed'
-            }
-          });
-        }
+        // Count unsubscribes from email events (not contact status — more reliable)
+        const unsub = c['unsubscribed'] || 0;
 
         const recipients = campaign.totalRecipients || 0;
         const delivered = c['delivered'] || 0;
@@ -970,7 +966,7 @@ app.get('/api/analytics/campaigns', async (req, res) => {
       })
     );
 
-    setCache('analytics:campaigns', result);
+    setCache('analytics:campaigns', result, 30 * 1000);
     res.json(result);
   } catch (err: any) {
     console.error("Analytics fetch error:", err);
@@ -1078,16 +1074,8 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         c[type] = (c[type] || 0) + 1;
     }
 
-    const sentEmails = Array.from(new Set(allEvents.filter(e => e.eventType === 'sent').map(e => e.email)));
-    let unsub = c['unsubscribed'] || 0;
-    if (sentEmails.length > 0) {
-      unsub = await prisma.contact.count({
-        where: {
-          email: { in: sentEmails },
-          status: 'unsubscribed'
-        }
-      });
-    }
+    // Count unsubscribes from email events directly (more reliable than contact status)
+    const unsub = c['unsubscribed'] || 0;
 
     const recipients = campaign.totalRecipients || 0;
     const delivered = c['delivered'] || 0;
@@ -1144,7 +1132,7 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
       }
     };
 
-    setCache(cacheKey, result, 5 * 60 * 1000);
+    setCache(cacheKey, result, 30 * 1000);
     res.json(result);
   } catch (err: any) {
     console.error("Analytics detail fetch error:", err);
@@ -1756,6 +1744,8 @@ app.get("/api/track/open", async (req, res) => {
       await prisma.emailEvent.create({
         data: { email, campaignId: campaignId ?? undefined, eventType: "opened" },
       });
+      // Invalidate cache so analytics refresh quickly
+      invalidateAnalyticsCache(campaignId ?? undefined);
     }
   } catch {
     // Swallow — invalid / expired token
@@ -1785,6 +1775,8 @@ app.get("/api/track/click", async (req, res) => {
         userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null,
       },
     });
+    // Invalidate cache so analytics update quickly
+    invalidateAnalyticsCache(campaignId ?? undefined);
 
     return res.redirect(302, url);
   } catch {
@@ -1814,14 +1806,75 @@ app.get("/api/unsubscribe", async (req, res) => {
       },
     });
 
+    // Invalidate analytics cache so stats update immediately
+    invalidateAnalyticsCache(decoded.campaignId ?? undefined);
+
     return res.status(200).send(`
-<html><body style="font-family:sans-serif;text-align:center;padding:60px">
-<h2>You have been unsubscribed.</h2>
-<p>You will no longer receive emails from Career141.</p>
-</body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unsubscribed - Career141</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+    .card { background: white; border-radius: 16px; padding: 48px 40px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+    .icon { width: 64px; height: 64px; background: #f0fdf4; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px; }
+    h1 { font-size: 22px; font-weight: 700; color: #111827; margin-bottom: 10px; }
+    p { font-size: 15px; color: #6b7280; line-height: 1.6; }
+    .email { font-weight: 600; color: #374151; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+    <h1>You've been unsubscribed</h1>
+    <p>The email address <span class="email">${decoded.email}</span> has been removed from our mailing list. You will no longer receive marketing emails from Career141.</p>
+  </div>
+</body>
+</html>
 `);
   } catch {
     return res.status(400).send("Invalid or expired unsubscribe link.");
+  }
+});
+
+// ── RFC 8058 One-Click Unsubscribe (POST — used by Gmail/Apple Mail native button) ──
+app.post("/api/unsubscribe", express.urlencoded({ extended: false }), async (req, res) => {
+  // RFC 8058: email clients POST with List-Unsubscribe=One-Click body
+  const token = (req.query.token || req.body?.token) as string;
+  if (!token) return res.status(400).send("Missing token.");
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { email: string; campaignId?: number | null };
+
+    await prisma.contact.updateMany({
+      where: { email: decoded.email.toLowerCase() },
+      data: { status: "unsubscribed" },
+    });
+
+    // Avoid duplicate unsubscribe events
+    const existing = await prisma.emailEvent.findFirst({
+      where: { email: decoded.email.toLowerCase(), eventType: "unsubscribed", campaignId: decoded.campaignId ?? undefined }
+    });
+    if (!existing) {
+      await prisma.emailEvent.create({
+        data: {
+          email: decoded.email.toLowerCase(),
+          eventType: "unsubscribed",
+          campaignId: decoded.campaignId ?? undefined
+        },
+      });
+    }
+
+    invalidateAnalyticsCache(decoded.campaignId ?? undefined);
+    // RFC 8058 requires a 200 OK with no redirect for POST
+    return res.status(200).send("OK");
+  } catch {
+    return res.status(400).send("Invalid or expired token.");
   }
 });
 

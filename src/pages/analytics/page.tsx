@@ -19,6 +19,8 @@ export default function AnalyticsPage() {
   const { data: campaigns, isLoading } = useQuery({
     queryKey: ["analytics", "campaigns"],
     queryFn: () => api.analytics.campaigns(),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
   });
 
   return (
