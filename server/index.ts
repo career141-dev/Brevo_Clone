@@ -881,14 +881,24 @@ app.get('/api/analytics/campaigns', async (req, res) => {
 
     const result = await Promise.all(
       campaigns.map(async (campaign) => {
-        const events = await prisma.emailEvent.groupBy({
-          by: ['eventType'],
+        const events = await prisma.emailEvent.findMany({
           where: { campaignId: campaign.id },
-          _count: { eventType: true },
+          select: { eventType: true, email: true }
         });
 
+        const uniqueEvents = new Set(events.map(e => `${e.eventType}:${e.email}`));
         const c: Record<string, number> = {};
-        events.forEach(e => { c[e.eventType] = e._count.eventType; });
+        
+        // Count total clicks just to show raw clicks if we wanted to, but we'll use unique for rate
+        let rawClicks = 0;
+        events.forEach(e => {
+            if (e.eventType === 'clicked') rawClicks++;
+        });
+
+        for (const u of uniqueEvents) {
+            const type = u.split(':')[0];
+            c[type] = (c[type] || 0) + 1;
+        }
 
         const recipients = campaign.totalRecipients || 0;
         const delivered = c['delivered'] || 0;
@@ -913,7 +923,8 @@ app.get('/api/analytics/campaigns', async (req, res) => {
             recipients,
             delivered,
             opened,
-            clicked,
+            clicked: rawClicks > 0 ? rawClicks : clicked,
+            uniqueClicked: clicked,
             bounced,
             unsubscribed: unsub,
             complained,
@@ -923,6 +934,7 @@ app.get('/api/analytics/campaigns', async (req, res) => {
             bounceRate: pct(bounced, recipients),
             unsubscribeRate: pct(unsub, delivered || recipients),
             complaintRate: pct(complained, delivered || recipients),
+            clickToOpenRate: pct(clicked, opened),
           },
         };
       })
@@ -948,14 +960,23 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
     });
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
-    const events = await prisma.emailEvent.groupBy({
-      by: ['eventType'],
+    const allEvents = await prisma.emailEvent.findMany({
       where: { campaignId },
-      _count: { eventType: true },
+      select: { eventType: true, email: true }
     });
 
+    const uniqueEvents = new Set(allEvents.map(e => `${e.eventType}:${e.email}`));
     const c: Record<string, number> = {};
-    events.forEach(e => { c[e.eventType] = e._count.eventType; });
+    
+    let rawClicks = 0;
+    allEvents.forEach(e => {
+        if (e.eventType === 'clicked') rawClicks++;
+    });
+
+    for (const u of uniqueEvents) {
+        const type = u.split(':')[0];
+        c[type] = (c[type] || 0) + 1;
+    }
 
     const recipients = campaign.totalRecipients || 0;
     const delivered = c['delivered'] || 0;
@@ -991,7 +1012,8 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         recipients,
         delivered,
         opened,
-        clicked,
+        clicked: rawClicks > 0 ? rawClicks : clicked,
+        uniqueClicked: clicked,
         bounced,
         unsubscribed: unsub,
         complained,
@@ -1433,8 +1455,8 @@ app.post("/api/brevo/link-lists", async (req, res) => {
 const JWT_SECRET = process.env.JWT_SECRET!;
 const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
 
-function makeUnsubscribeUrl(email: string): string {
-  const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: "90d" });
+function makeUnsubscribeUrl(email: string, campaignId: number | null): string {
+  const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
   return `${APP_URL()}/api/unsubscribe?token=${token}`;
 }
 
@@ -1641,7 +1663,7 @@ app.get("/api/unsubscribe", async (req, res) => {
   if (!token) return res.status(400).send("Invalid link.");
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { email: string };
+    const decoded = jwt.verify(token, JWT_SECRET) as { email: string; campaignId?: number | null };
 
     await prisma.contact.updateMany({
       where: { email: decoded.email.toLowerCase() },
@@ -1649,7 +1671,11 @@ app.get("/api/unsubscribe", async (req, res) => {
     });
 
     await prisma.emailEvent.create({
-      data: { email: decoded.email.toLowerCase(), eventType: "unsubscribed" },
+      data: { 
+        email: decoded.email.toLowerCase(), 
+        eventType: "unsubscribed",
+        campaignId: decoded.campaignId ?? undefined
+      },
     });
 
     return res.status(200).send(`
@@ -1686,7 +1712,7 @@ app.post("/api/email/send", async (req, res) => {
   const errors: string[] = [];
 
   for (const contact of contacts) {
-    const unsubUrl = makeUnsubscribeUrl(contact.email);
+    const unsubUrl = makeUnsubscribeUrl(contact.email, campaignId ?? null);
 
     // 1. Personalise the template
     let html = htmlTemplate;
