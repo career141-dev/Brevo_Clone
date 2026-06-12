@@ -822,7 +822,10 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
           },
           Tags: [{ Name: "campaign_id", Value: campaignId.toString() }],
           // @ts-ignore
-          Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
+          Headers: [
+            { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+            { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" }
+          ],
         }));
         // Log "sent" event with campaignId
         await prisma.emailEvent.create({
