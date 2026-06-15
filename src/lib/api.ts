@@ -163,6 +163,14 @@ export const api = {
   analytics: {
     campaigns: () => request<any[]>("/analytics/campaigns"),
     campaignDetail: (id: number) => request<any>(`/analytics/campaigns/${id}`),
+    contactEvents: (id: number, params?: { page?: number; pageSize?: number; q?: string }) => {
+      const qs = new URLSearchParams();
+      if (params?.page) qs.set("page", String(params.page));
+      if (params?.pageSize) qs.set("pageSize", String(params.pageSize));
+      if (params?.q) qs.set("q", params.q);
+      const suffix = qs.toString() ? `?${qs}` : "";
+      return request<PaginatedResponse<any>>(`/analytics/campaigns/${id}/contact-events${suffix}`);
+    },
   },
   senders: {
     list: () => request<{ id: number; name: string; email: string }[]>("/senders"),

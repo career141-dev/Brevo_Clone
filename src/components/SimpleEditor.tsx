@@ -358,20 +358,20 @@ export default function SimpleEditor({
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="fixed inset-0 bg-gray-50 flex flex-col z-50 overflow-hidden">
+    <div className="fixed inset-0 bg-background flex flex-col z-50 overflow-hidden">
 
       {/* ── Top Bar ──────────────────────────────────────────────────────── */}
-      <div className="h-14 bg-white border-b flex items-center justify-between px-4 shrink-0 gap-3">
+      <div className="h-14 bg-card border-b flex items-center justify-between px-4 shrink-0 gap-3">
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="text-base font-semibold border-transparent hover:border-input focus:border-input w-72 shadow-none"
+          className="text-base font-semibold border-transparent hover:border-input focus:border-input w-72 shadow-none bg-transparent"
           placeholder="Template Name"
         />
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
           <Button variant="outline" size="sm">Preview & Test</Button>
-          <Button size="sm" onClick={handleSave} className="bg-gray-900 text-white hover:bg-gray-800">
+          <Button size="sm" onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90">
             Save &amp; Quit
           </Button>
           <Button variant="ghost" size="icon">
@@ -382,13 +382,13 @@ export default function SimpleEditor({
 
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
       {!isSourceMode && (
-        <div className="h-11 bg-white border-b flex items-center px-3 gap-0.5 overflow-x-auto shrink-0">
+        <div className="h-11 bg-card border-b flex items-center px-3 gap-0.5 overflow-x-auto shrink-0">
 
           {/* Source */}
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleSourceMode} title="Source Code">
             <Code2 className="size-4" />
           </Button>
-          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <div className="w-px h-5 bg-border mx-1" />
 
           {/* Font family */}
           <Select defaultValue="Arial" onValueChange={(v) => execCmd("fontName", v)}>
@@ -413,14 +413,14 @@ export default function SimpleEditor({
               ))}
             </SelectContent>
           </Select>
-          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <div className="w-px h-5 bg-border mx-1" />
 
           {/* Basic formatting */}
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("bold")} title="Bold"><Bold className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("italic")} title="Italic"><Italic className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("underline")} title="Underline"><Underline className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("strikeThrough")} title="Strikethrough"><Strikethrough className="size-4" /></Button>
-          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <div className="w-px h-5 bg-border mx-1" />
 
           {/* Font color */}
           <ColorPicker command="foreColor" title="Font Color" icon={
@@ -437,7 +437,7 @@ export default function SimpleEditor({
               <span className="w-4 h-1 rounded-sm bg-yellow-300 mt-0.5" />
             </span>
           } />
-          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <div className="w-px h-5 bg-border mx-1" />
 
           {/* Link popover */}
           <Popover open={linkPopoverOpen} onOpenChange={setLinkPopoverOpen}>
@@ -482,7 +482,7 @@ export default function SimpleEditor({
                   Open in new tab
                 </label>
                 <div className="flex justify-end pt-1">
-                  <Button size="sm" onClick={applyLink} className="bg-gray-900 text-white hover:bg-gray-800 rounded-full px-5">
+                  <Button size="sm" onClick={applyLink} className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-full px-5">
                     Update
                   </Button>
                 </div>
@@ -516,21 +516,21 @@ export default function SimpleEditor({
 
           {/* Table */}
           <TablePicker />
-          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <div className="w-px h-5 bg-border mx-1" />
 
           {/* Alignment */}
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyLeft")} title="Align Left"><AlignLeft className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyCenter")} title="Align Center"><AlignCenter className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyRight")} title="Align Right"><AlignRight className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyFull")} title="Justify"><AlignJustify className="size-4" /></Button>
-          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <div className="w-px h-5 bg-border mx-1" />
 
           {/* Lists / indent */}
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("insertOrderedList")} title="Ordered List"><ListOrdered className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("insertUnorderedList")} title="Unordered List"><List className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("outdent")} title="Outdent"><IndentDecrease className="size-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("indent")} title="Indent"><IndentIncrease className="size-4" /></Button>
-          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <div className="w-px h-5 bg-border mx-1" />
 
           {/* Clear formatting */}
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("removeFormat")} title="Clear Formatting"><RemoveFormatting className="size-4" /></Button>
@@ -538,7 +538,7 @@ export default function SimpleEditor({
       )}
 
       {/* ── Editor Canvas ─────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto bg-gray-100 flex justify-center p-8">
+      <div className="flex-1 overflow-auto bg-muted/30 flex justify-center p-8">
         <div className="relative w-full max-w-4xl">
 
           {/* White email canvas */}
@@ -571,7 +571,7 @@ export default function SimpleEditor({
               />
             )}
             {/* Word / char counter */}
-            <div className="absolute bottom-3 right-4 text-xs text-gray-400 pointer-events-none select-none">
+            <div className="absolute bottom-3 right-4 text-xs text-muted-foreground pointer-events-none select-none">
               Words : {words} &nbsp;&nbsp; Characters : {chars}
             </div>
           </div>

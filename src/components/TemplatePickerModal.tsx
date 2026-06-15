@@ -54,11 +54,29 @@ export default function TemplatePickerModal({
                 {savedTemplates.map((tpl) => (
                   <div
                     key={tpl.id}
-                    className="border rounded-md p-4 cursor-pointer hover:border-primary transition-colors flex flex-col gap-2"
+                    className="border rounded-md cursor-pointer hover:border-primary transition-colors flex flex-col overflow-hidden group"
                     onClick={() => onSelectSaved(tpl)}
                   >
-                    <h4 className="font-semibold text-sm">{tpl.name}</h4>
-                    <p className="text-xs text-muted-foreground truncate">{tpl.subject || "No subject"}</p>
+                    <div className="h-28 bg-gray-50 dark:bg-gray-900 border-b relative overflow-hidden flex-shrink-0">
+                      {tpl.contentHtml ? (
+                        <iframe
+                          srcDoc={`${tpl.contentHtml}<style>body { overflow: hidden !important; margin: 0; padding: 0; }</style>`}
+                          sandbox="allow-same-origin"
+                          className="absolute top-0 left-0 w-[400%] h-[400%] origin-top-left pointer-events-none border-none bg-white"
+                          style={{ transform: "scale(0.25)" }}
+                          tabIndex={-1}
+                        />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+                          No Preview
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-transparent z-10" />
+                    </div>
+                    <div className="p-3 flex flex-col gap-1">
+                      <h4 className="font-semibold text-sm truncate">{tpl.name}</h4>
+                      <p className="text-xs text-muted-foreground truncate">{tpl.subject || "No subject"}</p>
+                    </div>
                   </div>
                 ))}
               </div>

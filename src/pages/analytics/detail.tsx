@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
-import { ArrowLeft, Download, MailOpen, MousePointerClick, Send, AlertTriangle, UserMinus, ShieldAlert, Globe, MonitorSmartphone, Clock, Ban, FileX } from "lucide-react";
+import { ArrowLeft, Download, MailOpen, MousePointerClick, Send, AlertTriangle, UserMinus, ShieldAlert, Globe, MonitorSmartphone, Clock, Ban, FileX, Timer, Activity } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import {
   LineChart,
@@ -20,7 +20,10 @@ import {
   Pie,
   Cell,
   Legend,
+  BarChart,
+  Bar,
 } from "recharts";
+import { CampaignContactEvents } from "@/components/analytics/CampaignContactEvents.tsx";
 
 const STATUS_STYLES: Record<string, string> = {
   sent: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
@@ -69,8 +72,24 @@ export default function AnalyticsDetailPage() {
   }
 
   const { campaign, stats, timeline, advanced } = data;
-  const { topLinks = [], devices = { desktop: 0, mobile: 0, tablet: 0, other: 0 }, topBrowsers = [], engagementTimeline = [] } = advanced || {};
+  const { 
+    topLinks = [], 
+    devices = { desktop: 0, mobile: 0, tablet: 0, other: 0 }, 
+    topBrowsers = [], 
+    engagementTimeline = [],
+    topDomains = [],
+    averageTimeToOpen = null,
+    averageTimeToClick = null,
+    engagementHeatmap = []
+  } = advanced || {};
   
+  const formatTime = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`;
+    const m = Math.floor(seconds / 60);
+    if (m < 60) return `${m}m ${seconds % 60}s`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  };
   const deviceData = [
     { name: "Desktop", value: devices.desktop },
     { name: "Mobile", value: devices.mobile },
@@ -162,8 +181,8 @@ export default function AnalyticsDetailPage() {
         </Card>
       </div>
 
-      {/* Secondary Metrics — 6 metrics in 2 rows of 3 */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+      {/* Secondary Metrics — 8 metrics in 4 cols (lg) or 2/3 cols */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
         <Card className="shadow-sm bg-muted/20">
           <CardContent className="p-5 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -233,6 +252,32 @@ export default function AnalyticsDetailPage() {
             <div className="text-right">
               <span className="text-lg font-bold">{(stats.renderingFailures ?? 0).toLocaleString()}</span>
               <span className="text-xs text-muted-foreground ml-1 block">of {stats.recipients}</span>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="shadow-sm bg-muted/20">
+          <CardContent className="p-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Timer className="size-5 text-cyan-500" />
+              <span className="font-medium text-sm">Avg Time to Open</span>
+            </div>
+            <div className="text-right">
+              <span className="text-lg font-bold">
+                {averageTimeToOpen !== null ? formatTime(averageTimeToOpen) : "—"}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="shadow-sm bg-muted/20">
+          <CardContent className="p-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <MousePointerClick className="size-5 text-purple-400" />
+              <span className="font-medium text-sm">Avg Time to Click</span>
+            </div>
+            <div className="text-right">
+              <span className="text-lg font-bold">
+                {averageTimeToClick !== null ? formatTime(averageTimeToClick) : "—"}
+              </span>
             </div>
           </CardContent>
         </Card>
@@ -345,65 +390,81 @@ export default function AnalyticsDetailPage() {
               )}
             </CardContent>
           </Card>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Top Domains */}
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold flex items-center gap-2">
+                  <Globe className="size-5 text-sky-500" />
+                  Performance by Domain
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {topDomains && topDomains.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="text-xs text-muted-foreground uppercase border-b">
+                        <tr>
+                          <th className="px-2 py-2">Domain</th>
+                          <th className="px-2 py-2 text-right">Sent</th>
+                          <th className="px-2 py-2 text-right">Open Rate</th>
+                          <th className="px-2 py-2 text-right">Click Rate</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {topDomains.map((d: any, i: number) => (
+                          <tr key={i}>
+                            <td className="px-2 py-3 font-medium">{d.domain}</td>
+                            <td className="px-2 py-3 text-right">{d.sent}</td>
+                            <td className="px-2 py-3 text-right">{d.delivered > 0 ? Math.round(d.opened/d.delivered*100) : 0}%</td>
+                            <td className="px-2 py-3 text-right">{d.delivered > 0 ? Math.round(d.clicked/d.delivered*100) : 0}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground text-center py-6">No domain data yet.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* 24-Hour Engagement Heatmap */}
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold flex items-center gap-2">
+                  <Activity className="size-5 text-orange-500" />
+                  24-Hour Engagement Heatmap
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {engagementHeatmap && engagementHeatmap.length > 0 ? (
+                  <div className="h-[250px] w-full mt-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={engagementHeatmap} margin={{ top: 5, right: 10, bottom: 5, left: -20 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="hour" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(h) => `${h}:00`} />
+                        <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                          labelFormatter={(h) => `${h}:00 - ${Number(h)+1}:00`}
+                        />
+                        <Bar dataKey="count" name="Interactions" fill="#f97316" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground text-center py-6">No activity data yet.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         </>
       )}
 
       {/* Timeline List */}
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold">Recent Events</CardTitle>
-        </CardHeader>
-        <CardContent>
-        {timeline && timeline.length > 0 ? (
-            <div className="space-y-3">
-              {timeline.map((event: any, i: number) => {
-                const badgeColors: Record<string, string> = {
-                  sent:              "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-                  delivered:         "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
-                  opened:            "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-                  clicked:           "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
-                  bounced:           "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
-                  complained:        "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-                  unsubscribed:      "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400",
-                  rejected:          "bg-gray-100 text-gray-600 dark:bg-gray-900/30 dark:text-gray-400",
-                  rendering_failure: "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400",
-                  delayed:           "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-                };
-                const label: Record<string, string> = {
-                  sent:              "sent",
-                  delivered:         "delivered",
-                  opened:            "opened",
-                  clicked:           "clicked",
-                  bounced:           "bounced",
-                  complained:        "spam",
-                  unsubscribed:      "unsub",
-                  rejected:          "rejected",
-                  rendering_failure: "render err",
-                  delayed:           "delayed",
-                };
-                return (
-                  <div key={i} className="flex items-center justify-between border-b last:border-0 pb-3 last:pb-0">
-                    <div className="flex items-center gap-3">
-                      <span className={cn(
-                        "inline-flex items-center justify-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider min-w-[72px]",
-                        badgeColors[event.eventType] || "bg-muted text-muted-foreground"
-                      )}>
-                        {label[event.eventType] || event.eventType}
-                      </span>
-                      <span className="text-sm font-medium">{event.email}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground shrink-0 ml-4">
-                      {format(new Date(event.timestamp), "MMM d, h:mm:ss a")}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center py-6">No events recorded yet.</p>
-          )}
-        </CardContent>
-      </Card>
+      <CampaignContactEvents campaignId={Number(id)} />
     </div>
   );
 }

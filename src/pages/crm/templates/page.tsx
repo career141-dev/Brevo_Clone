@@ -275,65 +275,83 @@ export default function TemplatesPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {templates.map((template: any) => (
-            <Card key={template.id} className="border shadow-sm p-5 flex flex-col justify-between hover:border-gray-300 dark:hover:border-gray-700 transition-colors relative group">
-              <div className="space-y-3">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex items-center gap-2.5">
-                    <div className="size-8 rounded bg-green-100 dark:bg-green-900/30 flex items-center justify-center shrink-0">
-                      <FileText className="size-4 text-green-600 dark:text-green-400" />
-                    </div>
-                    <h3 className="font-semibold text-sm text-gray-900 dark:text-gray-100 truncate max-w-[180px]">
-                      {template.name}
-                    </h3>
+            <Card key={template.id} className="border shadow-sm flex flex-col hover:border-gray-300 dark:hover:border-gray-700 transition-colors relative group overflow-hidden">
+              <div className="h-32 bg-gray-50 dark:bg-gray-900 border-b relative overflow-hidden flex-shrink-0">
+                {template.contentHtml ? (
+                  <iframe
+                    srcDoc={`${template.contentHtml}<style>body { overflow: hidden !important; margin: 0; padding: 0; }</style>`}
+                    sandbox="allow-same-origin"
+                    className="absolute top-0 left-0 w-[400%] h-[400%] origin-top-left pointer-events-none border-none bg-white"
+                    style={{ transform: "scale(0.25)" }}
+                    tabIndex={-1}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+                    No Preview
                   </div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="size-7">
-                        <MoreHorizontal className="size-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-[140px]">
-                      <DropdownMenuItem onClick={() => handleOpenPreview(template)} className="flex items-center gap-2 text-xs">
-                        <Eye className="size-3.5" /> Preview Layout
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => handleOpenEdit(template)} className="flex items-center gap-2 text-xs">
-                        <Edit className="size-3.5" /> Edit Template
-                      </DropdownMenuItem>
-                      <div className="my-1 border-t border-border/40" />
-                      <DropdownMenuItem
-                        onClick={() => {
-                          setDeletingId(template.id);
-                          setDeleteOpen(true);
-                        }}
-                        className="flex items-center gap-2 text-xs text-destructive focus:text-destructive focus:bg-destructive/10"
-                      >
-                        <Trash2 className="size-3.5" /> Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground font-medium truncate">
-                    Subject: <span className="font-normal text-gray-700 dark:text-gray-300">{template.subject || "—"}</span>
-                  </p>
-                  {template.previewText && (
-                    <p className="text-[11px] text-muted-foreground truncate">
-                      Snippet: <span className="italic">{template.previewText}</span>
-                    </p>
-                  )}
-                </div>
+                )}
+                <div className="absolute inset-0 bg-transparent z-10" />
               </div>
+              <div className="p-5 flex flex-col flex-1 justify-between">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-start gap-4">
+                    <div className="flex items-center gap-2.5">
+                      <div className="size-8 rounded bg-green-100 dark:bg-green-900/30 flex items-center justify-center shrink-0">
+                        <FileText className="size-4 text-green-600 dark:text-green-400" />
+                      </div>
+                      <h3 className="font-semibold text-sm text-gray-900 dark:text-gray-100 truncate max-w-[180px]">
+                        {template.name}
+                      </h3>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="size-7">
+                          <MoreHorizontal className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-[140px]">
+                        <DropdownMenuItem onClick={() => handleOpenPreview(template)} className="flex items-center gap-2 text-xs">
+                          <Eye className="size-3.5" /> Preview Layout
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleOpenEdit(template)} className="flex items-center gap-2 text-xs">
+                          <Edit className="size-3.5" /> Edit Template
+                        </DropdownMenuItem>
+                        <div className="my-1 border-t border-border/40" />
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setDeletingId(template.id);
+                            setDeleteOpen(true);
+                          }}
+                          className="flex items-center gap-2 text-xs text-destructive focus:text-destructive focus:bg-destructive/10"
+                        >
+                          <Trash2 className="size-3.5" /> Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
 
-              <div className="border-t pt-3.5 mt-4 flex items-center justify-between text-[11px] text-muted-foreground">
-                <span>Created {format(new Date(template.createdAt), "dd MMM yyyy")}</span>
-                <Button
-                  variant="ghost"
-                  onClick={() => handleOpenPreview(template)}
-                  className="h-6 text-[10px] px-2 flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity"
-                >
-                  <Eye className="size-3" /> Preview
-                </Button>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground font-medium truncate">
+                      Subject: <span className="font-normal text-gray-700 dark:text-gray-300">{template.subject || "—"}</span>
+                    </p>
+                    {template.previewText && (
+                      <p className="text-[11px] text-muted-foreground truncate">
+                        Snippet: <span className="italic">{template.previewText}</span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border-t pt-3.5 mt-4 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>Created {format(new Date(template.createdAt), "dd MMM yyyy")}</span>
+                  <Button
+                    variant="ghost"
+                    onClick={() => handleOpenPreview(template)}
+                    className="h-6 text-[10px] px-2 flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity"
+                  >
+                    <Eye className="size-3" /> Preview
+                  </Button>
+                </div>
               </div>
             </Card>
           ))}

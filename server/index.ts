@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { Prisma } from "@prisma/client";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import express from "express"; // server restarted
@@ -535,6 +536,7 @@ app.get("/api/templates", async (req, res) => {
         name: true,
         subject: true,
         previewText: true,
+        contentHtml: true,
         createdAt: true,
       },
     });
@@ -1009,7 +1011,39 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
     const engagementTimelineMap: Record<string, { time: string; opens: number; clicks: number }> = {};
     const processedEngagement = new Set<string>();
 
+    const domainStats: Record<string, { sent: number; delivered: number; opened: number; clicked: number; bounced: number }> = {};
+    const sentTimes: Record<string, number> = {};
+    const openTimes: Record<string, number> = {};
+    const clickTimes: Record<string, number> = {};
+    let totalTimeToOpen = 0;
+    let opensWithTime = 0;
+    let totalTimeToClick = 0;
+    let clicksWithTime = 0;
+    const engagementHeatmap = Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0 }));
+
     allEvents.forEach(e => {
+        const emailLower = e.email.toLowerCase();
+        const domain = emailLower.split('@')[1];
+        if (domain && !domainStats[domain]) {
+            domainStats[domain] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0 };
+        }
+
+        const timeMs = e.timestamp.getTime();
+        if (e.eventType === 'sent') {
+            if (!sentTimes[emailLower] || timeMs < sentTimes[emailLower]) {
+                sentTimes[emailLower] = timeMs;
+            }
+        } else if (e.eventType === 'opened') {
+            if (!openTimes[emailLower] || timeMs < openTimes[emailLower]) {
+                openTimes[emailLower] = timeMs;
+            }
+            engagementHeatmap[e.timestamp.getHours()].count++;
+        } else if (e.eventType === 'clicked') {
+            if (!clickTimes[emailLower] || timeMs < clickTimes[emailLower]) {
+                clickTimes[emailLower] = timeMs;
+            }
+            engagementHeatmap[e.timestamp.getHours()].count++;
+        }
         if (e.eventType === 'clicked') {
             rawClicks++;
             if (e.url) {
@@ -1076,8 +1110,38 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
 
     for (const u of uniqueEvents) {
         const type = u.split(':')[0];
+        const email = u.split(':')[1];
         c[type] = (c[type] || 0) + 1;
+
+        const domain = email.toLowerCase().split('@')[1];
+        if (domain && domainStats[domain] && (type === 'sent' || type === 'delivered' || type === 'opened' || type === 'clicked' || type === 'bounced')) {
+            domainStats[domain][type]++;
+        }
     }
+
+    Object.keys(openTimes).forEach(email => {
+        if (sentTimes[email]) {
+            totalTimeToOpen += (openTimes[email] - sentTimes[email]);
+            opensWithTime++;
+        }
+    });
+    Object.keys(clickTimes).forEach(email => {
+        if (openTimes[email]) {
+            totalTimeToClick += (clickTimes[email] - openTimes[email]);
+            clicksWithTime++;
+        } else if (sentTimes[email]) {
+            totalTimeToClick += (clickTimes[email] - sentTimes[email]);
+            clicksWithTime++;
+        }
+    });
+
+    const averageTimeToOpen = opensWithTime > 0 ? Math.round(totalTimeToOpen / opensWithTime / 1000) : null;
+    const averageTimeToClick = clicksWithTime > 0 ? Math.round(totalTimeToClick / clicksWithTime / 1000) : null;
+
+    const topDomains = Object.entries(domainStats)
+        .sort((a, b) => b[1].sent - a[1].sent)
+        .slice(0, 5)
+        .map(([domain, stats]) => ({ domain, ...stats }));
 
     // Count unsubscribes from email events directly (more reliable than contact status)
     const unsub = c['unsubscribed'] || 0;
@@ -1142,6 +1206,10 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         devices,
         topBrowsers,
         engagementTimeline,
+        topDomains,
+        averageTimeToOpen,
+        averageTimeToClick,
+        engagementHeatmap,
       }
     };
 
@@ -1149,6 +1217,68 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
     res.json(result);
   } catch (err: any) {
     console.error("Analytics detail fetch error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/campaigns/:id/contact-events', async (req, res) => {
+  try {
+    const campaignId = parseInt(req.params.id);
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize as string) || 20));
+    const q = (req.query.q as string || "").toLowerCase();
+
+    // Find distinct emails matching the query (paginated)
+    let emailCondition = Prisma.empty;
+    if (q) {
+      emailCondition = Prisma.sql`AND email LIKE ${'%' + q + '%'}`;
+    }
+
+    const countResult = await prisma.$queryRaw<any[]>`
+      SELECT COUNT(DISTINCT email) as total
+      FROM email_events
+      WHERE campaignId = ${campaignId}
+      ${emailCondition}
+    `;
+    const total = Number(countResult[0]?.total || 0);
+
+    const distinctEmails = await prisma.$queryRaw<any[]>`
+      SELECT email
+      FROM email_events
+      WHERE campaignId = ${campaignId}
+      ${emailCondition}
+      GROUP BY email
+      ORDER BY MIN(timestamp) DESC
+      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+    `;
+
+    const emails = distinctEmails.map((row: any) => row.email);
+
+    let data: any[] = [];
+    if (emails.length > 0) {
+      // Fetch all events for these emails
+      const events = await prisma.emailEvent.findMany({
+        where: { campaignId, email: { in: emails } },
+        orderBy: { timestamp: 'asc' },
+        select: { eventType: true, email: true, timestamp: true, url: true, userAgent: true },
+      });
+
+      // Group events by email
+      data = emails.map((email: string) => ({
+        email,
+        events: events.filter((e: any) => e.email === email),
+      }));
+    }
+
+    res.json({
+      data,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    });
+  } catch (err: any) {
+    console.error("Contact events fetch error:", err);
     res.status(500).json({ error: err.message });
   }
 });
