@@ -229,7 +229,7 @@ app.get("/api/lists", async (req, res) => {
     const q = (req.query.q as string ?? "").toLowerCase();
     const folderId = req.query.folderId ? Number(req.query.folderId) : undefined;
     const page = Math.max(1, Number(req.query.page) || 1);
-    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
+    const pageSize = Math.min(10000, Math.max(1, Number(req.query.pageSize) || 10));
 
     const baseWhere: any = {};
     if (type) baseWhere.type = type;
