@@ -1,19 +1,37 @@
 import "dotenv/config";
+import { Prisma } from "@prisma/client";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import express from "express"; // server restarted
+import express from "express";
 import cors from "cors";
-import { SendEmailCommand, GetSendQuotaCommand } from "@aws-sdk/client-ses";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
+import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import jwt from "jsonwebtoken";
-import { prisma } from "./prisma.js";
-import { sesClient } from "./lib/ses.js";
+import { prisma, authStorage } from "./prisma.js";
+import { sesClient, sesv2Client } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
 const app = express();
 const PORT = process.env.PORT ?? 3001;
-app.use(cors());
+app.use(helmet());
+app.use(cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    credentials: true
+}));
 app.use(express.json());
-// ■■ Analytics Cache (5 min TTL) ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: "Too many requests from this IP, please try again after 15 minutes"
+});
+app.use("/api/", apiLimiter);
+app.use("/api/", (req, res, next) => {
+    const userId = "user_3Epvu1kcUczQTmQSvidHS9K4Wak"; // Temporary hardcoded for import script
+    authStorage.run({ userId }, next);
+});
+// ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
 const analyticsCache = new Map();
 function getCached(key) {
     const entry = analyticsCache.get(key);
@@ -23,8 +41,13 @@ function getCached(key) {
     }
     return entry.data;
 }
-function setCache(key, data, ttlMs = 5 * 60 * 1000) {
+function setCache(key, data, ttlMs = 30 * 1000) {
     analyticsCache.set(key, { data, expiresAt: Date.now() + ttlMs });
+}
+function invalidateAnalyticsCache(campaignId) {
+    analyticsCache.delete('analytics:campaigns');
+    if (campaignId)
+        analyticsCache.delete(`analytics:campaign:${campaignId}`);
 }
 // ── Contacts ────────────────────────────────────────────────────────
 app.get("/api/contacts", async (req, res) => {
@@ -505,6 +528,7 @@ app.get("/api/templates", async (req, res) => {
                 name: true,
                 subject: true,
                 previewText: true,
+                contentHtml: true,
                 createdAt: true,
             },
         });
@@ -627,14 +651,26 @@ app.post("/api/campaigns", async (req, res) => {
 // PUT update campaign
 app.put("/api/campaigns/:id", async (req, res) => {
     try {
-        const data = req.body;
-        if (data.id !== undefined)
-            delete data.id;
-        if (data.createdAt !== undefined)
-            delete data.createdAt;
+        const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId } = req.body;
+        // Only allow updating safe fields to prevent mass assignment vulnerabilities
+        const updateData = {};
+        if (name !== undefined)
+            updateData.name = name;
+        if (subject !== undefined)
+            updateData.subject = subject;
+        if (fromName !== undefined)
+            updateData.fromName = fromName;
+        if (fromEmail !== undefined)
+            updateData.fromEmail = fromEmail;
+        if (templateHtml !== undefined)
+            updateData.templateHtml = templateHtml;
+        if (audienceType !== undefined)
+            updateData.audienceType = audienceType;
+        if (audienceId !== undefined)
+            updateData.audienceId = audienceId;
         const campaign = await prisma.campaign.update({
             where: { id: Number(req.params.id) },
-            data,
+            data: updateData,
         });
         res.json(campaign);
     }
@@ -649,6 +685,9 @@ app.delete("/api/campaigns/bulk", async (req, res) => {
         const { campaignIds } = req.body;
         if (!Array.isArray(campaignIds) || campaignIds.length === 0) {
             return res.status(400).json({ error: "campaignIds array is required" });
+        }
+        if (campaignIds.length > 100) {
+            return res.status(400).json({ error: "Cannot delete more than 100 campaigns at once" });
         }
         // First delete associated email events
         await prisma.emailEvent.deleteMany({
@@ -734,11 +773,14 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         if (!campaign.templateHtml) {
             return res.status(400).json({ error: "No template selected" });
         }
-        // 2. Mark as sending
-        await prisma.campaign.update({
-            where: { id: campaignId },
+        // 2. Mark as sending atomically to prevent race condition
+        const updateResult = await prisma.campaign.updateMany({
+            where: { id: campaignId, status: "draft" },
             data: { status: "sending" },
         });
+        if (updateResult.count === 0) {
+            return res.status(400).json({ error: "Campaign is already sending or sent" });
+        }
         // 3. Fetch subscribed contacts from the selected list
         const contacts = await prisma.contact.findMany({
             where: {
@@ -768,7 +810,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             }
         }
         for (const contact of contacts) {
-            const unsubUrl = makeUnsubscribeUrl(contact.email);
+            const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
             let html = template
                 .replace(/{{first_name}}/g, contact.firstName || "")
                 .replace(/{{last_name}}/g, contact.lastName || "")
@@ -780,17 +822,24 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             // Inject open-tracking pixel and rewrite links through click tracker
             html = injectTracking(html, contact.email, campaignId);
             try {
-                await sesClient.send(new SendEmailCommand({
-                    Source: `${campaign.fromName} <${campaign.fromEmail}>`,
+                await sesv2Client.send(new SendEmailV2Command({
+                    FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
                     Destination: { ToAddresses: [contact.email] },
+                    // Use config set ONLY for bounce/complaint/delivery SNS events.
+                    // Click and open tracking must be DISABLED in the config set so AWS does
+                    // NOT double-wrap our own tracking URLs with awstrack.me redirects.
                     ConfigurationSetName: "career141-tracking",
-                    Message: {
-                        Subject: { Data: campaign.subject, Charset: "UTF-8" },
-                        Body: { Html: { Data: html, Charset: "UTF-8" } },
+                    Content: {
+                        Simple: {
+                            Subject: { Data: campaign.subject, Charset: "UTF-8" },
+                            Body: { Html: { Data: html, Charset: "UTF-8" } },
+                            Headers: [
+                                { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                                { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+                            ],
+                        },
                     },
-                    Tags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-                    // @ts-ignore
-                    Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
+                    EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
                 }));
                 // Log "sent" event with campaignId
                 await prisma.emailEvent.create({
@@ -860,16 +909,8 @@ app.get('/api/analytics/campaigns', async (req, res) => {
                 const type = u.split(':')[0];
                 c[type] = (c[type] || 0) + 1;
             }
-            const sentEmails = Array.from(new Set(events.filter(e => e.eventType === 'sent').map(e => e.email)));
-            let unsub = c['unsubscribed'] || 0;
-            if (sentEmails.length > 0) {
-                unsub = await prisma.contact.count({
-                    where: {
-                        email: { in: sentEmails },
-                        status: 'unsubscribed'
-                    }
-                });
-            }
+            // Count unsubscribes from email events (not contact status — more reliable)
+            const unsub = c['unsubscribed'] || 0;
             const recipients = campaign.totalRecipients || 0;
             const delivered = c['delivered'] || 0;
             const opened = c['opened'] || 0;
@@ -905,7 +946,7 @@ app.get('/api/analytics/campaigns', async (req, res) => {
                 },
             };
         }));
-        setCache('analytics:campaigns', result);
+        setCache('analytics:campaigns', result, 30 * 1000);
         res.json(result);
     }
     catch (err) {
@@ -939,7 +980,39 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         const browsers = {};
         const engagementTimelineMap = {};
         const processedEngagement = new Set();
+        const domainStats = {};
+        const sentTimes = {};
+        const openTimes = {};
+        const clickTimes = {};
+        let totalTimeToOpen = 0;
+        let opensWithTime = 0;
+        let totalTimeToClick = 0;
+        let clicksWithTime = 0;
+        const engagementHeatmap = Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0 }));
         allEvents.forEach(e => {
+            const emailLower = e.email.toLowerCase();
+            const domain = emailLower.split('@')[1];
+            if (domain && !domainStats[domain]) {
+                domainStats[domain] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0 };
+            }
+            const timeMs = e.timestamp.getTime();
+            if (e.eventType === 'sent') {
+                if (!sentTimes[emailLower] || timeMs < sentTimes[emailLower]) {
+                    sentTimes[emailLower] = timeMs;
+                }
+            }
+            else if (e.eventType === 'opened') {
+                if (!openTimes[emailLower] || timeMs < openTimes[emailLower]) {
+                    openTimes[emailLower] = timeMs;
+                }
+                engagementHeatmap[e.timestamp.getHours()].count++;
+            }
+            else if (e.eventType === 'clicked') {
+                if (!clickTimes[emailLower] || timeMs < clickTimes[emailLower]) {
+                    clickTimes[emailLower] = timeMs;
+                }
+                engagementHeatmap[e.timestamp.getHours()].count++;
+            }
             if (e.eventType === 'clicked') {
                 rawClicks++;
                 if (e.url) {
@@ -1001,29 +1074,51 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
             .map(entry => entry[1]);
         for (const u of uniqueEvents) {
             const type = u.split(':')[0];
+            const email = u.split(':')[1];
             c[type] = (c[type] || 0) + 1;
+            const domain = email.toLowerCase().split('@')[1];
+            if (domain && domainStats[domain] && (type === 'sent' || type === 'delivered' || type === 'opened' || type === 'clicked' || type === 'bounced')) {
+                domainStats[domain][type]++;
+            }
         }
-        const sentEmails = Array.from(new Set(allEvents.filter(e => e.eventType === 'sent').map(e => e.email)));
-        let unsub = c['unsubscribed'] || 0;
-        if (sentEmails.length > 0) {
-            unsub = await prisma.contact.count({
-                where: {
-                    email: { in: sentEmails },
-                    status: 'unsubscribed'
-                }
-            });
-        }
+        Object.keys(openTimes).forEach(email => {
+            if (sentTimes[email]) {
+                totalTimeToOpen += (openTimes[email] - sentTimes[email]);
+                opensWithTime++;
+            }
+        });
+        Object.keys(clickTimes).forEach(email => {
+            if (openTimes[email]) {
+                totalTimeToClick += (clickTimes[email] - openTimes[email]);
+                clicksWithTime++;
+            }
+            else if (sentTimes[email]) {
+                totalTimeToClick += (clickTimes[email] - sentTimes[email]);
+                clicksWithTime++;
+            }
+        });
+        const averageTimeToOpen = opensWithTime > 0 ? Math.round(totalTimeToOpen / opensWithTime / 1000) : null;
+        const averageTimeToClick = clicksWithTime > 0 ? Math.round(totalTimeToClick / clicksWithTime / 1000) : null;
+        const topDomains = Object.entries(domainStats)
+            .sort((a, b) => b[1].sent - a[1].sent)
+            .slice(0, 5)
+            .map(([domain, stats]) => ({ domain, ...stats }));
+        // Count unsubscribes from email events directly (more reliable than contact status)
+        const unsub = c['unsubscribed'] || 0;
         const recipients = campaign.totalRecipients || 0;
         const delivered = c['delivered'] || 0;
         const opened = c['opened'] || 0;
         const clicked = c['clicked'] || 0;
         const bounced = c['bounced'] || 0;
         const complained = c['complained'] || 0;
+        const rejected = c['rejected'] || 0;
+        const renderingFailures = c['rendering_failure'] || 0;
+        const delayed = c['delayed'] || 0;
         const pct = (n, d) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
         const timeline = await prisma.emailEvent.findMany({
             where: { campaignId },
             orderBy: { timestamp: 'desc' },
-            take: 20,
+            take: 50,
             select: { eventType: true, email: true, timestamp: true },
         });
         const result = {
@@ -1048,6 +1143,9 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
                 bounced,
                 unsubscribed: unsub,
                 complained,
+                rejected,
+                renderingFailures,
+                delayed,
                 deliveryRate: pct(delivered, recipients),
                 openRate: pct(opened, delivered),
                 clickRate: pct(clicked, delivered),
@@ -1055,6 +1153,8 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
                 bounceRate: pct(bounced, recipients),
                 unsubscribeRate: pct(unsub, delivered),
                 complaintRate: pct(complained, delivered),
+                rejectedRate: pct(rejected, recipients),
+                delayRate: pct(delayed, recipients),
             },
             timeline,
             advanced: {
@@ -1062,13 +1162,72 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
                 devices,
                 topBrowsers,
                 engagementTimeline,
+                topDomains,
+                averageTimeToOpen,
+                averageTimeToClick,
+                engagementHeatmap,
             }
         };
-        setCache(cacheKey, result, 5 * 60 * 1000);
+        setCache(cacheKey, result, 30 * 1000);
         res.json(result);
     }
     catch (err) {
         console.error("Analytics detail fetch error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/analytics/campaigns/:id/contact-events', async (req, res) => {
+    try {
+        const campaignId = parseInt(req.params.id);
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
+        const q = (req.query.q || "").toLowerCase();
+        // Find distinct emails matching the query (paginated)
+        let emailCondition = Prisma.empty;
+        if (q) {
+            emailCondition = Prisma.sql `AND email LIKE ${'%' + q + '%'}`;
+        }
+        const countResult = await prisma.$queryRaw `
+      SELECT COUNT(DISTINCT email) as total
+      FROM email_events
+      WHERE campaignId = ${campaignId}
+      ${emailCondition}
+    `;
+        const total = Number(countResult[0]?.total || 0);
+        const distinctEmails = await prisma.$queryRaw `
+      SELECT email
+      FROM email_events
+      WHERE campaignId = ${campaignId}
+      ${emailCondition}
+      GROUP BY email
+      ORDER BY MIN(timestamp) DESC
+      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+    `;
+        const emails = distinctEmails.map((row) => row.email);
+        let data = [];
+        if (emails.length > 0) {
+            // Fetch all events for these emails
+            const events = await prisma.emailEvent.findMany({
+                where: { campaignId, email: { in: emails } },
+                orderBy: { timestamp: 'asc' },
+                select: { eventType: true, email: true, timestamp: true, url: true, userAgent: true },
+            });
+            // Group events by email
+            data = emails.map((email) => ({
+                email,
+                events: events.filter((e) => e.email === email),
+            }));
+        }
+        res.json({
+            data,
+            total,
+            page,
+            pageSize,
+            totalPages: Math.ceil(total / pageSize),
+        });
+    }
+    catch (err) {
+        console.error("Contact events fetch error:", err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -1088,8 +1247,22 @@ app.get('/api/analytics/campaigns/:id/export', async (req, res) => {
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
         res.write('Email,Event Type,Timestamp,URL\n');
+        const escapeCSV = (str) => {
+            if (!str)
+                return "";
+            let escaped = String(str);
+            // Formula injection mitigation
+            if (/^[=+\-@\t\n\r]/.test(escaped)) {
+                escaped = "'" + escaped;
+            }
+            // Handle commas, quotes, carriage returns and newlines
+            if (escaped.includes(',') || escaped.includes('"') || escaped.includes('\n') || escaped.includes('\r')) {
+                escaped = `"${escaped.replace(/"/g, '""')}"`;
+            }
+            return escaped;
+        };
         events.forEach(e => {
-            res.write(`${e.email},${e.eventType},${e.timestamp.toISOString()},${e.url || ''}\n`);
+            res.write(`${escapeCSV(e.email)},${escapeCSV(e.eventType)},${e.timestamp.toISOString()},${escapeCSV(e.url || '')}\n`);
         });
         res.end();
     }
@@ -1482,6 +1655,9 @@ app.post("/api/brevo/link-lists", async (req, res) => {
     }
 });
 // ── Helper ───────────────────────────────────────────────────────────
+if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET environment variable is required.");
+}
 const JWT_SECRET = process.env.JWT_SECRET;
 const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
 function makeUnsubscribeUrl(email, campaignId) {
@@ -1523,21 +1699,38 @@ function injectTracking(html, email, campaignId) {
 app.post("/api/webhooks/ses", express.json({ type: "*/*" }), async (req, res) => {
     const body = req.body;
     if (body.Type === "SubscriptionConfirmation") {
-        await fetch(body.SubscribeURL);
+        const url = body.SubscribeURL;
+        if (typeof url === "string" && /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com\//.test(url)) {
+            await fetch(url);
+        }
         return res.status(200).json({ ok: true });
     }
     if (body.Type === "Notification") {
         const msg = JSON.parse(body.Message);
-        const type = msg.notificationType;
+        // AWS SES uses `notificationType` for old format, `eventType` for new format
+        const type = msg.notificationType || msg.eventType || "";
+        // Extract email — differs per event type
         let email = "";
         if (type === "Bounce")
-            email = msg.bounce.bouncedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+            email = msg.bounce?.bouncedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
         if (type === "Complaint")
-            email = msg.complaint.complainedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+            email = msg.complaint?.complainedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
         if (type === "Delivery")
-            email = msg.delivery.recipients?.[0]?.toLowerCase() || "";
-        let campaignId = msg.mail?.tags?.campaign_id?.[0] ? parseInt(msg.mail.tags.campaign_id[0], 10) : null;
-        // Fallback: If tag is missing, find the most recent 'sent' event for this email
+            email = msg.delivery?.recipients?.[0]?.toLowerCase() || "";
+        if (type === "Send")
+            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+        if (type === "Reject")
+            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+        if (type === "RenderingFailure")
+            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+        if (type === "DeliveryDelay")
+            email = msg.deliveryDelay?.delayedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
+        if (type === "Subscription")
+            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+        let campaignId = msg.mail?.tags?.campaign_id?.[0]
+            ? parseInt(msg.mail.tags.campaign_id[0], 10)
+            : null;
+        // Fallback: find most recent 'sent' event for this email
         if (!campaignId && email) {
             const recent = await prisma.emailEvent.findFirst({
                 where: { email, eventType: "sent" },
@@ -1614,6 +1807,8 @@ app.get("/api/track/open", async (req, res) => {
             await prisma.emailEvent.create({
                 data: { email, campaignId: campaignId ?? undefined, eventType: "opened" },
             });
+            // Invalidate cache so analytics refresh quickly
+            invalidateAnalyticsCache(campaignId ?? undefined);
         }
     }
     catch {
@@ -1637,6 +1832,8 @@ app.get("/api/track/click", async (req, res) => {
                 userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null,
             },
         });
+        // Invalidate cache so analytics update quickly
+        invalidateAnalyticsCache(campaignId ?? undefined);
         return res.redirect(302, url);
     }
     catch {
@@ -1661,15 +1858,72 @@ app.get("/api/unsubscribe", async (req, res) => {
                 campaignId: decoded.campaignId ?? undefined
             },
         });
+        // Invalidate analytics cache so stats update immediately
+        invalidateAnalyticsCache(decoded.campaignId ?? undefined);
         return res.status(200).send(`
-<html><body style="font-family:sans-serif;text-align:center;padding:60px">
-<h2>You have been unsubscribed.</h2>
-<p>You will no longer receive emails from Career141.</p>
-</body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unsubscribed - Career141</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+    .card { background: white; border-radius: 16px; padding: 48px 40px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+    .icon { width: 64px; height: 64px; background: #f0fdf4; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px; }
+    h1 { font-size: 22px; font-weight: 700; color: #111827; margin-bottom: 10px; }
+    p { font-size: 15px; color: #6b7280; line-height: 1.6; }
+    .email { font-weight: 600; color: #374151; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+    <h1>You've been unsubscribed</h1>
+    <p>The email address <span class="email">${decoded.email}</span> has been removed from our mailing list. You will no longer receive marketing emails from Career141.</p>
+  </div>
+</body>
+</html>
 `);
     }
     catch {
         return res.status(400).send("Invalid or expired unsubscribe link.");
+    }
+});
+// ── RFC 8058 One-Click Unsubscribe (POST — used by Gmail/Apple Mail native button) ──
+app.post("/api/unsubscribe", express.urlencoded({ extended: false }), async (req, res) => {
+    // RFC 8058: email clients POST with List-Unsubscribe=One-Click body
+    const token = (req.query.token || req.body?.token);
+    if (!token)
+        return res.status(400).send("Missing token.");
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        await prisma.contact.updateMany({
+            where: { email: decoded.email.toLowerCase() },
+            data: { status: "unsubscribed" },
+        });
+        // Avoid duplicate unsubscribe events
+        const existing = await prisma.emailEvent.findFirst({
+            where: { email: decoded.email.toLowerCase(), eventType: "unsubscribed", campaignId: decoded.campaignId ?? undefined }
+        });
+        if (!existing) {
+            await prisma.emailEvent.create({
+                data: {
+                    email: decoded.email.toLowerCase(),
+                    eventType: "unsubscribed",
+                    campaignId: decoded.campaignId ?? undefined
+                },
+            });
+        }
+        invalidateAnalyticsCache(decoded.campaignId ?? undefined);
+        // RFC 8058 requires a 200 OK with no redirect for POST
+        return res.status(200).send("OK");
+    }
+    catch {
+        return res.status(400).send("Invalid or expired token.");
     }
 });
 // ── Email Send (bulk campaign dispatcher) ────────────────────────────
@@ -1717,17 +1971,21 @@ app.post("/api/email/send", async (req, res) => {
         // 2. Inject open-pixel + rewrite links for tracking
         html = injectTracking(html, contact.email.toLowerCase(), campaignId ?? null);
         try {
-            await sesClient.send(new SendEmailCommand({
-                Source: `${fromName} <${fromEmail}>`,
+            await sesv2Client.send(new SendEmailV2Command({
+                FromEmailAddress: `${fromName} <${fromEmail}>`,
                 Destination: { ToAddresses: [contact.email] },
                 ConfigurationSetName: "career141-tracking",
-                Message: {
-                    Subject: { Data: subject, Charset: "UTF-8" },
-                    Body: { Html: { Data: html, Charset: "UTF-8" } },
+                Content: {
+                    Simple: {
+                        Subject: { Data: subject, Charset: "UTF-8" },
+                        Body: { Html: { Data: html, Charset: "UTF-8" } },
+                        Headers: [
+                            { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                            { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+                        ],
+                    },
                 },
-                Tags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
-                // @ts-ignore
-                Headers: [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }],
+                EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
             }));
             // Log "sent" event with campaignId for /api/email/send route
             await prisma.emailEvent.create({
@@ -1752,16 +2010,7 @@ app.post("/api/email/send", async (req, res) => {
     }
     return res.json({ sent, errors });
 });
-// ── Test ────────────────────────────────────────────────────────────
-app.get("/api/test/unsub-token", (req, res) => {
-    const token = jwt.sign({ email: "test@example.com" }, process.env.JWT_SECRET, { expiresIn: "90d" });
-    res.json({ url: `http://localhost:3001/api/unsubscribe?token=${token}` });
-});
-app.get("/api/test/unsub-token-email", (req, res) => {
-    const email = req.query.email ?? "test@example.com";
-    const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "90d" });
-    res.json({ url: `http://localhost:3001/api/unsubscribe?token=${token}` });
-});
+// ── Test endpoints removed for security ──────────────────────────────
 // ── Senders ─────────────────────────────────────────────────────────
 app.get("/api/senders", async (_req, res) => {
     try {
@@ -1862,7 +2111,7 @@ app.get("/api/senders/quota", async (_req, res) => {
         // If IAM user is missing ses:GetSendQuota permission, return a graceful fallback
         // rather than throwing a 500 internal server error.
         console.error("SES Quota Error:", err);
-        res.json({ max: 5000, sent: 962, remaining: 4038 });
+        res.status(403).json({ error: "Missing ses:GetSendQuota permission or AWS credentials invalid." });
     }
 });
 app.get("/api/domains/dns-records", async (req, res) => {
@@ -1908,14 +2157,7 @@ app.get("/api/domains/dns-records", async (req, res) => {
         res.status(500).json({ error: "Failed to fetch DNS records", detail: err.message });
     }
 });
-// ── Debug ─────────────────────────────────────────────────────────
-app.get("/api/debug/events", async (_req, res) => {
-    const events = await prisma.emailEvent.findMany({
-        orderBy: { timestamp: "desc" },
-        take: 50,
-    });
-    res.json(events);
-});
+// ── Debug endpoints removed for security ────────────────────────────
 // ── Static frontend (production) ────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../dist");

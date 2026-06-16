@@ -62,6 +62,7 @@ model Contact {
   source      String?
   status      ContactStatus @default(subscribed)
   blocked     Boolean       @default(false)
+  userId      String
   tags        String?
   ownerId     String?
   createdAt   DateTime      @default(now())
@@ -72,22 +73,26 @@ model Contact {
 
   @@index([status])
   @@index([company])
+  @@index([userId])
   @@map("contacts")
 }
 
 model Folder {
   id        Int      @id @default(autoincrement())
   brevoId   Int?     @unique
+  userId    String
   name      String
   createdAt DateTime @default(now())
   lists     List[]
 
+  @@index([userId])
   @@map("folders")
 }
 
 model List {
   id           Int           @id @default(autoincrement())
   brevoId      Int?          @unique
+  userId       String
   name         String
   type         String?       @default("list")
   folderId     Int?
@@ -95,6 +100,7 @@ model List {
   folder       Folder?       @relation(fields: [folderId], references: [id])
   contactLists ContactList[]
 
+  @@index([userId])
   @@map("lists")
 }
 
@@ -115,6 +121,7 @@ model Campaign {
   fromName       String
   fromEmail      String
   previewText    String?
+  userId         String
   templateHtml   String         @db.LongText
   audienceType   AudienceType
   audienceId     Int
@@ -124,6 +131,7 @@ model Campaign {
   totalRecipients Int           @default(0)
   createdAt      DateTime       @default(now())
 
+  @@index([userId])
   @@map("campaigns")
 }
 
@@ -148,10 +156,12 @@ model Automation {
   id        Int      @id @default(autoincrement())
   name      String
   trigger   String?
+  userId    String
   stepsJson String?
   createdAt DateTime @default(now())
   contactAutomations ContactAutomation[]
 
+  @@index([userId])
   @@map("automations")
 }
 
@@ -178,11 +188,13 @@ model Company {
   numberOfEmployees Int?
   numberOfContacts  Int      @default(0)
   linkedContactsIds Json?
+  userId            String
   linkedDealsIds    Json?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   @@index([name])
+  @@index([userId])
   @@map("companies")
 }
 
@@ -191,10 +203,12 @@ model Segment {
   brevoId      Int      @unique
   name         String
   segmentType  String?
+  userId       String
   contactCount Int      @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  @@index([userId])
   @@map("segments")
 }
 
@@ -203,10 +217,12 @@ model Template {
   name         String
   subject      String?
   contentHtml  String   @db.LongText
+  userId       String
   previewText  String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  @@index([userId])
   @@map("templates")
 }
 
@@ -217,4 +233,16 @@ model Sender {
   createdAt DateTime @default(now())
 
   @@map("senders")
+}
+
+model EmailDomain {
+  id                 Int      @id @default(autoincrement())
+  domain             String   @unique
+  verificationStatus String   @default("Unverified")
+  dkimStatus         String   @default("Unverified")
+  dkimEnabled        Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("email_domains")
 }

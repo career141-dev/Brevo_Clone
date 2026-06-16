@@ -25,6 +25,9 @@ export default function SettingsPage() {
   const [newSenderName, setNewSenderName] = useState("");
   const [newSenderEmail, setNewSenderEmail] = useState("");
 
+  const [addDomainOpen, setAddDomainOpen] = useState(false);
+  const [newDomain, setNewDomain] = useState("");
+
   // Search State
   const [senderSearch, setSenderSearch] = useState("");
   const [domainSearch, setDomainSearch] = useState("");
@@ -46,6 +49,12 @@ export default function SettingsPage() {
     },
     enabled: !!senders && senders.length > 0,
     refetchInterval: 30000,
+  });
+
+  const { data: domainsData, isLoading: isLoadingDomains } = useQuery({
+    queryKey: ["aws-domains"],
+    queryFn: () => api.domains.list(),
+    refetchInterval: 60000,
   });
 
   const createSenderMutation = useMutation({
@@ -75,6 +84,56 @@ export default function SettingsPage() {
     },
   });
 
+  const syncSendersMutation = useMutation({
+    mutationFn: () => api.senders.sync(),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["senders"] });
+      queryClient.invalidateQueries({ queryKey: ["senders-for-campaign"] });
+      toast.success(`Successfully synced ${data.synced} senders from AWS.`);
+    },
+    onError: (err: any) => {
+      toast.error(err.message || "Failed to sync senders from AWS.");
+    },
+  });
+
+  const syncDomainsMutation = useMutation({
+    mutationFn: () => api.domains.sync(),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["aws-domains"] });
+      toast.success(`Successfully synced ${data.synced} domains from AWS.`);
+    },
+    onError: (err: any) => {
+      toast.error(err.message || "Failed to sync domains from AWS.");
+    },
+  });
+
+  const addDomainMutation = useMutation({
+    mutationFn: (domain: string) => api.domains.add(domain),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["aws-domains"] });
+      toast.success("Domain added successfully!");
+      setNewDomain("");
+      setAddDomainOpen(false);
+      // Automatically open the DNS records dialog
+      setSelectedDomainForDns(variables);
+      setDnsRecordsOpen(true);
+    },
+    onError: (err: any) => {
+      toast.error(`Failed to add domain: ${err.message || "Unknown error"}`);
+    },
+  });
+
+  const deleteDomainMutation = useMutation({
+    mutationFn: (domain: string) => api.domains.remove(domain),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["aws-domains"] });
+      toast.success("Domain deleted from local view.");
+    },
+    onError: () => {
+      toast.error("Failed to delete domain.");
+    },
+  });
+
   const { data: dnsRecordsData, isLoading: isLoadingDnsRecords, error: errorDnsRecords } = useQuery({
     queryKey: ["dns-records", selectedDomainForDns],
     queryFn: () => api.domains.getDnsRecords(selectedDomainForDns),
@@ -101,17 +160,12 @@ export default function SettingsPage() {
     );
   }, [senders, senderSearch]);
 
-  const domains = useMemo(() => {
-    if (!senders) return [];
-    const uniqueDomains = new Set<string>();
-    senders.forEach((s: any) => {
-      const parts = s.email.split("@");
-      if (parts.length === 2) uniqueDomains.add(parts[1]);
-    });
-    const arr = Array.from(uniqueDomains);
+  // Domains come directly from AWS SES — not derived from DB senders
+  const filteredDomains = useMemo(() => {
+    if (!domainsData?.domains) return [];
     const lowerQ = domainSearch.toLowerCase();
-    return arr.filter((d: string) => d.toLowerCase().includes(lowerQ));
-  }, [senders, domainSearch]);
+    return domainsData.domains.filter((d: any) => d.domain.toLowerCase().includes(lowerQ));
+  }, [domainsData, domainSearch]);
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8 pb-20">
@@ -139,9 +193,19 @@ export default function SettingsPage() {
                 All your sender domains are compliant with Google, Yahoo, and Microsoft's new requirements for senders. You can use any of them to send your email campaigns.
               </p>
             </div>
-            <Button onClick={() => setAddSenderOpen(true)} className="shrink-0 bg-blue-600 hover:bg-blue-700 text-white">
-              Add sender
-            </Button>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button 
+                variant="outline"
+                onClick={() => syncSendersMutation.mutate()} 
+                disabled={syncSendersMutation.isPending}
+              >
+                {syncSendersMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
+                Sync from AWS
+              </Button>
+              <Button onClick={() => setAddSenderOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white">
+                Add sender
+              </Button>
+            </div>
           </div>
 
           <div className="flex items-center w-full max-w-md relative">
@@ -259,6 +323,19 @@ export default function SettingsPage() {
                 Learn what a DKIM or DMARC is.
               </a>
             </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button 
+                variant="outline"
+                onClick={() => syncDomainsMutation.mutate()} 
+                disabled={syncDomainsMutation.isPending}
+              >
+                {syncDomainsMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
+                Sync from AWS
+              </Button>
+              <Button onClick={() => setAddDomainOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white">
+                Add domain
+              </Button>
+            </div>
           </div>
 
           <div className="flex items-center w-full max-w-md relative">
@@ -277,45 +354,74 @@ export default function SettingsPage() {
                 <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 text-gray-500 font-medium">
                   <th className="p-4 py-3 font-medium">Domain name</th>
                   <th className="p-4 py-3 font-medium">Domain status</th>
+                  <th className="p-4 py-3 font-medium">DKIM</th>
                   <th className="p-4 py-3 text-right font-medium"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {domains.length === 0 ? (
+                {isLoadingDomains ? (
                   <tr>
-                    <td colSpan={3} className="p-8 text-center text-gray-500">No domains found.</td>
+                    <td colSpan={4} className="p-8 text-center">
+                      <Loader2 className="size-6 animate-spin text-gray-400 mx-auto" />
+                    </td>
+                  </tr>
+                ) : filteredDomains.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="p-8 text-center text-gray-500">No domains found in AWS SES.</td>
                   </tr>
                 ) : (
-                  domains.map(domain => {
-                    const senderWithDomain = senders?.find((s: any) => s.email.endsWith("@" + domain));
-                    const status = sendersStatus?.[domain] || (senderWithDomain ? sendersStatus?.[senderWithDomain.email] : {}) || {};
-                    const isVerified = status.verificationStatus === "Success" || status.dkimStatus === "Success";
+                  filteredDomains.map((d: any) => {
+                    const isVerified = d.verificationStatus === "Success";
+                    const isDkimVerified = d.dkimStatus === "Success";
 
                     return (
-                      <tr key={domain} className="hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors group">
-                        <td className="p-4 font-medium text-gray-900 dark:text-gray-100">{domain}</td>
+                      <tr key={d.domain} className="hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors group">
+                        <td className="p-4 font-medium text-gray-900 dark:text-gray-100">{d.domain}</td>
                         <td className="p-4">
                           {isVerified ? (
                             <span className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 font-medium">
-                              <ShieldCheck className="size-4" /> Authenticated
+                              <ShieldCheck className="size-4" /> Verified
                             </span>
                           ) : (
                             <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-500 font-medium">
-                              <ShieldAlert className="size-4" /> Not Authenticated
+                              <ShieldAlert className="size-4" /> Pending
                             </span>
                           )}
                         </td>
-                        <td className="p-4 text-right">
+                        <td className="p-4">
+                          {isDkimVerified ? (
+                            <span className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 font-medium">
+                              <CheckCircle2 className="size-4" /> Configured
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-gray-400 dark:text-gray-500 font-medium">
+                              <ShieldAlert className="size-4" /> Not configured
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-4 text-right flex items-center justify-end gap-2">
                           <Button 
                             variant="ghost" 
                             size="sm" 
                             className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-medium"
                             onClick={() => {
-                              setSelectedDomainForDns(domain);
+                              setSelectedDomainForDns(d.domain);
                               setDnsRecordsOpen(true);
                             }}
                           >
                             View configuration
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity" 
+                            onClick={() => {
+                              if (window.confirm("Are you sure you want to delete this domain from the local view?")) {
+                                deleteDomainMutation.mutate(d.domain);
+                              }
+                            }}
+                          >
+                            <Trash2 className="size-4" />
                           </Button>
                         </td>
                       </tr>
@@ -331,7 +437,7 @@ export default function SettingsPage() {
               Rows per page: <strong>10</strong>
             </div>
             <div>
-              1-{domains.length} of {domains.length}
+              1–{filteredDomains.length} of {filteredDomains.length}
             </div>
             <div className="flex items-center gap-1">
               <span className="mr-2">1 of 1 pages</span>
@@ -340,6 +446,42 @@ export default function SettingsPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Add Domain Dialog */}
+      <Dialog open={addDomainOpen} onOpenChange={setAddDomainOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Add a new domain</DialogTitle>
+            <DialogDescription>
+              Enter the domain name to authenticate. This will initiate verification in AWS SES.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="domain">Domain Name</Label>
+              <Input
+                id="domain"
+                value={newDomain}
+                onChange={(e) => setNewDomain(e.target.value)}
+                placeholder="e.g. acmecorp.com"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddDomainOpen(false)}>
+              Cancel
+            </Button>
+            <Button 
+              disabled={!newDomain || addDomainMutation.isPending}
+              onClick={() => addDomainMutation.mutate(newDomain)}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              {addDomainMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
+              Authenticate Domain
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Sender Dialog */}
       <Dialog open={addSenderOpen} onOpenChange={setAddSenderOpen}>

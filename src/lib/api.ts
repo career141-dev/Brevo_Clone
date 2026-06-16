@@ -178,10 +178,21 @@ export const api = {
     delete: (id: number) => request<{ success: boolean }>(`/senders/${id}`, { method: "DELETE" }),
     quota: () => request<{ max: number; sent: number; remaining: number }>("/senders/quota"),
     status: (identities: string[]) => request<Record<string, any>>("/senders/status", { method: "POST", body: JSON.stringify({ identities }) }),
+    awsIdentities: () =>
+      request<{ identities: { email: string; verificationStatus: string; dkimStatus: string; dkimEnabled: boolean }[] }>("/senders/aws-identities"),
+    sync: () => request<{ synced: number }>("/senders/sync", { method: "POST" }),
   },
   domains: {
+    list: () =>
+      request<{ domains: { domain: string; verificationStatus: string; dkimStatus: string; dkimEnabled: boolean }[] }>("/domains"),
     getDnsRecords: (domain: string) =>
       request<{ records: { type: string; name: string; value: string }[] }>(`/domains/dns-records?domain=${encodeURIComponent(domain)}`),
+    add: (domain: string) =>
+      request<any>("/domains", { method: "POST", body: JSON.stringify({ domain }) }),
+    remove: (domain: string) =>
+      request<{ success: boolean }>(`/domains/${encodeURIComponent(domain)}`, { method: "DELETE" }),
+    sync: () =>
+      request<{ synced: number }>("/domains/sync", { method: "POST" }),
   },
 };
 

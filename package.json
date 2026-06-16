@@ -21,6 +21,7 @@
   "dependencies": {
     "@aws-sdk/client-ses": "^3.1057.0",
     "@aws-sdk/client-sesv2": "^3.1067.0",
+    "@clerk/express": "^2.1.27",
     "@clerk/react": "^6.7.2",
     "@hookform/resolvers": "^5.2.2",
     "@prisma/adapter-mariadb": "^7.8.0",
@@ -64,6 +65,8 @@
     "dotenv": "^17.4.2",
     "embla-carousel-react": "^8.6.0",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
     "input-otp": "^1.4.2",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.14.0",

@@ -2,12 +2,16 @@ import "dotenv/config";
 import { Prisma } from "@prisma/client";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import express from "express"; // server restarted
+import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import { clerkMiddleware, getAuth } from "@clerk/express";
+import { z } from "zod";
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import jwt from "jsonwebtoken";
-import { prisma } from "./prisma.js";
+import { prisma, authStorage } from "./prisma.js";
 import { sesClient, sesv2Client } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
@@ -15,8 +19,24 @@ import { UAParser } from "ua-parser-js";
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
-app.use(cors());
+app.use(helmet());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "http://localhost:5173",
+  credentials: true
+}));
 app.use(express.json());
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: "Too many requests from this IP, please try again after 15 minutes"
+});
+
+app.use("/api/", apiLimiter);
+app.use("/api/", (req: any, res: any, next: any) => {
+  const userId = "user_3Epvu1kcUczQTmQSvidHS9K4Wak"; // Temporary hardcoded for import script
+  authStorage.run({ userId }, next);
+});
 
 // ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
 const analyticsCache = new Map<string, { data: any; expiresAt: number }>();
@@ -926,7 +946,7 @@ app.get('/api/analytics/campaigns', async (req, res) => {
             if (e.eventType === 'clicked') rawClicks++;
         });
 
-        for (const u of uniqueEvents) {
+        for (const u of uniqueEvents as Set<string>) {
             const type = u.split(':')[0];
             c[type] = (c[type] || 0) + 1;
         }
@@ -1108,7 +1128,7 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(entry => entry[1]);
 
-    for (const u of uniqueEvents) {
+    for (const u of uniqueEvents as Set<string>) {
         const type = u.split(':')[0];
         const email = u.split(':')[1];
         c[type] = (c[type] || 0) + 1;
@@ -1658,7 +1678,7 @@ app.post("/api/brevo/link-lists", async (req, res) => {
     await fetchAndStoreLists(apiKey);
 
     const lists = await prisma.list.findMany({ where: { brevoId: { not: null } }, select: { id: true, brevoId: true } });
-    const brevoListMap = new Map(lists.filter((l) => l.brevoId !== null).map((l) => [l.brevoId!, l.id]));
+    const brevoListMap = new Map<number, number>(lists.filter((l) => l.brevoId !== null).map((l) => [l.brevoId!, l.id]));
     if (brevoListMap.size === 0) return res.json({ contactsLinked: 0, error: "No lists found. Run a full import first." });
 
     let linked = 0;
@@ -1684,7 +1704,7 @@ app.post("/api/brevo/link-lists", async (req, res) => {
         where: { email: { in: emails } },
         select: { id: true, email: true },
       });
-      const emailToId = new Map(existing.map((c: any) => [c.email, c.id]));
+      const emailToId = new Map<string, number>(existing.map((c: any) => [c.email, c.id]));
 
       const links: { contactId: number; listId: number }[] = [];
       for (const c of contacts) {
@@ -2226,6 +2246,49 @@ app.post("/api/senders/status", async (req, res) => {
   }
 });
 
+app.post("/api/senders/sync", async (_req, res) => {
+  try {
+    const { ListIdentitiesCommand } = await import("@aws-sdk/client-ses");
+
+    let allEmails: string[] = [];
+    let nextToken: string | undefined = undefined;
+
+    do {
+      const listRes: any = await sesClient.send(
+        new ListIdentitiesCommand({
+          IdentityType: "EmailAddress",
+          MaxItems: 100,
+          NextToken: nextToken,
+        })
+      );
+      allEmails = allEmails.concat(listRes.Identities ?? []);
+      nextToken = listRes.NextToken;
+    } while (nextToken);
+
+    let synced = 0;
+    for (const email of allEmails) {
+      const existing = await prisma.sender.findUnique({ where: { email } });
+      if (!existing) {
+        await prisma.sender.create({
+          data: {
+            name: email.split("@")[0] || "Unknown",
+            email,
+          }
+        });
+        synced++;
+      }
+    }
+
+    res.json({ synced });
+  } catch (err: any) {
+    console.error("Sync senders error:", err);
+    if (err.name === "AccessDenied" || err.Code === "AccessDenied" || err.message?.includes("AccessDenied") || err.message?.includes("not authorized to perform: ses:ListIdentities")) {
+      return res.status(403).json({ error: "AWS IAM Permission Denied", detail: "Missing ses:ListIdentities permission." });
+    }
+    res.status(500).json({ error: "Failed to sync senders", detail: err.message });
+  }
+});
+
 app.get("/api/senders/quota", async (_req, res) => {
   try {
     const quota = await sesClient.send(new GetSendQuotaCommand({}));
@@ -2237,6 +2300,177 @@ app.get("/api/senders/quota", async (_req, res) => {
     // rather than throwing a 500 internal server error.
     console.error("SES Quota Error:", err);
     res.status(403).json({ error: "Missing ses:GetSendQuota permission or AWS credentials invalid." });
+  }
+});
+
+// ── Domains ─────────────────────────────────────────────────────────
+
+// GET /api/domains — lists all domain identities from local DB
+app.get("/api/domains", async (_req, res) => {
+  try {
+    const domains = await prisma.emailDomain.findMany({
+      orderBy: { domain: "asc" }
+    });
+    res.json({ domains });
+  } catch (err: any) {
+    console.error("List domains error:", err);
+    res.status(500).json({ error: "Failed to list domains", detail: err.message });
+  }
+});
+
+app.post("/api/domains", async (req, res) => {
+  try {
+    const { domain } = req.body;
+    if (!domain) return res.status(400).json({ error: "Domain is required" });
+
+    const { VerifyDomainIdentityCommand, VerifyDomainDkimCommand } = await import("@aws-sdk/client-ses");
+    await sesClient.send(new VerifyDomainIdentityCommand({ Domain: domain }));
+    await sesClient.send(new VerifyDomainDkimCommand({ Domain: domain }));
+
+    const newDomain = await prisma.emailDomain.upsert({
+      where: { domain },
+      update: {},
+      create: { domain }
+    });
+
+    res.status(201).json(newDomain);
+  } catch (err: any) {
+    console.error("Add domain error:", err);
+    res.status(500).json({ error: "Failed to add domain", detail: err.message });
+  }
+});
+
+app.delete("/api/domains/:domain", async (req, res) => {
+  try {
+    const domain = req.params.domain;
+    await prisma.emailDomain.delete({ where: { domain } });
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error("Delete domain error:", err);
+    res.status(500).json({ error: "Failed to delete domain", detail: err.message });
+  }
+});
+
+app.post("/api/domains/sync", async (_req, res) => {
+  try {
+    const {
+      ListIdentitiesCommand,
+      GetIdentityVerificationAttributesCommand,
+      GetIdentityDkimAttributesCommand,
+    } = await import("@aws-sdk/client-ses");
+
+    // Paginate through all domain identities in SES
+    let allDomains: string[] = [];
+    let nextToken: string | undefined = undefined;
+
+    do {
+      const listRes: any = await sesClient.send(
+        new ListIdentitiesCommand({
+          IdentityType: "Domain",
+          MaxItems: 100,
+          NextToken: nextToken,
+        })
+      );
+      allDomains = allDomains.concat(listRes.Identities ?? []);
+      nextToken = listRes.NextToken;
+    } while (nextToken);
+
+    if (allDomains.length > 0) {
+      const chunkSize = 100;
+      const verifyMap: Record<string, any> = {};
+      const dkimMap: Record<string, any> = {};
+
+      for (let i = 0; i < allDomains.length; i += chunkSize) {
+        const chunk = allDomains.slice(i, i + chunkSize);
+        const [vRes, dRes] = await Promise.all([
+          sesClient.send(new GetIdentityVerificationAttributesCommand({ Identities: chunk })),
+          sesClient.send(new GetIdentityDkimAttributesCommand({ Identities: chunk })),
+        ]);
+        Object.assign(verifyMap, vRes.VerificationAttributes ?? {});
+        Object.assign(dkimMap, dRes.DkimAttributes ?? {});
+      }
+
+      for (const domain of allDomains) {
+        await prisma.emailDomain.upsert({
+          where: { domain },
+          update: {
+            verificationStatus: verifyMap[domain]?.VerificationStatus ?? "Unverified",
+            dkimStatus: dkimMap[domain]?.DkimVerificationStatus ?? "Unverified",
+            dkimEnabled: dkimMap[domain]?.DkimEnabled ?? false,
+          },
+          create: {
+            domain,
+            verificationStatus: verifyMap[domain]?.VerificationStatus ?? "Unverified",
+            dkimStatus: dkimMap[domain]?.DkimVerificationStatus ?? "Unverified",
+            dkimEnabled: dkimMap[domain]?.DkimEnabled ?? false,
+          }
+        });
+      }
+    }
+
+    res.json({ synced: allDomains.length });
+  } catch (err: any) {
+    console.error("Sync domains error:", err);
+    if (err.name === "AccessDenied" || err.Code === "AccessDenied" || err.message?.includes("AccessDenied")) {
+      return res.status(403).json({ error: "AWS IAM Permission Denied", detail: "Missing ses:ListIdentities or ses:GetIdentityVerificationAttributes permissions." });
+    }
+    res.status(500).json({ error: "Failed to sync domains", detail: err.message });
+  }
+});
+
+// GET /api/senders/aws-identities — lists all EMAIL identities registered in AWS SES
+app.get("/api/senders/aws-identities", async (_req, res) => {
+  try {
+    const {
+      ListIdentitiesCommand,
+      GetIdentityVerificationAttributesCommand,
+      GetIdentityDkimAttributesCommand,
+    } = await import("@aws-sdk/client-ses");
+
+    let allEmails: string[] = [];
+    let nextToken: string | undefined = undefined;
+
+    do {
+      const listRes: any = await sesClient.send(
+        new ListIdentitiesCommand({
+          IdentityType: "EmailAddress",
+          MaxItems: 100,
+          NextToken: nextToken,
+        })
+      );
+      allEmails = allEmails.concat(listRes.Identities ?? []);
+      nextToken = listRes.NextToken;
+    } while (nextToken);
+
+    if (allEmails.length === 0) {
+      return res.json({ identities: [] });
+    }
+
+    const chunkSize = 100;
+    const verifyMap: Record<string, any> = {};
+    const dkimMap: Record<string, any> = {};
+
+    for (let i = 0; i < allEmails.length; i += chunkSize) {
+      const chunk = allEmails.slice(i, i + chunkSize);
+      const [vRes, dRes] = await Promise.all([
+        sesClient.send(new GetIdentityVerificationAttributesCommand({ Identities: chunk })),
+        sesClient.send(new GetIdentityDkimAttributesCommand({ Identities: chunk })),
+      ]);
+      Object.assign(verifyMap, vRes.VerificationAttributes ?? {});
+      Object.assign(dkimMap, dRes.DkimAttributes ?? {});
+    }
+
+    const identities = allEmails.map((email) => ({
+      email,
+      verificationStatus: verifyMap[email]?.VerificationStatus ?? "Unverified",
+      dkimStatus: dkimMap[email]?.DkimVerificationStatus ?? "Unverified",
+      dkimEnabled: dkimMap[email]?.DkimEnabled ?? false,
+    }));
+
+    res.json({ identities });
+  } catch (err: any) {
+    console.error("List SES email identities error:", err);
+    res.status(500).json({ error: "Failed to list SES email identities", detail: err.message });
   }
 });
 
@@ -2310,3 +2544,5 @@ app.get(/^(?!\/api).*/, (_req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
+// Trigger restart
