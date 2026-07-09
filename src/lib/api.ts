@@ -194,6 +194,38 @@ export const api = {
     sync: () =>
       request<{ synced: number }>("/domains/sync", { method: "POST" }),
   },
+  billing: {
+    summary: (range: "current_month" | "last_30" | "all_time") =>
+      request<{
+        range: string;
+        campaigns: {
+          id: number;
+          name: string;
+          status: string;
+          sentAt: string | null;
+          createdAt: string;
+          fromEmail: string;
+          emailsSent: number;
+          cost_usd: number;
+        }[];
+        summary: {
+          total_emails_sent: number;
+          total_cost_usd: number;
+          campaign_count: number;
+          sent_campaign_count: number;
+        };
+        pricing_note: string;
+      }>(`/billing/summary?range=${range}`),
+    exchangeRate: () =>
+      request<{ usd_to_lkr: number; updated_at: string; source: string }>("/billing/exchange-rate"),
+    awsCosts: (range: "current_month" | "last_30" | "all_time") =>
+      request<{
+        total_cost_usd: number;
+        range: string;
+        period: { start: string; end: string };
+        monthly_breakdown: { period: string; cost_usd: number; unit: string }[];
+      }>(`/billing/aws-costs?range=${range}`),
+  },
 };
 
 export async function downloadExport(contactIds: number[], format: "csv" | "json") {

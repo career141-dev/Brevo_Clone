@@ -19,6 +19,7 @@
     "prettier-check": "prettier --check ."
   },
   "dependencies": {
+    "@aws-sdk/client-cost-explorer": "^3.1083.0",
     "@aws-sdk/client-ses": "^3.1057.0",
     "@aws-sdk/client-sesv2": "^3.1067.0",
     "@clerk/express": "^2.1.27",

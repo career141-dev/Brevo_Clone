@@ -22,6 +22,7 @@ import {
   FileSpreadsheet,
   Layers,
   ChevronsUpDown,
+  DollarSign,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -163,6 +164,14 @@ export default function CampaignsPage() {
   });
 
   const lists = listsData?.data ?? [];
+
+  // Live exchange rate for cost estimate in step 5
+  const { data: campaignExchangeRate } = useQuery({
+    queryKey: ["billing-exchange-rate"],
+    queryFn: () => api.billing.exchangeRate(),
+    staleTime: 5 * 60 * 1000,
+    enabled: wizardOpen && step === 5,
+  });
 
   // Mutations
   const createCampaignMutation = useMutation({
@@ -982,8 +991,34 @@ export default function CampaignsPage() {
                     )}
                   </div>
                 </div>
+
+                {/* Pre-send AWS cost estimate */}
+                {!isLoadingAudienceStats && (audienceStats?.subscribed ?? 0) > 0 && (() => {
+                  const recipientCount = audienceStats?.subscribed ?? 0;
+                  const costUsd = recipientCount * (0.10 / 1000);
+                  const lkrRate = campaignExchangeRate?.usd_to_lkr ?? 300;
+                  const costLkr = costUsd * lkrRate;
+                  return (
+                    <div className="bg-blue-50 border border-blue-200 dark:bg-blue-950/20 dark:border-blue-800/40 rounded-xl p-4 flex items-start gap-3">
+                      <DollarSign className="size-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">Estimated AWS SES Cost</p>
+                        <p className="text-xs text-blue-700 dark:text-blue-400">
+                          Sending to {recipientCount.toLocaleString()} emails will cost approximately{" "}
+                          <span className="font-extrabold text-sm">${costUsd.toFixed(4)}</span>
+                          {" / "}
+                          <span className="font-extrabold text-sm">LKR {costLkr.toFixed(2)}</span>
+                        </p>
+                        <p className="text-[10px] text-blue-500 dark:text-blue-500 mt-0.5">
+                          Billed by AWS SES at $0.10 per 1,000 emails · 1 USD = {lkrRate.toFixed(2)} LKR
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
+
           </div>
 
           {/* Footer Navigation */}

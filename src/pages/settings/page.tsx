@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Loader2, Search, Edit2, ShieldCheck, CheckCircle2, ShieldAlert, Copy, ExternalLink } from "lucide-react";
+import { format } from "date-fns";
+import { Plus, Trash2, Loader2, Search, ShieldCheck, CheckCircle2, ShieldAlert, Copy, ExternalLink, DollarSign, Mail, TrendingUp, RefreshCw, AlertCircle, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
@@ -36,6 +37,9 @@ export default function SettingsPage() {
   const [dnsRecordsOpen, setDnsRecordsOpen] = useState(false);
   const [selectedDomainForDns, setSelectedDomainForDns] = useState("");
 
+  // Billing tab state
+  const [billingRange, setBillingRange] = useState<"current_month" | "last_30" | "all_time">("current_month");
+
   const { data: senders, isLoading } = useQuery({
     queryKey: ["senders"],
     queryFn: () => api.senders.list(),
@@ -49,6 +53,26 @@ export default function SettingsPage() {
     },
     enabled: !!senders && senders.length > 0,
     refetchInterval: 30000,
+  });
+
+  // Billing queries
+  const { data: billingSummary, isLoading: isLoadingBilling, refetch: refetchBilling } = useQuery({
+    queryKey: ["billing-summary", billingRange],
+    queryFn: () => api.billing.summary(billingRange),
+    refetchInterval: 5 * 60 * 1000, // refresh every 5 min
+  });
+
+  const { data: exchangeRate, isLoading: isLoadingRate } = useQuery({
+    queryKey: ["billing-exchange-rate"],
+    queryFn: () => api.billing.exchangeRate(),
+    refetchInterval: 5 * 60 * 1000,
+  });
+
+  const { data: awsCosts, isLoading: isLoadingAwsCosts, error: awsCostsError } = useQuery({
+    queryKey: ["billing-aws-costs", billingRange],
+    queryFn: () => api.billing.awsCosts(billingRange),
+    refetchInterval: 5 * 60 * 1000,
+    retry: 1,
   });
 
   const { data: domainsData, isLoading: isLoadingDomains } = useQuery({
@@ -167,18 +191,29 @@ export default function SettingsPage() {
     return domainsData.domains.filter((d: any) => d.domain.toLowerCase().includes(lowerQ));
   }, [domainsData, domainSearch]);
 
+  // Helper: format USD + LKR
+  const lkrRate = exchangeRate?.usd_to_lkr ?? 300;
+  const fmtCost = (usd: number) => {
+    const lkr = usd * lkrRate;
+    return {
+      usd: usd < 0.0001 ? "$0.00" : `$${usd.toFixed(4)}`,
+      lkr: `LKR ${lkr.toFixed(2)}`,
+    };
+  };
+
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8 pb-20">
       <div>
         <h1 className="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-white">
-          Senders, Domains & Dedicated IPs
+          Settings
         </h1>
       </div>
 
       <Tabs defaultValue="senders" className="w-full">
-        <TabsList className="grid w-full max-w-sm grid-cols-2">
+        <TabsList className="grid w-full max-w-lg grid-cols-3">
           <TabsTrigger value="senders">Senders</TabsTrigger>
           <TabsTrigger value="domains">Domains</TabsTrigger>
+          <TabsTrigger value="billing">Billing & Costs</TabsTrigger>
         </TabsList>
 
         {/* SENDERS TAB */}
@@ -444,6 +479,265 @@ export default function SettingsPage() {
               <Button variant="outline" size="sm" className="h-8 w-8 p-0 disabled:opacity-50" disabled>1</Button>
             </div>
           </div>
+        </TabsContent>
+
+        {/* BILLING & COSTS TAB */}
+        <TabsContent value="billing" className="mt-6 space-y-6">
+          {/* Header */}
+          <div className="flex flex-col md:flex-row justify-between md:items-start gap-4">
+            <div className="max-w-3xl">
+              <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-2">Billing & Costs</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Track your AWS SES email sending costs per campaign. Costs are calculated at $0.10 per 1,000 emails.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => refetchBilling()}
+                className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors px-3 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                <RefreshCw className="size-3.5" />
+                Refresh
+              </button>
+              <a
+                href="https://console.aws.amazon.com/cost-management/home#/cost-explorer"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium px-3 py-1.5 rounded-md border border-blue-200 hover:bg-blue-50 dark:border-blue-800 dark:hover:bg-blue-900/20 transition-colors"
+              >
+                <ExternalLink className="size-3.5" />
+                AWS Cost Explorer
+              </a>
+            </div>
+          </div>
+
+          {/* Time Range Toggle */}
+          <div className="flex items-center gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">
+            {(["current_month", "last_30", "all_time"] as const).map((r) => (
+              <button
+                key={r}
+                onClick={() => setBillingRange(r)}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                  billingRange === r
+                    ? "bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-sm"
+                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                }`}
+              >
+                {r === "current_month" ? "This Month" : r === "last_30" ? "Last 30 Days" : "All Time"}
+              </button>
+            ))}
+          </div>
+
+          {/* Exchange Rate Badge */}
+          <div className="flex items-center gap-2">
+            {isLoadingRate ? (
+              <span className="text-xs text-gray-400 flex items-center gap-1">
+                <Loader2 className="size-3 animate-spin" /> Fetching exchange rate...
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-xs bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-700 px-2.5 py-1 rounded-full font-medium">
+                <TrendingUp className="size-3" />
+                1 USD = {lkrRate.toFixed(2)} LKR
+                {exchangeRate?.source === "fallback" && <span className="text-amber-500"> (fallback rate)</span>}
+              </span>
+            )}
+          </div>
+
+          {/* Summary Cards */}
+          {isLoadingBilling ? (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-28 rounded-xl bg-gray-100 dark:bg-gray-800 animate-pulse" />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Total Cost Card */}
+              <div className="bg-gradient-to-br from-blue-500 to-blue-700 text-white rounded-xl p-5 shadow-md">
+                <div className="flex items-center gap-2 mb-3">
+                  <DollarSign className="size-4 opacity-80" />
+                  <span className="text-sm font-medium opacity-80">Total SES Cost</span>
+                </div>
+                <div className="text-2xl font-bold">
+                  {fmtCost(billingSummary?.summary.total_cost_usd ?? 0).usd}
+                </div>
+                <div className="text-sm opacity-70 mt-0.5">
+                  {fmtCost(billingSummary?.summary.total_cost_usd ?? 0).lkr}
+                </div>
+              </div>
+
+              {/* Emails Sent Card */}
+              <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 text-white rounded-xl p-5 shadow-md">
+                <div className="flex items-center gap-2 mb-3">
+                  <Mail className="size-4 opacity-80" />
+                  <span className="text-sm font-medium opacity-80">Total Emails Sent</span>
+                </div>
+                <div className="text-2xl font-bold">
+                  {(billingSummary?.summary.total_emails_sent ?? 0).toLocaleString()}
+                </div>
+                <div className="text-sm opacity-70 mt-0.5">
+                  {billingSummary?.summary.sent_campaign_count ?? 0} campaigns
+                </div>
+              </div>
+
+              {/* AWS Real Cost Card */}
+              <div className="bg-gradient-to-br from-orange-500 to-orange-700 text-white rounded-xl p-5 shadow-md">
+                <div className="flex items-center gap-2 mb-3">
+                  <BarChart3 className="size-4 opacity-80" />
+                  <span className="text-sm font-medium opacity-80">AWS Actual Cost</span>
+                </div>
+                {isLoadingAwsCosts ? (
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="size-4 animate-spin opacity-70" />
+                    <span className="text-sm opacity-70">Fetching...</span>
+                  </div>
+                ) : awsCostsError ? (
+                  <div className="text-sm opacity-80">
+                    <AlertCircle className="size-4 inline mr-1" />
+                    {(awsCostsError as any)?.message?.includes("Access Denied") ? "Permission required" : "Unavailable"}
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-2xl font-bold">
+                      {fmtCost(awsCosts?.total_cost_usd ?? 0).usd}
+                    </div>
+                    <div className="text-sm opacity-70 mt-0.5">
+                      {fmtCost(awsCosts?.total_cost_usd ?? 0).lkr}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* AWS Monthly Breakdown */}
+          {awsCosts?.monthly_breakdown && awsCosts.monthly_breakdown.length > 0 && (
+            <div className="border border-gray-200 dark:border-gray-800 rounded-lg bg-white dark:bg-gray-950 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-gray-200 dark:border-gray-800">
+                <h3 className="font-semibold text-sm text-gray-700 dark:text-gray-300">AWS Cost Explorer — Monthly Breakdown</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Real billing data from your AWS account</p>
+              </div>
+              <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                {awsCosts.monthly_breakdown.map((m, i) => {
+                  const cost = fmtCost(m.cost_usd);
+                  return (
+                    <div key={i} className="flex items-center justify-between px-5 py-3">
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {m.period ? format(new Date(m.period), "MMMM yyyy") : "—"}
+                      </span>
+                      <div className="text-right">
+                        <div className="text-sm font-bold text-gray-900 dark:text-gray-100">{cost.usd}</div>
+                        <div className="text-xs text-gray-500">{cost.lkr}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Per-Campaign Cost Table */}
+          <div className="border border-gray-200 dark:border-gray-800 rounded-lg bg-white dark:bg-gray-950 shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-sm text-gray-700 dark:text-gray-300">Cost Per Campaign</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Calculated at $0.10 / 1,000 emails (AWS SES standard rate)</p>
+              </div>
+            </div>
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 text-gray-500 font-medium">
+                  <th className="p-4 py-3 font-medium">Campaign</th>
+                  <th className="p-4 py-3 font-medium">Status</th>
+                  <th className="p-4 py-3 font-medium">Sent At</th>
+                  <th className="p-4 py-3 font-medium text-right">Emails Sent</th>
+                  <th className="p-4 py-3 font-medium text-right">Cost (USD)</th>
+                  <th className="p-4 py-3 font-medium text-right">Cost (LKR)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {isLoadingBilling ? (
+                  <tr>
+                    <td colSpan={6} className="p-8 text-center">
+                      <Loader2 className="size-6 animate-spin text-gray-400 mx-auto" />
+                    </td>
+                  </tr>
+                ) : !billingSummary?.campaigns || billingSummary.campaigns.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="p-8 text-center text-gray-500 text-sm">
+                      No campaigns found for the selected period.
+                    </td>
+                  </tr>
+                ) : (
+                  billingSummary.campaigns.map((c) => {
+                    const cost = fmtCost(c.cost_usd);
+                    const isSent = c.status === "sent";
+                    return (
+                      <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors">
+                        <td className="p-4">
+                          <div className="font-medium text-gray-900 dark:text-gray-100">{c.name}</div>
+                          <div className="text-xs text-gray-500 mt-0.5">{c.fromEmail}</div>
+                        </td>
+                        <td className="p-4">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            c.status === "sent"
+                              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
+                              : c.status === "sending"
+                              ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 animate-pulse"
+                              : c.status === "draft"
+                              ? "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                              : "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
+                          }`}>
+                            {c.status.charAt(0).toUpperCase() + c.status.slice(1)}
+                          </span>
+                        </td>
+                        <td className="p-4 text-gray-600 dark:text-gray-400">
+                          {c.sentAt ? format(new Date(c.sentAt), "MMM d, yyyy") : "—"}
+                        </td>
+                        <td className="p-4 text-right font-medium text-gray-900 dark:text-gray-100">
+                          {isSent ? c.emailsSent.toLocaleString() : "—"}
+                        </td>
+                        <td className="p-4 text-right">
+                          {isSent ? (
+                            <span className="font-semibold text-blue-700 dark:text-blue-400">{cost.usd}</span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="p-4 text-right">
+                          {isSent ? (
+                            <span className="font-semibold text-orange-600 dark:text-orange-400">{cost.lkr}</span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+              {billingSummary && billingSummary.campaigns.length > 0 && (
+                <tfoot>
+                  <tr className="border-t-2 border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/60 font-semibold">
+                    <td className="p-4" colSpan={3}>Total</td>
+                    <td className="p-4 text-right">{billingSummary.summary.total_emails_sent.toLocaleString()}</td>
+                    <td className="p-4 text-right text-blue-700 dark:text-blue-400">
+                      {fmtCost(billingSummary.summary.total_cost_usd).usd}
+                    </td>
+                    <td className="p-4 text-right text-orange-600 dark:text-orange-400">
+                      {fmtCost(billingSummary.summary.total_cost_usd).lkr}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+
+          {/* Footer note */}
+          <p className="text-xs text-gray-400 dark:text-gray-600">
+            Exchange rate refreshes every 5 minutes · Costs auto-refresh every 5 minutes ·
+            {exchangeRate?.updated_at && ` Rate last updated: ${format(new Date(exchangeRate.updated_at), "h:mm a")}`}
+          </p>
         </TabsContent>
       </Tabs>
 
