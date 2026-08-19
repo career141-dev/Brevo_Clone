@@ -177,42 +177,45 @@ export default function SimpleEditor({
     restoreSelection();
 
     const sel = window.getSelection();
-    let applied = false;
 
     if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
       const range = sel.getRangeAt(0);
 
-      if (!range.collapsed) {
+      if (!range.collapsed && range.toString().length > 0) {
+        // ALWAYS use direct DOM Range element wrapping to guarantee styling
         try {
-          document.execCommand("styleWithCSS", false, "true");
+          const span = document.createElement("span");
+          span.style.display = "inline";
           if (cmd === "hiliteColor") {
-            document.execCommand("hiliteColor", false, color);
-            document.execCommand("backColor", false, color);
+            span.style.backgroundColor = color;
           } else {
-            document.execCommand("foreColor", false, color);
+            span.style.color = color;
           }
-          applied = true;
-        } catch {
-          // fallback to manual DOM range wrapping
-        }
 
-        if (!applied) {
+          const contents = range.extractContents();
+          span.appendChild(contents);
+          range.insertNode(span);
+
+          // Select newly created span
+          sel.removeAllRanges();
+          const newRange = document.createRange();
+          newRange.selectNodeContents(span);
+          sel.addRange(newRange);
+          lastRangeRef.current = newRange.cloneRange();
+
+          saveSelection();
+          updateCounts();
+          return;
+        } catch (err) {
+          // Fallback to execCommand if surround/extract fails
           try {
-            const span = document.createElement("span");
+            document.execCommand("styleWithCSS", false, "true");
             if (cmd === "hiliteColor") {
-              span.style.backgroundColor = color;
+              document.execCommand("hiliteColor", false, color);
+              document.execCommand("backColor", false, color);
             } else {
-              span.style.color = color;
+              document.execCommand("foreColor", false, color);
             }
-            const contents = range.extractContents();
-            span.appendChild(contents);
-            range.insertNode(span);
-            sel.removeAllRanges();
-            const newRange = document.createRange();
-            newRange.selectNodeContents(span);
-            sel.addRange(newRange);
-            lastRangeRef.current = newRange.cloneRange();
-            applied = true;
           } catch {
             // ignore
           }
@@ -220,18 +223,17 @@ export default function SimpleEditor({
       }
     }
 
-    if (!applied) {
-      try {
-        document.execCommand("styleWithCSS", false, "true");
-        if (cmd === "hiliteColor") {
-          document.execCommand("hiliteColor", false, color);
-          document.execCommand("backColor", false, color);
-        } else {
-          document.execCommand("foreColor", false, color);
-        }
-      } catch {
-        // ignore
+    // Fallback if no active text range
+    try {
+      document.execCommand("styleWithCSS", false, "true");
+      if (cmd === "hiliteColor") {
+        document.execCommand("hiliteColor", false, color);
+        document.execCommand("backColor", false, color);
+      } else {
+        document.execCommand("foreColor", false, color);
       }
+    } catch {
+      // ignore
     }
 
     saveSelection();
