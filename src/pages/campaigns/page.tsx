@@ -463,6 +463,9 @@ export default function CampaignsPage() {
 
     const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
 
+    console.log("[CAMPAIGN WIZARD] handleNextStep3 replyToEmails state:", replyToEmails);
+    console.log("[CAMPAIGN WIZARD] resolvedReplyToEmail being saved:", resolvedReplyToEmail);
+
     const payload = {
       name,
       subject,

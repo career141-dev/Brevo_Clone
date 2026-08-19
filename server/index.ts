@@ -1144,6 +1144,13 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
     const replyToHeader = replyToAddresses.join(", ");
     const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
 
+    // ── DEBUG: Reply-To routing diagnostics ─────────────────────────────────
+    console.log(`[SEND][Campaign ${campaignId}] replyToEmail from DB:`, (campaign as any).replyToEmail);
+    console.log(`[SEND][Campaign ${campaignId}] replyToListId from DB:`, (campaign as any).replyToListId);
+    console.log(`[SEND][Campaign ${campaignId}] Resolved replyToAddresses:`, replyToAddresses);
+    console.log(`[SEND][Campaign ${campaignId}] fromHeader:`, fromHeader);
+    // ────────────────────────────────────────────────────────────────────────
+
     for (const contact of contacts) {
       const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
 
@@ -1220,6 +1227,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             sesParams.ReplyToEmailAddresses = replyToAddresses;
           }
 
+          console.log(`[SEND][Campaign ${campaignId}] Sending to ${contact.email} | ReplyToEmailAddresses:`, sesParams.ReplyToEmailAddresses ?? "NOT SET");
           await sesv2Client.send(new SendEmailV2Command(sesParams));
         }
         // Log "sent" event with campaignId
