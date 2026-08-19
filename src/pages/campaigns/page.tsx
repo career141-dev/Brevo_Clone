@@ -96,7 +96,24 @@ export default function CampaignsPage() {
   const [fromEmail, setFromEmail] = useState("");
   const [replyToName, setReplyToName] = useState("");
   const [replyToEmail, setReplyToEmail] = useState("");
+  const [replyToEmails, setReplyToEmails] = useState<string[]>([]);
+  const [newReplyToEmail, setNewReplyToEmail] = useState("");
   const [replyToListId, setReplyToListId] = useState<number | null>(null);
+
+  const handleAddReplyToEmail = () => {
+    const trimmed = newReplyToEmail.trim().toLowerCase();
+    if (!trimmed) return;
+    if (!trimmed.includes("@")) {
+      toast.error("Please enter a valid receptionist email address.");
+      return;
+    }
+    if (replyToEmails.includes(trimmed)) {
+      toast.error("This receptionist email address is already added.");
+      return;
+    }
+    setReplyToEmails([...replyToEmails, trimmed]);
+    setNewReplyToEmail("");
+  };
 
   // Sender Domain Sheet State
   const [sendersSheetOpen, setSendersSheetOpen] = useState(false);
@@ -310,6 +327,8 @@ export default function CampaignsPage() {
     setFromEmail("");
     setReplyToName("");
     setReplyToEmail("");
+    setReplyToEmails([]);
+    setNewReplyToEmail("");
     setReplyToListId(null);
     setRecipientTab("lists");
     setSelectedListIds([]);
@@ -339,6 +358,14 @@ export default function CampaignsPage() {
     setFromEmail(campaign.fromEmail || "");
     setReplyToName(campaign.replyToName || "");
     setReplyToEmail(campaign.replyToEmail || "");
+
+    if (campaign.replyToEmail) {
+      const emails = String(campaign.replyToEmail).split(",").map(e => e.trim()).filter(Boolean);
+      setReplyToEmails(emails);
+    } else {
+      setReplyToEmails([]);
+    }
+
     setReplyToListId(campaign.replyToListId ? Number(campaign.replyToListId) : null);
     setSkipUnengaged(Boolean(campaign.skipUnengaged));
 
@@ -377,9 +404,10 @@ export default function CampaignsPage() {
       toast.error("Please provide a sender name and email.");
       return;
     }
+    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : (replyToEmail.trim() || null);
     if (campaignId) {
       updateCampaignMutation.mutate(
-        { id: campaignId, data: { fromName, fromEmail, replyToName, replyToEmail, replyToListId } },
+        { id: campaignId, data: { fromName, fromEmail, replyToName, replyToEmail: resolvedReplyToEmail, replyToListId } },
         { onSuccess: () => setStep(2) }
       );
     } else {
@@ -430,6 +458,8 @@ export default function CampaignsPage() {
       return;
     }
 
+    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : (replyToEmail.trim() || null);
+
     const payload = {
       name,
       subject,
@@ -437,7 +467,7 @@ export default function CampaignsPage() {
       fromName,
       fromEmail,
       replyToName: replyToName.trim() || null,
-      replyToEmail: replyToEmail.trim() || null,
+      replyToEmail: resolvedReplyToEmail,
       replyToListId,
       audienceType: recipientTab === "individual" ? "individual" : "list",
       audienceId: selectedListIds[0] || 0,
@@ -893,25 +923,76 @@ export default function CampaignsPage() {
                         </Popover>
                       </div>
 
-                      {/* Manual Reply-To Name & Email */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <Label htmlFor="camp-reply-name" className="text-xs font-semibold">Reply-To Display Name</Label>
+                      {/* Dynamic One-by-One Receptionist Email Adder */}
+                      <div className="space-y-2 pt-2 border-t">
+                        <Label className="text-xs font-semibold">Add Individual Receptionist Email Addresses</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder="Enter receptionist email address (e.g. support@company.com)..."
+                            value={newReplyToEmail}
+                            onChange={(e) => setNewReplyToEmail(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                handleAddReplyToEmail();
+                              }
+                            }}
+                            className="h-10 text-sm"
+                          />
+                          <Button
+                            type="button"
+                            onClick={handleAddReplyToEmail}
+                            disabled={!newReplyToEmail.trim()}
+                            className="h-10 text-xs font-bold gap-1 px-4 shrink-0"
+                          >
+                            <Plus className="size-4" /> Add Email
+                          </Button>
+                        </div>
+
+                        {/* Added Receptionist Emails List / Badges */}
+                        {replyToEmails.length === 0 ? (
+                          <div className="p-3.5 border border-dashed rounded-lg bg-slate-50 dark:bg-slate-900/40 text-center space-y-1">
+                            <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">No individual receptionist emails added yet.</p>
+                            <p className="text-[11px] text-muted-foreground">Type an email address above and click Add Email to add receptionists one by one.</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2 pt-1">
+                            <div className="flex items-center justify-between text-xs font-semibold text-slate-600 dark:text-slate-400">
+                              <span>Added Receptionist Inboxes ({replyToEmails.length})</span>
+                              <button
+                                type="button"
+                                onClick={() => setReplyToEmails([])}
+                                className="text-red-600 hover:underline cursor-pointer text-xs"
+                              >
+                                Clear all
+                              </button>
+                            </div>
+                            <div className="flex flex-wrap gap-2 p-3 bg-muted/30 border rounded-lg">
+                              {replyToEmails.map((email, idx) => (
+                                <Badge
+                                  key={idx}
+                                  variant="secondary"
+                                  className="py-1 px-3 bg-blue-50 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 text-xs font-semibold flex items-center gap-1.5"
+                                >
+                                  <span>📬 {email}</span>
+                                  <X
+                                    className="size-3.5 cursor-pointer hover:text-red-600 ml-1"
+                                    onClick={() => setReplyToEmails(replyToEmails.filter((_, i) => i !== idx))}
+                                  />
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Reply-To Display Name */}
+                        <div className="space-y-1 pt-2">
+                          <Label htmlFor="camp-reply-name" className="text-xs font-semibold">Reply-To Display Name (Optional)</Label>
                           <Input
                             id="camp-reply-name"
                             placeholder="e.g. Support Team"
                             value={replyToName}
                             onChange={(e) => setReplyToName(e.target.value)}
-                            className="h-9 text-sm"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label htmlFor="camp-reply-email" className="text-xs font-semibold">Reply-To Email(s) (Comma-separated)</Label>
-                          <Input
-                            id="camp-reply-email"
-                            placeholder="e.g. help@co.com, info@co.com"
-                            value={replyToEmail}
-                            onChange={(e) => setReplyToEmail(e.target.value)}
                             className="h-9 text-sm"
                           />
                         </div>
