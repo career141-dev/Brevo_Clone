@@ -111,22 +111,31 @@ app.get("/api/contacts", async (req, res) => {
 });
 app.get("/api/contacts/stats", async (req, res) => {
     try {
+        const listIdsQuery = req.query.listIds ? String(req.query.listIds) : undefined;
         const listIdQuery = req.query.listId ? Number(req.query.listId) : undefined;
         const baseWhere = {};
-        if (listIdQuery) {
-            const targetList = await prisma.list.findFirst({
+        let targetIds = [];
+        if (listIdsQuery) {
+            targetIds = listIdsQuery.split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && n > 0);
+        }
+        else if (listIdQuery) {
+            targetIds = [listIdQuery];
+        }
+        if (targetIds.length > 0) {
+            const matchingLists = await prisma.list.findMany({
                 where: {
                     OR: [
-                        { id: listIdQuery },
-                        { brevoId: listIdQuery }
+                        { id: { in: targetIds } },
+                        { brevoId: { in: targetIds } }
                     ]
                 },
                 select: { id: true }
             });
-            if (targetList) {
+            const resolvedListIds = matchingLists.map(l => l.id);
+            if (resolvedListIds.length > 0) {
                 baseWhere.contactLists = {
                     some: {
-                        listId: targetList.id,
+                        listId: { in: resolvedListIds },
                     },
                 };
             }
@@ -627,10 +636,11 @@ app.get("/api/campaigns/stats", async (req, res) => {
 // POST create campaign draft
 app.post("/api/campaigns", async (req, res) => {
     try {
-        const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId } = req.body;
+        const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId, audienceListIds } = req.body;
         if (!name || !subject || !fromName || !fromEmail) {
             return res.status(400).json({ error: "name, subject, fromName, fromEmail required" });
         }
+        const formattedListIds = Array.isArray(audienceListIds) ? audienceListIds.join(",") : (audienceListIds || null);
         const campaign = await prisma.campaign.create({
             data: {
                 name,
@@ -640,6 +650,7 @@ app.post("/api/campaigns", async (req, res) => {
                 templateHtml: templateHtml || "",
                 audienceType: audienceType || "list",
                 audienceId: audienceId || 0,
+                audienceListIds: formattedListIds,
                 status: "draft",
             },
         });
@@ -652,7 +663,7 @@ app.post("/api/campaigns", async (req, res) => {
 // PUT update campaign
 app.put("/api/campaigns/:id", async (req, res) => {
     try {
-        const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId } = req.body;
+        const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId, audienceListIds } = req.body;
         // Only allow updating safe fields to prevent mass assignment vulnerabilities
         const updateData = {};
         if (name !== undefined)
@@ -669,6 +680,9 @@ app.put("/api/campaigns/:id", async (req, res) => {
             updateData.audienceType = audienceType;
         if (audienceId !== undefined)
             updateData.audienceId = audienceId;
+        if (audienceListIds !== undefined) {
+            updateData.audienceListIds = Array.isArray(audienceListIds) ? audienceListIds.join(",") : audienceListIds;
+        }
         const campaign = await prisma.campaign.update({
             where: { id: Number(req.params.id) },
             data: updateData,
@@ -768,7 +782,10 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         if (campaign.status === "sent") {
             return res.status(400).json({ error: "Campaign already sent" });
         }
-        if (!campaign.audienceId) {
+        const targetListIds = campaign.audienceListIds
+            ? campaign.audienceListIds.split(',').map((id) => Number(id.trim())).filter((n) => !isNaN(n) && n > 0)
+            : (campaign.audienceId ? [campaign.audienceId] : []);
+        if (targetListIds.length === 0) {
             return res.status(400).json({ error: "No audience selected" });
         }
         if (!campaign.templateHtml) {
@@ -782,11 +799,11 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         if (updateResult.count === 0) {
             return res.status(400).json({ error: "Campaign is already sending or sent" });
         }
-        // 3. Fetch subscribed contacts from the selected list
+        // 3. Fetch subscribed contacts from the selected list(s)
         const contacts = await prisma.contact.findMany({
             where: {
                 status: "subscribed",
-                contactLists: { some: { listId: campaign.audienceId } },
+                contactLists: { some: { listId: { in: targetListIds } } },
             },
         });
         if (contacts.length === 0) {

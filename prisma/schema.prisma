@@ -125,6 +125,7 @@ model Campaign {
   templateHtml   String         @db.LongText
   audienceType   AudienceType
   audienceId     Int
+  audienceListIds String?
   status         CampaignStatus @default(draft)
   scheduledAt    DateTime?
   sentAt         DateTime?

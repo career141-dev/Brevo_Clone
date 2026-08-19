@@ -23,6 +23,7 @@ import {
   Layers,
   ChevronsUpDown,
   DollarSign,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -99,8 +100,9 @@ export default function CampaignsPage() {
   const [newSenderEmail, setNewSenderEmail] = useState("");
 
   // Step 2: Audience
-  const [audienceId, setAudienceId] = useState<string>("");
+  const [selectedListIds, setSelectedListIds] = useState<number[]>([]);
   const [listPopoverOpen, setListPopoverOpen] = useState(false);
+  const audienceId = selectedListIds[0] ? String(selectedListIds[0]) : "";
 
   // Step 3: Template
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
@@ -151,10 +153,11 @@ export default function CampaignsPage() {
   });
 
   // Contact Stats Query for Step 2 & 5
+  const listIdsParam = selectedListIds.length > 0 ? selectedListIds.join(",") : "";
   const { data: audienceStats, isLoading: isLoadingAudienceStats } = useQuery({
-    queryKey: ["audience-stats", audienceId],
-    queryFn: () => api.contacts.stats({ listId: Number(audienceId) }),
-    enabled: wizardOpen && !!audienceId,
+    queryKey: ["audience-stats", listIdsParam],
+    queryFn: () => api.contacts.stats({ listIds: listIdsParam }),
+    enabled: wizardOpen && selectedListIds.length > 0,
   });
 
   const { data: quotaData, isLoading: isLoadingQuota } = useQuery({
@@ -274,7 +277,7 @@ export default function CampaignsPage() {
     setPreviewText("");
     setFromName("");
     setFromEmail("");
-    setAudienceId("");
+    setSelectedListIds([]);
     setListPopoverOpen(false);
     setSelectedTemplateId(null);
     setSelectedTemplateHtml("");
@@ -293,7 +296,14 @@ export default function CampaignsPage() {
     setPreviewText(campaign.previewText || "");
     setFromName(campaign.fromName || "");
     setFromEmail(campaign.fromEmail || "");
-    setAudienceId(campaign.audienceId ? String(campaign.audienceId) : "");
+    if (campaign.audienceListIds) {
+      const ids = String(campaign.audienceListIds).split(',').map(Number).filter(Boolean);
+      setSelectedListIds(ids);
+    } else if (campaign.audienceId) {
+      setSelectedListIds([Number(campaign.audienceId)]);
+    } else {
+      setSelectedListIds([]);
+    }
     setSelectedTemplateHtml(campaign.templateHtml || "");
     setStep(1);
     setWizardOpen(true);
@@ -315,13 +325,20 @@ export default function CampaignsPage() {
   };
 
   const handleNextStep2 = () => {
-    if (!audienceId) {
-      toast.error("Please select a target audience list.");
+    if (selectedListIds.length === 0) {
+      toast.error("Please select at least one target audience list.");
       return;
     }
     if (campaignId) {
       updateCampaignMutation.mutate(
-        { id: campaignId, data: { audienceType: "list", audienceId: Number(audienceId) } },
+        {
+          id: campaignId,
+          data: {
+            audienceType: "list",
+            audienceId: selectedListIds[0] || 0,
+            audienceListIds: selectedListIds.join(","),
+          },
+        },
         { onSuccess: () => setStep(3) }
       );
     } else {
@@ -346,7 +363,8 @@ export default function CampaignsPage() {
       fromName,
       fromEmail,
       audienceType: "list",
-      audienceId: audienceId ? Number(audienceId) : 0,
+      audienceId: selectedListIds[0] || 0,
+      audienceListIds: selectedListIds.join(","),
       templateHtml: selectedTemplateHtml,
     };
 
@@ -724,22 +742,33 @@ export default function CampaignsPage() {
               <div className="space-y-4">
                 <div>
                   <h3 className="text-lg font-semibold">Recipients</h3>
-                  <p className="text-xs text-muted-foreground">The people who receive your campaign</p>
+                  <p className="text-xs text-muted-foreground">Select one or multiple contact lists for your campaign</p>
                 </div>
                 <div className="space-y-3">
                   <div className="space-y-1">
-                    <Label>Send to</Label>
+                    <div className="flex items-center justify-between mb-1">
+                      <Label>Send to List(s)</Label>
+                      {selectedListIds.length > 0 && (
+                        <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                          {selectedListIds.length} {selectedListIds.length === 1 ? "list" : "lists"} selected
+                        </span>
+                      )}
+                    </div>
                     <Popover open={listPopoverOpen} onOpenChange={setListPopoverOpen}>
                       <PopoverTrigger asChild>
                         <Button
                           variant="outline"
                           role="combobox"
                           aria-expanded={listPopoverOpen}
-                          className="w-full justify-between font-normal h-10"
+                          className="w-full justify-between font-normal h-10 min-h-10"
                         >
-                          {audienceId
-                            ? lists.find((l: any) => String(l.id) === audienceId)?.name ?? "Select list(s), segment(s) or individual contacts"
-                            : "Select list(s), segment(s) or individual contacts"}
+                          <span className="truncate">
+                            {selectedListIds.length === 0
+                              ? "Select list(s), segment(s) or individual lists"
+                              : selectedListIds.length === 1
+                              ? lists.find((l: any) => l.id === selectedListIds[0])?.name ?? "1 list selected"
+                              : `${selectedListIds.length} lists selected (${selectedListIds.map(id => lists.find((l: any) => l.id === id)?.name).filter(Boolean).join(", ")})`}
+                          </span>
                           <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
                         </Button>
                       </PopoverTrigger>
@@ -749,33 +778,87 @@ export default function CampaignsPage() {
                           <CommandList>
                             <CommandEmpty>No lists found.</CommandEmpty>
                             <CommandGroup>
-                              {lists.map((list: any) => (
-                                <CommandItem
-                                  key={list.id}
-                                  value={list.name}
-                                  onSelect={() => {
-                                    setAudienceId(String(list.id));
-                                    setListPopoverOpen(false);
+                              <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/50 text-xs">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (selectedListIds.length === lists.length) {
+                                      setSelectedListIds([]);
+                                    } else {
+                                      setSelectedListIds(lists.map((l: any) => l.id));
+                                    }
                                   }}
-                                  className="cursor-pointer"
+                                  className="text-primary hover:underline font-medium cursor-pointer"
                                 >
-                                  <Check
-                                    className={cn(
-                                      "mr-2 size-4",
-                                      audienceId === String(list.id) ? "opacity-100" : "opacity-0"
-                                    )}
-                                  />
-                                  <span className="font-semibold">{list.name}</span>
-                                  <span className="ml-auto text-xs text-muted-foreground">
-                                    ({list.contactCount ?? 0} contacts)
-                                  </span>
-                                </CommandItem>
-                              ))}
+                                  {selectedListIds.length === lists.length ? "Deselect All" : "Select All Lists"}
+                                </button>
+                                <span className="text-muted-foreground">{lists.length} total lists</span>
+                              </div>
+                              {lists.map((list: any) => {
+                                const isSelected = selectedListIds.includes(list.id);
+                                return (
+                                  <CommandItem
+                                    key={list.id}
+                                    value={list.name}
+                                    onSelect={() => {
+                                      if (isSelected) {
+                                        setSelectedListIds(selectedListIds.filter((id) => id !== list.id));
+                                      } else {
+                                        setSelectedListIds([...selectedListIds, list.id]);
+                                      }
+                                    }}
+                                    className="cursor-pointer flex items-center justify-between"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <Checkbox
+                                        checked={isSelected}
+                                        onCheckedChange={() => {
+                                          if (isSelected) {
+                                            setSelectedListIds(selectedListIds.filter((id) => id !== list.id));
+                                          } else {
+                                            setSelectedListIds([...selectedListIds, list.id]);
+                                          }
+                                        }}
+                                      />
+                                      <span className="font-semibold">{list.name}</span>
+                                    </div>
+                                    <span className="text-xs text-muted-foreground">
+                                      ({list.contactCount ?? 0} contacts)
+                                    </span>
+                                  </CommandItem>
+                                );
+                              })}
                             </CommandGroup>
                           </CommandList>
                         </Command>
                       </PopoverContent>
                     </Popover>
+
+                    {/* Selected List Badges/Pills */}
+                    {selectedListIds.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-2">
+                        {selectedListIds.map((id) => {
+                          const listObj = lists.find((l: any) => l.id === id);
+                          return (
+                            <Badge
+                              key={id}
+                              variant="secondary"
+                              className="flex items-center gap-1 text-xs py-1 px-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800"
+                            >
+                              <span className="font-medium">{listObj?.name || `List #${id}`}</span>
+                              <span className="text-[10px] text-emerald-600 dark:text-emerald-400">({listObj?.contactCount ?? 0})</span>
+                              <X
+                                className="size-3 cursor-pointer ml-0.5 hover:text-red-500"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedListIds(selectedListIds.filter((item) => item !== id));
+                                }}
+                              />
+                            </Badge>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center space-x-2 pt-2">
@@ -968,7 +1051,9 @@ export default function CampaignsPage() {
                     <div>
                       <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">Audience</span>
                       <span className="font-medium text-gray-900 dark:text-gray-100">
-                        {lists.find((l: any) => String(l.id) === audienceId)?.name || "Selected List"}
+                        {selectedListIds.length === 0
+                          ? "No list selected"
+                          : selectedListIds.map((id) => lists.find((l: any) => l.id === id)?.name || `List #${id}`).join(", ")}
                       </span>
                     </div>
                   </div>

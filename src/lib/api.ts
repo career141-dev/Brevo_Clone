@@ -31,9 +31,10 @@ export const api = {
       const suffix = qs.toString() ? `?${qs}` : "";
       return request<PaginatedResponse<any>>(`/contacts${suffix}`);
     },
-    stats: (params?: { listId?: number }) => {
+    stats: (params?: { listId?: number; listIds?: string }) => {
       const qs = new URLSearchParams();
-      if (params?.listId) qs.set("listId", String(params.listId));
+      if (params?.listIds) qs.set("listIds", params.listIds);
+      else if (params?.listId) qs.set("listId", String(params.listId));
       const suffix = qs.toString() ? `?${qs}` : "";
       return request<{ total: number; subscribed: number; unsubscribed: number; bounced: number }>(`/contacts/stats${suffix}`);
     },
