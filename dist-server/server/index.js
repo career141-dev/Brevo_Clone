@@ -1114,9 +1114,6 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                         { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
                         { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
                     ];
-                    if (replyToAddresses.length > 0) {
-                        simpleHeaders.push({ Name: "Reply-To", Value: replyToAddresses.join(", ") });
-                    }
                     const sesParams = {
                         FromEmailAddress: fromHeader,
                         Destination: { ToAddresses: [contact.email] },
@@ -1131,7 +1128,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                         },
                         EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
                     };
-                    console.log(`[SEND][Campaign ${campaignId}] Sending to ${contact.email} | ReplyToAddresses:`, sesParams.ReplyToAddresses ?? "NOT SET", "| Headers Reply-To:", replyToAddresses.join(", "));
+                    console.log(`[SEND][Campaign ${campaignId}] Sending to ${contact.email} | ReplyToAddresses:`, sesParams.ReplyToAddresses ?? "NOT SET");
                     await sesv2Client.send(new SendEmailV2Command(sesParams));
                 }
                 // Log "sent" event with campaignId
