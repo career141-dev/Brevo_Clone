@@ -1141,13 +1141,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
     }
 
     const replyToAddresses = Array.from(replyToEmailsSet);
-    const replyToName = (campaign as any).replyToName ? String((campaign as any).replyToName).trim() : null;
-
-    const formattedReplyTos = replyToAddresses.map((addr) =>
-      replyToName ? formatEmailWithDisplayName(replyToName, addr) : addr
-    );
-
-    const replyToHeader = formattedReplyTos.join(", ");
+    const replyToHeader = replyToAddresses.join(", ");
     const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
 
     for (const contact of contacts) {
@@ -1222,8 +1216,8 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
           };
 
-          if (formattedReplyTos.length > 0) {
-            sesParams.ReplyToEmailAddresses = formattedReplyTos;
+          if (replyToAddresses.length > 0) {
+            sesParams.ReplyToEmailAddresses = replyToAddresses;
           }
 
           await sesv2Client.send(new SendEmailV2Command(sesParams));
