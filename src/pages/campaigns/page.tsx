@@ -144,7 +144,7 @@ export default function CampaignsPage() {
   const { data: listsData } = useQuery({
     queryKey: ["lists-for-campaign"],
     queryFn: () => api.lists.list({ pageSize: 10000 }),
-    enabled: wizardOpen && step === 2,
+    enabled: wizardOpen,
   });
 
   const { data: senders } = useQuery({
@@ -788,11 +788,17 @@ export default function CampaignsPage() {
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="none">-- None (Use Manual Email Below) --</SelectItem>
-                            {lists.map((l: any) => (
-                              <SelectItem key={l.id} value={String(l.id)}>
-                                📋 {l.name} ({l.contactCount ?? 0} receptionists/contacts)
+                            {lists.length === 0 ? (
+                              <SelectItem value="empty_disabled" disabled>
+                                No contact lists found (Create one under Contacts ➔ Lists)
                               </SelectItem>
-                            ))}
+                            ) : (
+                              lists.map((l: any) => (
+                                <SelectItem key={l.id} value={String(l.id)}>
+                                  📋 {l.name} ({l.contactCount ?? 0} receptionists/contacts)
+                                </SelectItem>
+                              ))
+                            )}
                           </SelectContent>
                         </Select>
                       </div>

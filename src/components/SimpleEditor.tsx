@@ -176,17 +176,62 @@ export default function SimpleEditor({
     editorRef.current.focus();
     restoreSelection();
 
-    try {
-      document.execCommand("styleWithCSS", false, "true");
-    } catch {
-      // fallback
+    const sel = window.getSelection();
+    let applied = false;
+
+    if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
+      const range = sel.getRangeAt(0);
+
+      if (!range.collapsed) {
+        try {
+          document.execCommand("styleWithCSS", false, "true");
+          if (cmd === "hiliteColor") {
+            document.execCommand("hiliteColor", false, color);
+            document.execCommand("backColor", false, color);
+          } else {
+            document.execCommand("foreColor", false, color);
+          }
+          applied = true;
+        } catch {
+          // fallback to manual DOM range wrapping
+        }
+
+        if (!applied) {
+          try {
+            const span = document.createElement("span");
+            if (cmd === "hiliteColor") {
+              span.style.backgroundColor = color;
+            } else {
+              span.style.color = color;
+            }
+            const contents = range.extractContents();
+            span.appendChild(contents);
+            range.insertNode(span);
+            sel.removeAllRanges();
+            const newRange = document.createRange();
+            newRange.selectNodeContents(span);
+            sel.addRange(newRange);
+            lastRangeRef.current = newRange.cloneRange();
+            applied = true;
+          } catch {
+            // ignore
+          }
+        }
+      }
     }
 
-    if (cmd === "hiliteColor") {
-      document.execCommand("hiliteColor", false, color);
-      document.execCommand("backColor", false, color);
-    } else {
-      document.execCommand("foreColor", false, color);
+    if (!applied) {
+      try {
+        document.execCommand("styleWithCSS", false, "true");
+        if (cmd === "hiliteColor") {
+          document.execCommand("hiliteColor", false, color);
+          document.execCommand("backColor", false, color);
+        } else {
+          document.execCommand("foreColor", false, color);
+        }
+      } catch {
+        // ignore
+      }
     }
 
     saveSelection();
@@ -458,14 +503,17 @@ export default function SimpleEditor({
           size="icon"
           title={title}
           className="relative h-8 w-8"
-          onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            saveSelection();
+          }}
           onClick={() => saveSelection()}
         >
           {icon}
           <ChevronDown className="size-2 absolute bottom-0.5 right-0.5 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-56 p-2" align="start">
+      <PopoverContent className="w-56 p-2" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
         <div className="grid grid-cols-8 gap-1">
           {COLORS.map((c) => (
             <button
@@ -477,7 +525,8 @@ export default function SimpleEditor({
                 e.preventDefault();
                 applyColor(command, c);
               }}
-              onClick={() => {
+              onClick={(e) => {
+                e.preventDefault();
                 applyColor(command, c);
               }}
             />
