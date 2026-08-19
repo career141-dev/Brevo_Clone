@@ -93,15 +93,21 @@ export default function CampaignsPage() {
   const [previewText, setPreviewText] = useState("");
   const [fromName, setFromName] = useState("");
   const [fromEmail, setFromEmail] = useState("");
+  const [replyToName, setReplyToName] = useState("");
+  const [replyToEmail, setReplyToEmail] = useState("");
 
   // Sender Domain Sheet State
   const [sendersSheetOpen, setSendersSheetOpen] = useState(false);
   const [newSenderName, setNewSenderName] = useState("");
   const [newSenderEmail, setNewSenderEmail] = useState("");
 
-  // Step 2: Audience
+  // Step 2: Audience / Recipients
   const [selectedListIds, setSelectedListIds] = useState<number[]>([]);
+  const [excludedListIds, setExcludedListIds] = useState<number[]>([]);
+  const [skipUnengaged, setSkipUnengaged] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [listPopoverOpen, setListPopoverOpen] = useState(false);
+  const [excludeListPopoverOpen, setExcludeListPopoverOpen] = useState(false);
   const audienceId = selectedListIds[0] ? String(selectedListIds[0]) : "";
 
   // Step 3: Template
@@ -277,8 +283,14 @@ export default function CampaignsPage() {
     setPreviewText("");
     setFromName("");
     setFromEmail("");
+    setReplyToName("");
+    setReplyToEmail("");
     setSelectedListIds([]);
+    setExcludedListIds([]);
+    setSkipUnengaged(false);
+    setShowAdvanced(false);
     setListPopoverOpen(false);
+    setExcludeListPopoverOpen(false);
     setSelectedTemplateId(null);
     setSelectedTemplateHtml("");
   };
@@ -296,6 +308,9 @@ export default function CampaignsPage() {
     setPreviewText(campaign.previewText || "");
     setFromName(campaign.fromName || "");
     setFromEmail(campaign.fromEmail || "");
+    setReplyToName(campaign.replyToName || "");
+    setReplyToEmail(campaign.replyToEmail || "");
+    setSkipUnengaged(Boolean(campaign.skipUnengaged));
     if (campaign.audienceListIds) {
       const ids = String(campaign.audienceListIds).split(',').map(Number).filter(Boolean);
       setSelectedListIds(ids);
@@ -304,6 +319,15 @@ export default function CampaignsPage() {
     } else {
       setSelectedListIds([]);
     }
+
+    if (campaign.excludeListIds) {
+      const exc = String(campaign.excludeListIds).split(',').map(Number).filter(Boolean);
+      setExcludedListIds(exc);
+      if (exc.length > 0) setShowAdvanced(true);
+    } else {
+      setExcludedListIds([]);
+    }
+
     setSelectedTemplateHtml(campaign.templateHtml || "");
     setStep(1);
     setWizardOpen(true);
@@ -316,7 +340,7 @@ export default function CampaignsPage() {
     }
     if (campaignId) {
       updateCampaignMutation.mutate(
-        { id: campaignId, data: { fromName, fromEmail } },
+        { id: campaignId, data: { fromName, fromEmail, replyToName, replyToEmail } },
         { onSuccess: () => setStep(2) }
       );
     } else {
@@ -337,6 +361,8 @@ export default function CampaignsPage() {
             audienceType: "list",
             audienceId: selectedListIds[0] || 0,
             audienceListIds: selectedListIds.join(","),
+            excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
+            skipUnengaged,
           },
         },
         { onSuccess: () => setStep(3) }
@@ -362,9 +388,13 @@ export default function CampaignsPage() {
       previewText,
       fromName,
       fromEmail,
+      replyToName: replyToName.trim() || null,
+      replyToEmail: replyToEmail.trim() || null,
       audienceType: "list",
       audienceId: selectedListIds[0] || 0,
       audienceListIds: selectedListIds.join(","),
+      excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
+      skipUnengaged,
       templateHtml: selectedTemplateHtml,
     };
 
@@ -733,6 +763,36 @@ export default function CampaignsPage() {
                       />
                     </div>
                   </div>
+
+                  {/* Custom Reply-To Inbox Section */}
+                  <div className="pt-3 border-t space-y-3">
+                    <div>
+                      <Label className="font-semibold text-sm">Reply-To Inbox (Optional)</Label>
+                      <p className="text-xs text-muted-foreground">When recipients click Reply in Gmail or Outlook, their replies will be delivered directly to this inbox.</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label htmlFor="camp-reply-name" className="text-xs">Reply-To Name</Label>
+                        <Input
+                          id="camp-reply-name"
+                          placeholder="e.g. Support Team"
+                          value={replyToName}
+                          onChange={(e) => setReplyToName(e.target.value)}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="camp-reply-email" className="text-xs">Reply-To Email</Label>
+                        <Input
+                          id="camp-reply-email"
+                          placeholder="e.g. replies@company.com"
+                          value={replyToEmail}
+                          onChange={(e) => setReplyToEmail(e.target.value)}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -742,12 +802,12 @@ export default function CampaignsPage() {
               <div className="space-y-4">
                 <div>
                   <h3 className="text-lg font-semibold">Recipients</h3>
-                  <p className="text-xs text-muted-foreground">Select one or multiple contact lists for your campaign</p>
+                  <p className="text-xs text-muted-foreground">The people who receive your campaign</p>
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-4">
                   <div className="space-y-1">
                     <div className="flex items-center justify-between mb-1">
-                      <Label className="font-semibold">Send to List(s)</Label>
+                      <Label className="font-semibold text-sm">Send to</Label>
                       {selectedListIds.length > 0 && (
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
@@ -758,26 +818,25 @@ export default function CampaignsPage() {
                             variant="ghost"
                             size="sm"
                             onClick={() => setSelectedListIds([])}
-                            className="h-6 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 px-2 flex items-center gap-1 cursor-pointer font-medium"
-                            title="Clear all selected lists"
+                            className="h-auto p-0 text-xs text-red-600 hover:text-red-700 hover:bg-transparent"
                           >
-                            <Trash2 className="size-3" />
                             Clear selection
                           </Button>
                         </div>
                       )}
                     </div>
+
                     <Popover open={listPopoverOpen} onOpenChange={setListPopoverOpen}>
                       <PopoverTrigger asChild>
                         <Button
                           variant="outline"
                           role="combobox"
                           aria-expanded={listPopoverOpen}
-                          className="w-full justify-between font-normal h-10 min-h-10"
+                          className="w-full justify-between text-left font-normal h-10 border-input"
                         >
                           <span className="truncate">
                             {selectedListIds.length === 0
-                              ? "Select list(s), segment(s) or individual lists"
+                              ? "Select list(s), segment(s) or individual contacts"
                               : selectedListIds.length === 1
                               ? lists.find((l: any) => l.id === selectedListIds[0])?.name ?? "1 list selected"
                               : `${selectedListIds.length} lists selected (${selectedListIds.map(id => lists.find((l: any) => l.id === id)?.name).filter(Boolean).join(", ")})`}
@@ -891,29 +950,120 @@ export default function CampaignsPage() {
                     )}
                   </div>
 
-                  <div className="flex items-center space-x-2 pt-2">
-                    <div className="h-4 w-8 bg-muted rounded-full relative">
-                      <div className="size-4 bg-gray-400 rounded-full absolute left-0" />
+                  {/* Skip Unengaged Contacts */}
+                  <div className="flex items-center space-x-2 pt-1">
+                    <Checkbox
+                      id="skip-unengaged-check"
+                      checked={skipUnengaged}
+                      onCheckedChange={(c) => setSkipUnengaged(Boolean(c))}
+                    />
+                    <Label htmlFor="skip-unengaged-check" className="font-normal text-sm cursor-pointer">
+                      Don’t send to unengaged contacts
+                    </Label>
+                  </div>
+
+                  {/* Advanced Options Toggle */}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvanced(!showAdvanced)}
+                      className="text-sm font-semibold text-emerald-600 hover:underline cursor-pointer flex items-center gap-1"
+                    >
+                      {showAdvanced ? "Hide advanced options" : "Advanced options"}
+                      <ChevronRight className={cn("size-3.5 transition-transform", showAdvanced && "rotate-90")} />
+                    </button>
+
+                    {showAdvanced && (
+                      <div className="mt-3 p-4 bg-muted/20 border rounded-lg space-y-4">
+                        {/* Exclusion Lists */}
+                        <div className="space-y-1.5">
+                          <Label className="font-semibold text-xs text-red-600 dark:text-red-400">
+                            Don’t send to (Exclusion Lists)
+                          </Label>
+                          <Popover open={excludeListPopoverOpen} onOpenChange={setExcludeListPopoverOpen}>
+                            <PopoverTrigger asChild>
+                              <Button
+                                variant="outline"
+                                role="combobox"
+                                className="w-full justify-between text-left font-normal h-9 text-xs"
+                              >
+                                <span className="truncate text-muted-foreground">
+                                  {excludedListIds.length === 0
+                                    ? "Select list(s), segment(s) or individual contacts to exclude"
+                                    : `${excludedListIds.length} exclusion lists selected`}
+                                </span>
+                                <ChevronsUpDown className="ml-2 size-3.5 opacity-50" />
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                              <Command>
+                                <CommandInput placeholder="Search exclusion lists..." className="text-xs" />
+                                <CommandList className="max-h-[220px] overflow-y-auto p-1" onWheel={(e) => e.stopPropagation()}>
+                                  <CommandEmpty>No lists found.</CommandEmpty>
+                                  <CommandGroup>
+                                    {lists.map((list: any) => {
+                                      const isExcluded = excludedListIds.includes(list.id);
+                                      return (
+                                        <CommandItem
+                                          key={list.id}
+                                          value={`${list.name} exclude-${list.id}`}
+                                          onSelect={() => {
+                                            if (isExcluded) setExcludedListIds(excludedListIds.filter(id => id !== list.id));
+                                            else setExcludedListIds([...excludedListIds, list.id]);
+                                          }}
+                                          className="cursor-pointer text-xs flex items-center justify-between py-1.5"
+                                        >
+                                          <div className="flex items-center gap-2">
+                                            <Checkbox checked={isExcluded} />
+                                            <span>{list.name}</span>
+                                          </div>
+                                          <span className="text-[10px] text-muted-foreground">({list.contactCount ?? 0})</span>
+                                        </CommandItem>
+                                      );
+                                    })}
+                                  </CommandGroup>
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
+
+                          {/* Excluded Badges */}
+                          {excludedListIds.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pt-1">
+                              {excludedListIds.map(id => (
+                                <Badge key={id} variant="outline" className="bg-red-50 text-red-700 border-red-200 text-[11px] gap-1">
+                                  <span>Excluded: {lists.find(l => l.id === id)?.name || `#${id}`}</span>
+                                  <X className="size-3 cursor-pointer hover:text-red-900" onClick={() => setExcludedListIds(excludedListIds.filter(i => i !== id))} />
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Filter Conditions */}
+                        <div className="pt-1">
+                          <Button type="button" variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={() => toast.info("Custom condition filter added!")}>
+                            <Plus className="size-3" /> Filter recipients (Add a condition)
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Recipient & Quota Summary Box */}
+                  <div className="bg-slate-50 dark:bg-slate-900/60 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
+                    <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-slate-100">
+                      <span>
+                        {isLoadingAudienceStats ? <Loader2 className="inline size-3.5 animate-spin mr-1" /> : (audienceStats?.subscribed ?? 0).toLocaleString()} recipients
+                      </span>
+                      <span className="text-slate-300">|</span>
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        {isLoadingQuota ? <Loader2 className="inline size-3.5 animate-spin mr-1" /> : (quotaData?.remaining ?? 0).toLocaleString()} remaining emails
+                      </span>
                     </div>
-                    <Label className="font-normal text-sm">Don’t send to unengaged contacts</Label>
-                  </div>
-
-                  <div className="pt-2 text-sm font-semibold text-emerald-600 cursor-pointer">
-                    Advanced options
-                  </div>
-
-                  <div className="bg-muted/30 p-4 rounded-lg mt-4 text-xs text-muted-foreground">
-                    <p>
-                      <span className="font-bold text-black dark:text-white">
-                        {isLoadingAudienceStats ? <Loader2 className="inline size-3 animate-spin mr-1" /> : audienceStats?.subscribed ?? 0}
-                      </span> recipients
+                    <p className="text-xs text-muted-foreground">
+                      Send to as many recipients as you wish, within your plan limits.
                     </p>
-                    <p className="mt-1">
-                      <span className="font-bold text-black dark:text-white">
-                        {isLoadingQuota ? <Loader2 className="inline size-3 animate-spin mr-1" /> : (quotaData?.remaining ?? 0).toLocaleString()}
-                      </span> remaining emails
-                    </p>
-                    <p className="mt-1">Send to as many recipients as you wish, within your plan limits.</p>
                   </div>
                 </div>
               </div>

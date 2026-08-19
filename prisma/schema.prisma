@@ -120,12 +120,16 @@ model Campaign {
   subject        String
   fromName       String
   fromEmail      String
+  replyToEmail   String?
+  replyToName    String?
   previewText    String?
   userId         String
   templateHtml   String         @db.LongText
   audienceType   AudienceType
   audienceId     Int
   audienceListIds String?
+  excludeListIds String?
+  skipUnengaged  Boolean        @default(false)
   status         CampaignStatus @default(draft)
   scheduledAt    DateTime?
   sentAt         DateTime?
