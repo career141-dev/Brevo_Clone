@@ -136,6 +136,48 @@ export default function SimpleEditor({
     sel?.addRange(savedRange);
   };
 
+  // Cross-browser & cross-platform (macOS / Windows) variable insertion
+  const insertVariableAtSelection = (tag: string) => {
+    editorRef.current?.focus();
+    restoreSelection();
+
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+
+      const textNode = document.createTextNode(tag);
+      range.insertNode(textNode);
+
+      range.setStartAfter(textNode);
+      range.setEndAfter(textNode);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else if (editorRef.current) {
+      editorRef.current.focus();
+      document.execCommand("insertText", false, tag);
+    }
+    updateCounts();
+  };
+
+  // Cross-browser & cross-platform text coloring (Safari / WebKit / macOS / Windows)
+  const applyColor = (cmd: string, color: string) => {
+    editorRef.current?.focus();
+    restoreSelection();
+    try {
+      document.execCommand("styleWithCSS", false, "true");
+    } catch {
+      // fallback
+    }
+    if (cmd === "hiliteColor") {
+      document.execCommand("hiliteColor", false, color);
+      document.execCommand("backColor", false, color);
+    } else {
+      document.execCommand(cmd, false, color);
+    }
+    updateCounts();
+  };
+
   // ── Link logic ─────────────────────────────────────────────────────────────
   const openLinkPopover = () => {
     saveSelection();
@@ -402,6 +444,7 @@ export default function SimpleEditor({
           title={title}
           className="relative h-8 w-8"
           onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+          onClick={() => saveSelection()}
         >
           {icon}
           <ChevronDown className="size-2 absolute bottom-0.5 right-0.5 opacity-50" />
@@ -412,12 +455,15 @@ export default function SimpleEditor({
           {COLORS.map((c) => (
             <button
               key={c}
-              className="w-5 h-5 rounded-sm border border-gray-200 hover:scale-110 transition-transform"
+              type="button"
+              className="w-5 h-5 rounded-sm border border-gray-200 hover:scale-110 transition-transform cursor-pointer"
               style={{ backgroundColor: c }}
               onMouseDown={(e) => {
                 e.preventDefault();
-                restoreSelection();
-                execCmd(command, c);
+                applyColor(command, c);
+              }}
+              onClick={() => {
+                applyColor(command, c);
               }}
             />
           ))}
@@ -569,42 +615,42 @@ export default function SimpleEditor({
                 Dynamic Contact Tags
               </div>
               <DropdownMenuItem
-                onClick={() => { restoreSelection(); execCmd("insertText", "{{first_name}}"); }}
+                onClick={() => insertVariableAtSelection("{{first_name}}")}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">First Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{first_name}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => { restoreSelection(); execCmd("insertText", "{{last_name}}"); }}
+                onClick={() => insertVariableAtSelection("{{last_name}}")}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Last Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{last_name}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => { restoreSelection(); execCmd("insertText", "{{full_name}}"); }}
+                onClick={() => insertVariableAtSelection("{{full_name}}")}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Full Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{full_name}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => { restoreSelection(); execCmd("insertText", "{{email}}"); }}
+                onClick={() => insertVariableAtSelection("{{email}}")}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Email Address</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{email}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => { restoreSelection(); execCmd("insertText", "{{company}}"); }}
+                onClick={() => insertVariableAtSelection("{{company}}")}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Company Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{company}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => { restoreSelection(); execCmd("insertText", "{{designation}}"); }}
+                onClick={() => insertVariableAtSelection("{{designation}}")}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Job Title</span>
@@ -612,7 +658,7 @@ export default function SimpleEditor({
               </DropdownMenuItem>
               <div className="h-px bg-border my-1" />
               <DropdownMenuItem
-                onClick={() => { restoreSelection(); execCmd("insertText", "{{unsubscribe_url}}"); }}
+                onClick={() => insertVariableAtSelection("{{unsubscribe_url}}")}
                 className="cursor-pointer flex items-center justify-between text-red-600 dark:text-red-400"
               >
                 <span className="font-medium">Unsubscribe Link</span>
