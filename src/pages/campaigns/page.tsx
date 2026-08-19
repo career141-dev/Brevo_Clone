@@ -408,13 +408,45 @@ export default function CampaignsPage() {
       return;
     }
     const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
+
+    console.log("[STEP 1] replyToEmails:", replyToEmails, "resolved:", resolvedReplyToEmail);
+
+    const step1Data = { fromName, fromEmail, replyToName, replyToEmail: resolvedReplyToEmail, replyToListId };
+
     if (campaignId) {
+      // Existing campaign — update immediately
       updateCampaignMutation.mutate(
-        { id: campaignId, data: { fromName, fromEmail, replyToName, replyToEmail: resolvedReplyToEmail, replyToListId } },
+        { id: campaignId, data: step1Data },
         { onSuccess: () => setStep(2) }
       );
     } else {
-      setStep(2);
+      // NEW campaign — create a draft immediately so replyToEmail is persisted
+      createCampaignMutation.mutate(
+        {
+          name: name || "Untitled Campaign",
+          subject: subject || "(No subject)",
+          previewText: previewText || null,
+          fromName,
+          fromEmail,
+          replyToName: replyToName.trim() || null,
+          replyToEmail: resolvedReplyToEmail,
+          replyToListId,
+          templateHtml: "",
+          audienceType: "list",
+          audienceId: 0,
+          audienceListIds: null,
+          individualEmails: null,
+          excludeListIds: null,
+          skipUnengaged: false,
+        },
+        {
+          onSuccess: (data) => {
+            setCampaignId(data.id);
+            console.log("[STEP 1] Campaign draft created with ID:", data.id, "replyToEmail:", data.replyToEmail);
+            setStep(2);
+          },
+        }
+      );
     }
   };
 
@@ -431,24 +463,21 @@ export default function CampaignsPage() {
       }
     }
 
-    if (campaignId) {
-      updateCampaignMutation.mutate(
-        {
-          id: campaignId,
-          data: {
-            audienceType: recipientTab === "individual" ? "individual" : "list",
-            audienceId: selectedListIds[0] || 0,
-            audienceListIds: recipientTab === "individual" ? null : selectedListIds.join(","),
-            individualEmails: recipientTab === "individual" ? individualEmails.join(",") : null,
-            excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
-            skipUnengaged,
-          },
+    // campaignId is always set now (created in Step 1)
+    updateCampaignMutation.mutate(
+      {
+        id: campaignId!,
+        data: {
+          audienceType: recipientTab === "individual" ? "individual" : "list",
+          audienceId: selectedListIds[0] || 0,
+          audienceListIds: recipientTab === "individual" ? null : selectedListIds.join(","),
+          individualEmails: recipientTab === "individual" ? individualEmails.join(",") : null,
+          excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
+          skipUnengaged,
         },
-        { onSuccess: () => setStep(3) }
-      );
-    } else {
-      setStep(3);
-    }
+      },
+      { onSuccess: () => setStep(3) }
+    );
   };
 
   const handleNextStep3 = () => {
@@ -484,19 +513,11 @@ export default function CampaignsPage() {
       templateHtml: selectedTemplateHtml,
     };
 
-    if (campaignId) {
-      updateCampaignMutation.mutate(
-        { id: campaignId, data: payload },
-        { onSuccess: () => setStep(4) }
-      );
-    } else {
-      createCampaignMutation.mutate(payload, {
-        onSuccess: (data) => {
-          setCampaignId(data.id);
-          setStep(4);
-        }
-      });
-    }
+    // campaignId is always set now (created in Step 1)
+    updateCampaignMutation.mutate(
+      { id: campaignId!, data: payload },
+      { onSuccess: () => setStep(4) }
+    );
   };
 
   const handleSelectTemplate = async (template: any) => {
