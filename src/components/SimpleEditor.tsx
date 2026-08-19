@@ -123,26 +123,36 @@ export default function SimpleEditor({
     setSelectedImage(null);
   };
 
-  // ── Save selection before opening popovers ────────────────────────────────
-  const saveSelection = () => {
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) setSavedRange(sel.getRangeAt(0).cloneRange());
-  };
+  // ── Persistent Selection Range Tracking (Cross-Browser & Cross-Platform) ────
+  const lastRangeRef = useRef<Range | null>(null);
 
-  const restoreSelection = () => {
-    if (!savedRange) return;
+  const saveSelection = useCallback(() => {
     const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(savedRange);
-  };
+    if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)) {
+      const range = sel.getRangeAt(0).cloneRange();
+      setSavedRange(range);
+      lastRangeRef.current = range;
+    }
+  }, []);
+
+  const restoreSelection = useCallback(() => {
+    const targetRange = lastRangeRef.current || savedRange;
+    if (!targetRange) return;
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      sel.addRange(targetRange);
+    }
+  }, [savedRange]);
 
   // Cross-browser & cross-platform (macOS / Windows) variable insertion
   const insertVariableAtSelection = (tag: string) => {
-    editorRef.current?.focus();
+    if (!editorRef.current) return;
+    editorRef.current.focus();
     restoreSelection();
 
     const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
+    if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
       const range = sel.getRangeAt(0);
       range.deleteContents();
 
@@ -153,28 +163,33 @@ export default function SimpleEditor({
       range.setEndAfter(textNode);
       sel.removeAllRanges();
       sel.addRange(range);
-    } else if (editorRef.current) {
-      editorRef.current.focus();
-      document.execCommand("insertText", false, tag);
+      lastRangeRef.current = range.cloneRange();
+    } else {
+      document.execCommand("insertHTML", false, tag);
     }
     updateCounts();
   };
 
   // Cross-browser & cross-platform text coloring (Safari / WebKit / macOS / Windows)
   const applyColor = (cmd: string, color: string) => {
-    editorRef.current?.focus();
+    if (!editorRef.current) return;
+    editorRef.current.focus();
     restoreSelection();
+
     try {
       document.execCommand("styleWithCSS", false, "true");
     } catch {
       // fallback
     }
+
     if (cmd === "hiliteColor") {
       document.execCommand("hiliteColor", false, color);
       document.execCommand("backColor", false, color);
     } else {
-      document.execCommand(cmd, false, color);
+      document.execCommand("foreColor", false, color);
     }
+
+    saveSelection();
     updateCounts();
   };
 
@@ -615,42 +630,48 @@ export default function SimpleEditor({
                 Dynamic Contact Tags
               </div>
               <DropdownMenuItem
-                onClick={() => insertVariableAtSelection("{{first_name}}")}
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{first_name}}"); }}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">First Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{first_name}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => insertVariableAtSelection("{{last_name}}")}
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{last_name}}"); }}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Last Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{last_name}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => insertVariableAtSelection("{{full_name}}")}
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{full_name}}"); }}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Full Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{full_name}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => insertVariableAtSelection("{{email}}")}
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{email}}"); }}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Email Address</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{email}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => insertVariableAtSelection("{{company}}")}
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{company}}")} }
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Company Name</span>
                 <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{company}}"}</code>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => insertVariableAtSelection("{{designation}}")}
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{designation}}"); }}
                 className="cursor-pointer flex items-center justify-between"
               >
                 <span className="font-medium">Job Title</span>
@@ -658,7 +679,8 @@ export default function SimpleEditor({
               </DropdownMenuItem>
               <div className="h-px bg-border my-1" />
               <DropdownMenuItem
-                onClick={() => insertVariableAtSelection("{{unsubscribe_url}}")}
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{unsubscribe_url}}"); }}
                 className="cursor-pointer flex items-center justify-between text-red-600 dark:text-red-400"
               >
                 <span className="font-medium">Unsubscribe Link</span>
@@ -922,12 +944,16 @@ export default function SimpleEditor({
                 ref={editorRef}
                 contentEditable
                 suppressContentEditableWarning
-                onInput={updateCounts}
+                onInput={() => { updateCounts(); saveSelection(); }}
+                onMouseUp={saveSelection}
+                onKeyUp={saveSelection}
+                onFocus={saveSelection}
                 onClick={handleEditorClick}
                 onPaste={(e) => {
                   e.preventDefault();
                   const text = e.clipboardData.getData("text/plain");
                   document.execCommand("insertText", false, text);
+                  saveSelection();
                 }}
                 className="w-full min-h-[600px] p-8 outline-none"
                 style={{
