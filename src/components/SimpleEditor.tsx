@@ -7,6 +7,7 @@ import {
   AlignCenter, AlignRight, AlignJustify, ListOrdered, List,
   IndentDecrease, IndentIncrease, RemoveFormatting, ChevronDown,
   Trash2, ExternalLink, Paperclip, FileText, FileUp, Quote, Minus, Sparkles, X, UserCheck,
+  Highlighter, Type, Eraser, Check,
 } from "lucide-react";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -55,6 +56,28 @@ const COLORS = [
   "#5b0f00","#660000","#783f04","#7f6000","#274e13","#0c343d","#1c4587","#20124d",
 ];
 
+const HIGHLIGHT_PRESETS = [
+  { label: "Yellow", color: "#fef08a" },
+  { label: "Green", color: "#bbf7d0" },
+  { label: "Red", color: "#fecaca" },
+  { label: "Cyan", color: "#bae6fd" },
+  { label: "Orange", color: "#fed7aa" },
+  { label: "Pink", color: "#fbcfe8" },
+  { label: "Purple", color: "#e9d5ff" },
+  { label: "Gray", color: "#e2e8f0" },
+];
+
+const TEXT_COLOR_PRESETS = [
+  { label: "Black", color: "#000000" },
+  { label: "Dark Gray", color: "#334155" },
+  { label: "Red", color: "#dc2626" },
+  { label: "Blue", color: "#2563eb" },
+  { label: "Green", color: "#16a34a" },
+  { label: "Orange", color: "#ea580c" },
+  { label: "Purple", color: "#9333ea" },
+  { label: "White", color: "#ffffff" },
+];
+
 export default function SimpleEditor({
   initialName = "",
   initialHtml = "",
@@ -65,6 +88,15 @@ export default function SimpleEditor({
   const [words, setWords] = useState(0);
   const [chars, setChars] = useState(0);
   const [isSourceMode, setIsSourceMode] = useState(false);
+
+  // Color pickers controlled state
+  const [textColorOpen, setTextColorOpen] = useState(false);
+  const [highlightColorOpen, setHighlightColorOpen] = useState(false);
+  const [customTextColor, setCustomTextColor] = useState("#dc2626");
+  const [customHighlightColor, setCustomHighlightColor] = useState("#fef08a");
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  const [tableHovered, setTableHovered] = useState({ r: 0, c: 0 });
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
 
   // Link popover state
   const [linkPopoverOpen, setLinkPopoverOpen] = useState(false);
@@ -123,9 +155,8 @@ export default function SimpleEditor({
     setSelectedImage(null);
   };
 
-  // ── Persistent Selection Range Tracking & Floating Highlight Toolbar ───────
+  // ── Persistent Selection Range Tracking ────────────────────────────────────
   const lastRangeRef = useRef<Range | null>(null);
-  const [floatingToolbarPos, setFloatingToolbarPos] = useState<{ top: number; left: number } | null>(null);
 
   const saveSelection = useCallback(() => {
     const sel = window.getSelection();
@@ -133,22 +164,7 @@ export default function SimpleEditor({
       const range = sel.getRangeAt(0).cloneRange();
       setSavedRange(range);
       lastRangeRef.current = range;
-
-      // Update floating highlight toolbar position
-      if (!sel.isCollapsed) {
-        const text = range.toString().trim();
-        if (text.length > 0) {
-          const rect = range.getBoundingClientRect();
-          const canvasRect = editorRef.current.getBoundingClientRect();
-          setFloatingToolbarPos({
-            top: rect.top - canvasRect.top + (editorRef.current.scrollTop || 0) - 48,
-            left: Math.max(10, rect.left - canvasRect.left + (rect.width / 2) - 160),
-          });
-          return;
-        }
-      }
     }
-    setFloatingToolbarPos(null);
   }, []);
 
   const restoreSelection = useCallback(() => {
@@ -186,84 +202,158 @@ export default function SimpleEditor({
     updateCounts();
   };
 
-  // Cross-browser & cross-platform text coloring (Safari / WebKit / macOS / Windows)
-  const applyColor = (cmd: string, color: string) => {
+  // ── Bulletproof Clear Highlight Function (Removes background only) ─────────
+  const clearHighlight = () => {
     if (!editorRef.current) return;
     editorRef.current.focus();
-
-    // Use saved target range explicitly to prevent selection loss on button click
-    const targetRange = lastRangeRef.current || savedRange;
     restoreSelection();
 
-    const isClear = color === "transparent" || color === "inherit" || color === "clear";
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
 
-    if (targetRange && !targetRange.collapsed && targetRange.toString().length > 0) {
-      try {
-        const fragment = targetRange.extractContents();
+    try {
+      document.execCommand("styleWithCSS", false, "true");
+      document.execCommand("hiliteColor", false, "rgba(0,0,0,0)");
+      document.execCommand("backColor", false, "rgba(0,0,0,0)");
+    } catch {}
 
-        // Recursively clean existing color / background inline styles from child elements
-        const cleanNode = (node: Node) => {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            const el = node as HTMLElement;
-            if (cmd === "hiliteColor") {
-              el.style.backgroundColor = isClear ? "" : "";
-            } else {
-              el.style.color = isClear ? "" : "";
+    try {
+      // 1. Walk up the ancestor tree and clear any background-color on parent spans
+      let curr: Node | null = range.commonAncestorContainer;
+      while (curr && curr !== editorRef.current) {
+        if (curr.nodeType === Node.ELEMENT_NODE) {
+          const el = curr as HTMLElement;
+          if (el.style.backgroundColor || el.style.background || el.tagName === "MARK") {
+            el.style.backgroundColor = "";
+            el.style.background = "";
+            if (el.tagName === "MARK") {
+              const span = document.createElement("span");
+              span.innerHTML = el.innerHTML;
+              el.parentNode?.replaceChild(span, el);
             }
-            if (el.tagName === "FONT" && cmd !== "hiliteColor") {
+          }
+        }
+        curr = curr.parentNode;
+      }
+
+      // 2. Clear background on any descendant elements within the range
+      const commonAncestor = range.commonAncestorContainer;
+      const container = commonAncestor.nodeType === Node.ELEMENT_NODE
+        ? (commonAncestor as HTMLElement)
+        : commonAncestor.parentElement;
+
+      if (container && editorRef.current.contains(container)) {
+        const elements = container.querySelectorAll("span, mark, font, b, i, u, em, strong, p, div, a");
+        elements.forEach((el: any) => {
+          if (range.intersectsNode(el)) {
+            el.style.backgroundColor = "";
+            el.style.background = "";
+            if (el.tagName === "MARK") {
+              const span = document.createElement("span");
+              span.innerHTML = el.innerHTML;
+              el.parentNode?.replaceChild(span, el);
+            }
+          }
+        });
+      }
+    } catch (e) {
+      console.error("Clear highlight DOM cleanup error:", e);
+    }
+
+    saveSelection();
+    updateCounts();
+  };
+
+  // ── Bulletproof Clear Text Color Function (Removes text color only) ────────
+  const clearTextColor = () => {
+    if (!editorRef.current) return;
+    editorRef.current.focus();
+    restoreSelection();
+
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+
+    try {
+      document.execCommand("styleWithCSS", false, "true");
+      document.execCommand("foreColor", false, "#000000");
+    } catch {}
+
+    try {
+      // 1. Walk up the ancestor tree and clear any font color on parent elements
+      let curr: Node | null = range.commonAncestorContainer;
+      while (curr && curr !== editorRef.current) {
+        if (curr.nodeType === Node.ELEMENT_NODE) {
+          const el = curr as HTMLElement;
+          if (el.style.color || el.tagName === "FONT") {
+            el.style.color = "";
+            if (el.tagName === "FONT") {
               el.removeAttribute("color");
             }
           }
-          node.childNodes.forEach((child) => cleanNode(child));
-        };
-
-        cleanNode(fragment);
-
-        if (isClear) {
-          targetRange.insertNode(fragment);
-        } else {
-          const span = document.createElement("span");
-          span.style.display = "inline";
-          if (cmd === "hiliteColor") {
-            span.style.backgroundColor = color;
-          } else {
-            span.style.color = color;
-          }
-
-          span.appendChild(fragment);
-          targetRange.insertNode(span);
-
-          // Select newly created span & update selection refs
-          const sel = window.getSelection();
-          if (sel) {
-            sel.removeAllRanges();
-            const newRange = document.createRange();
-            newRange.selectNodeContents(span);
-            sel.addRange(newRange);
-            lastRangeRef.current = newRange.cloneRange();
-            setSavedRange(newRange.cloneRange());
-          }
         }
-
-        saveSelection();
-        updateCounts();
-        return;
-      } catch (err) {
-        console.error("DOM range error:", err);
+        curr = curr.parentNode;
       }
+
+      // 2. Clear color on any descendant elements within the range
+      const commonAncestor = range.commonAncestorContainer;
+      const container = commonAncestor.nodeType === Node.ELEMENT_NODE
+        ? (commonAncestor as HTMLElement)
+        : commonAncestor.parentElement;
+
+      if (container && editorRef.current.contains(container)) {
+        const elements = container.querySelectorAll("span, font, b, i, u, em, strong, p, div, a");
+        elements.forEach((el: any) => {
+          if (range.intersectsNode(el)) {
+            el.style.color = "";
+            if (el.tagName === "FONT") el.removeAttribute("color");
+          }
+        });
+      }
+    } catch (e) {
+      console.error("Clear text color DOM cleanup error:", e);
     }
 
-    // Fallback if no text range
+    saveSelection();
+    updateCounts();
+  };
+
+  // ── Robust Color & Highlight Formatting ────────────────────────────────────
+  const applyColor = (cmd: "hiliteColor" | "foreColor", color: string) => {
+    if (!editorRef.current) return;
+    editorRef.current.focus();
+
+    const isClear = color === "transparent" || color === "inherit" || color === "clear" || color === "";
+
+    if (cmd === "hiliteColor" && isClear) {
+      clearHighlight();
+      return;
+    }
+
+    if (cmd === "foreColor" && isClear) {
+      clearTextColor();
+      return;
+    }
+
+    // Restore the user's active selection
+    restoreSelection();
+
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+
     try {
       document.execCommand("styleWithCSS", false, "true");
-      if (cmd === "hiliteColor") {
-        document.execCommand("hiliteColor", false, isClear ? "transparent" : color);
-        document.execCommand("backColor", false, isClear ? "transparent" : color);
-      } else {
-        document.execCommand("foreColor", false, isClear ? "inherit" : color);
+
+      if (cmd === "foreColor") {
+        document.execCommand("foreColor", false, color);
+      } else if (cmd === "hiliteColor") {
+        document.execCommand("hiliteColor", false, color);
+        document.execCommand("backColor", false, color);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Formatting error:", err);
     }
 
     saveSelection();
@@ -526,168 +616,7 @@ export default function SimpleEditor({
     onSave(name, html);
   };
 
-  // ── Color picker button ────────────────────────────────────────────────────
-  const ColorPicker = ({ command, title, icon }: { command: string; title: string; icon: React.ReactNode }) => {
-    const [customColor, setCustomColor] = useState(command === "hiliteColor" ? "#fef08a" : "#ef4444");
 
-    return (
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            title={title}
-            className="relative h-8 w-8"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              saveSelection();
-            }}
-            onClick={() => saveSelection()}
-          >
-            {icon}
-            <ChevronDown className="size-2 absolute bottom-0.5 right-0.5 opacity-50" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-64 p-3 space-y-3" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
-          <div className="flex items-center justify-between border-b pb-1.5">
-            <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{title}</span>
-            <button
-              type="button"
-              className="text-[11px] text-red-600 hover:underline cursor-pointer font-medium"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                applyColor(command, command === "hiliteColor" ? "transparent" : "#222222");
-              }}
-              onClick={(e) => {
-                e.preventDefault();
-                applyColor(command, command === "hiliteColor" ? "transparent" : "#222222");
-              }}
-            >
-              Clear / Reset
-            </button>
-          </div>
-
-          {/* Color Swatch Grid */}
-          <div className="grid grid-cols-8 gap-1.5 max-h-36 overflow-y-auto p-0.5">
-            {COLORS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                className="w-5 h-5 rounded-sm border border-gray-300 hover:scale-125 transition-transform cursor-pointer shadow-xs focus:ring-2 focus:ring-primary"
-                style={{ backgroundColor: c }}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  applyColor(command, c);
-                }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  applyColor(command, c);
-                }}
-              />
-            ))}
-          </div>
-
-          {/* Custom Color Wheel & Hex Input */}
-          <div className="pt-2 border-t space-y-2">
-            <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block">Custom Color Picker:</span>
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                value={customColor}
-                onChange={(e) => setCustomColor(e.target.value)}
-                className="w-8 h-8 rounded border cursor-pointer p-0 shrink-0"
-              />
-              <Input
-                value={customColor}
-                onChange={(e) => setCustomColor(e.target.value)}
-                placeholder="#000000"
-                className="h-8 text-xs font-mono uppercase"
-              />
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 text-xs px-3 font-semibold shrink-0"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  applyColor(command, customColor);
-                }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  applyColor(command, customColor);
-                }}
-              >
-                Apply
-              </Button>
-            </div>
-          </div>
-        </PopoverContent>
-      </Popover>
-    );
-  };
-
-  // ── Table size picker ─────────────────────────────────────────────────────
-  const TablePicker = () => {
-    const [hovered, setHovered] = useState({ r: 0, c: 0 });
-    return (
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-8 w-8" title="Insert Table">
-            <Table2 className="size-4" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-auto p-3" align="start">
-          <p className="text-xs text-gray-500 mb-2">
-            {hovered.r > 0 ? `${hovered.r} × ${hovered.c}` : "Select table size"}
-          </p>
-          <div className="grid gap-0.5" style={{ gridTemplateColumns: "repeat(8, 1fr)" }}>
-            {Array.from({ length: 6 }, (_, r) =>
-              Array.from({ length: 8 }, (_, c) => (
-                <div
-                  key={`${r}-${c}`}
-                  className="w-5 h-5 border rounded-sm cursor-pointer transition-colors"
-                  style={{
-                    backgroundColor: r < hovered.r && c < hovered.c ? "#3b82f6" : "transparent",
-                    borderColor: r < hovered.r && c < hovered.c ? "#3b82f6" : "#d1d5db",
-                  }}
-                  onMouseEnter={() => setHovered({ r: r + 1, c: c + 1 })}
-                  onClick={() => insertTable(r + 1, c + 1)}
-                />
-              ))
-            )}
-          </div>
-        </PopoverContent>
-      </Popover>
-    );
-  };
-
-  // ── Emoji picker ──────────────────────────────────────────────────────────
-  const EmojiPicker = () => (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8" title="Insert Emoji"
-          onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}>
-          <Smile className="size-4" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-72 p-2" align="start">
-        <div className="grid grid-cols-10 gap-0.5 max-h-48 overflow-y-auto">
-          {EMOJIS.map((em, i) => (
-            <button
-              key={i}
-              className="text-lg hover:bg-gray-100 rounded p-0.5 leading-none"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                restoreSelection();
-                execCmd("insertText", em);
-              }}
-            >
-              {em}
-            </button>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -835,21 +764,317 @@ export default function SimpleEditor({
           <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("strikeThrough")} title="Strikethrough"><Strikethrough className="size-4" /></Button>
           <div className="w-px h-5 bg-border mx-1" />
 
-          {/* Font color */}
-          <ColorPicker command="foreColor" title="Font Color" icon={
-            <span className="flex flex-col items-center gap-0">
-              <span className="text-xs font-bold leading-none" style={{ fontFamily: "Arial" }}>A</span>
-              <span className="w-4 h-1 rounded-sm bg-red-500 mt-0.5" />
-            </span>
-          } />
+          {/* Font / Text color */}
+          <Popover open={textColorOpen} onOpenChange={setTextColorOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Text Color"
+                className="h-8 px-1.5 flex items-center gap-0.5 hover:bg-muted"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
+              >
+                <div className="flex flex-col items-center justify-center">
+                  <Type className="size-4 text-foreground" />
+                  <div className="w-3.5 h-1 rounded-full bg-red-600 -mt-0.5" />
+                </div>
+                <ChevronDown className="size-2.5 opacity-60 ml-0.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-68 p-3 space-y-3 z-50" align="start" sideOffset={5} onOpenAutoFocus={(e) => e.preventDefault()}>
+              <div className="flex items-center justify-between border-b pb-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
+                  <Type className="size-3.5 text-primary" />
+                  <span>Text Color</span>
+                </div>
+                <button
+                  type="button"
+                  className="text-[11px] text-slate-600 hover:text-primary dark:text-slate-400 font-semibold hover:underline cursor-pointer flex items-center gap-1"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    clearTextColor();
+                    setTextColorOpen(false);
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    clearTextColor();
+                    setTextColorOpen(false);
+                  }}
+                >
+                  <Eraser className="size-3" />
+                  Clear Text Color
+                </button>
+              </div>
 
-          {/* Highlight color */}
-          <ColorPicker command="hiliteColor" title="Highlight Color" icon={
-            <span className="flex flex-col items-center gap-0">
-              <span className="text-xs font-bold leading-none">A</span>
-              <span className="w-4 h-1 rounded-sm bg-yellow-300 mt-0.5" />
-            </span>
-          } />
+              {/* Prominent Clear Text Color Button */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full h-8 text-xs font-semibold text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center gap-1.5"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  clearTextColor();
+                  setTextColorOpen(false);
+                }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  clearTextColor();
+                  setTextColorOpen(false);
+                }}
+              >
+                <Eraser className="size-3.5" />
+                <span>Default / Clear Text Color</span>
+              </Button>
+
+              {/* Quick Presets */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Standard Colors</span>
+                <div className="flex items-center gap-1.5 justify-between">
+                  {TEXT_COLOR_PRESETS.map((p) => (
+                    <button
+                      key={p.color}
+                      type="button"
+                      title={p.label}
+                      className="w-5 h-5 rounded-full border border-gray-300 hover:scale-125 transition-transform cursor-pointer shadow-2xs"
+                      style={{ backgroundColor: p.color }}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyColor("foreColor", p.color);
+                        setTextColorOpen(false);
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        applyColor("foreColor", p.color);
+                        setTextColorOpen(false);
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Swatch Grid */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Palette</span>
+                <div className="grid grid-cols-8 gap-1 max-h-32 overflow-y-auto p-0.5">
+                  {COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      className="w-5 h-5 rounded-xs border border-gray-300 hover:scale-125 transition-transform cursor-pointer"
+                      style={{ backgroundColor: c }}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyColor("foreColor", c);
+                        setTextColorOpen(false);
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        applyColor("foreColor", c);
+                        setTextColorOpen(false);
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom Color Input */}
+              <div className="pt-2 border-t space-y-1.5">
+                <span className="text-[11px] font-semibold text-muted-foreground block">Custom Color:</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={customTextColor}
+                    onChange={(e) => setCustomTextColor(e.target.value)}
+                    className="w-7 h-7 rounded border cursor-pointer p-0 shrink-0"
+                  />
+                  <Input
+                    value={customTextColor}
+                    onChange={(e) => setCustomTextColor(e.target.value)}
+                    placeholder="#000000"
+                    className="h-7 text-xs font-mono uppercase"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 text-xs px-2.5 font-semibold shrink-0"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyColor("foreColor", customTextColor);
+                      setTextColorOpen(false);
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      applyColor("foreColor", customTextColor);
+                      setTextColorOpen(false);
+                    }}
+                  >
+                    Apply
+                  </Button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          {/* Text Highlight color */}
+          <Popover open={highlightColorOpen} onOpenChange={setHighlightColorOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Text Highlight Color"
+                className="h-8 px-1.5 flex items-center gap-0.5 hover:bg-muted"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
+              >
+                <div className="flex flex-col items-center justify-center">
+                  <Highlighter className="size-4 text-amber-500" />
+                  <div className="w-3.5 h-1 rounded-full bg-yellow-400 -mt-0.5" />
+                </div>
+                <ChevronDown className="size-2.5 opacity-60 ml-0.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-68 p-3 space-y-3 z-50" align="start" sideOffset={5} onOpenAutoFocus={(e) => e.preventDefault()}>
+              <div className="flex items-center justify-between border-b pb-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-100">
+                  <Highlighter className="size-3.5 text-amber-500" />
+                  <span>Text Highlight</span>
+                </div>
+                <button
+                  type="button"
+                  className="text-[11px] text-red-600 hover:text-red-700 dark:text-red-400 font-semibold hover:underline cursor-pointer flex items-center gap-1"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    clearHighlight();
+                    setHighlightColorOpen(false);
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    clearHighlight();
+                    setHighlightColorOpen(false);
+                  }}
+                >
+                  <Eraser className="size-3" />
+                  Clear Highlight
+                </button>
+              </div>
+
+              {/* Prominent Clear Button */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full h-8 text-xs font-semibold text-red-600 dark:text-red-400 border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center justify-center gap-1.5"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  clearHighlight();
+                  setHighlightColorOpen(false);
+                }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  clearHighlight();
+                  setHighlightColorOpen(false);
+                }}
+              >
+                <Eraser className="size-3.5" />
+                <span>No Color (Remove Highlight)</span>
+              </Button>
+
+              {/* Quick Highlight Presets */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Highlight Colors</span>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {HIGHLIGHT_PRESETS.map((p) => (
+                    <button
+                      key={p.color}
+                      type="button"
+                      title={`Highlight ${p.label}`}
+                      className="flex items-center gap-1.5 p-1 rounded border border-gray-200 dark:border-gray-700 hover:scale-105 transition-transform cursor-pointer text-left"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyColor("hiliteColor", p.color);
+                        setHighlightColorOpen(false);
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        applyColor("hiliteColor", p.color);
+                        setHighlightColorOpen(false);
+                      }}
+                    >
+                      <span className="w-4 h-4 rounded-full border border-black/10 shrink-0" style={{ backgroundColor: p.color }} />
+                      <span className="text-[10px] font-medium text-slate-700 dark:text-slate-300 truncate">{p.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Swatch Grid */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">All Swatches</span>
+                <div className="grid grid-cols-8 gap-1 max-h-28 overflow-y-auto p-0.5">
+                  {COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      className="w-5 h-5 rounded-xs border border-gray-300 hover:scale-125 transition-transform cursor-pointer"
+                      style={{ backgroundColor: c }}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyColor("hiliteColor", c);
+                        setHighlightColorOpen(false);
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        applyColor("hiliteColor", c);
+                        setHighlightColorOpen(false);
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom Color Input */}
+              <div className="pt-2 border-t space-y-1.5">
+                <span className="text-[11px] font-semibold text-muted-foreground block">Custom Highlight:</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={customHighlightColor}
+                    onChange={(e) => setCustomHighlightColor(e.target.value)}
+                    className="w-7 h-7 rounded border cursor-pointer p-0 shrink-0"
+                  />
+                  <Input
+                    value={customHighlightColor}
+                    onChange={(e) => setCustomHighlightColor(e.target.value)}
+                    placeholder="#fef08a"
+                    className="h-7 text-xs font-mono uppercase"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 text-xs px-2.5 font-semibold shrink-0"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyColor("hiliteColor", customHighlightColor);
+                      setHighlightColorOpen(false);
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      applyColor("hiliteColor", customHighlightColor);
+                      setHighlightColorOpen(false);
+                    }}
+                  >
+                    Apply
+                  </Button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Link popover */}
@@ -997,17 +1222,95 @@ export default function SimpleEditor({
           />
 
           {/* Emoji */}
-          <EmojiPicker />
+          {/* Emoji Popover */}
+          <Popover open={emojiPickerOpen} onOpenChange={setEmojiPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="Insert Emoji"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
+              >
+                <Smile className="size-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-2 z-50" align="start" sideOffset={5}>
+              <div className="grid grid-cols-10 gap-0.5 max-h-48 overflow-y-auto">
+                {EMOJIS.map((em, i) => (
+                  <button
+                    key={i}
+                    className="text-lg hover:bg-gray-100 dark:hover:bg-slate-800 rounded p-0.5 leading-none cursor-pointer"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      restoreSelection();
+                      execCmd("insertText", em);
+                      setEmojiPickerOpen(false);
+                    }}
+                  >
+                    {em}
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
 
           {/* Code block */}
-          <Button variant="ghost" size="icon" className="h-8 w-8" title="Code Block"
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            title="Code Block"
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => execCmd("insertHTML", `<pre style="background:#f4f4f4;padding:12px 16px;border-radius:6px;font-family:monospace;font-size:13px;border:1px solid #e0e0e0;"><code>// code here</code></pre><p><br></p>`)}>
+            onClick={() => execCmd("insertHTML", `<pre style="background:#f4f4f4;padding:12px 16px;border-radius:6px;font-family:monospace;font-size:13px;border:1px solid #e0e0e0;"><code>// code here</code></pre><p><br></p>`)}
+          >
             <Code className="size-4" />
           </Button>
 
-          {/* Table */}
-          <TablePicker />
+          {/* Table Popover */}
+          <Popover open={tablePickerOpen} onOpenChange={setTablePickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="Insert Table"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
+              >
+                <Table2 className="size-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-3 z-50" align="start" sideOffset={5}>
+              <p className="text-xs text-gray-500 mb-2">
+                {tableHovered.r > 0 ? `${tableHovered.r} × ${tableHovered.c}` : "Select table size"}
+              </p>
+              <div className="grid gap-0.5" style={{ gridTemplateColumns: "repeat(8, 1fr)" }}>
+                {Array.from({ length: 6 }, (_, r) =>
+                  Array.from({ length: 8 }, (_, c) => (
+                    <div
+                      key={`${r}-${c}`}
+                      className="w-5 h-5 border rounded-sm cursor-pointer transition-colors"
+                      style={{
+                        backgroundColor: r < tableHovered.r && c < tableHovered.c ? "#3b82f6" : "transparent",
+                        borderColor: r < tableHovered.r && c < tableHovered.c ? "#3b82f6" : "#d1d5db",
+                      }}
+                      onMouseEnter={() => setTableHovered({ r: r + 1, c: c + 1 })}
+                      onClick={() => {
+                        insertTable(r + 1, c + 1);
+                        setTablePickerOpen(false);
+                      }}
+                    />
+                  ))
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Alignment */}
@@ -1071,91 +1374,6 @@ export default function SimpleEditor({
 
           {/* White email canvas */}
           <div className="bg-white min-h-[600px] border shadow-sm rounded-md relative">
-            {/* ── Floating Selection Highlight Toolbar (Appears right above selected text) ── */}
-            {!isSourceMode && floatingToolbarPos && (
-              <div
-                className="absolute z-50 flex items-center gap-1.5 bg-gray-900 text-white rounded-lg px-3 py-1.5 shadow-2xl border border-gray-700 select-none animate-in fade-in zoom-in-95 duration-150"
-                style={{ top: `${floatingToolbarPos.top}px`, left: `${floatingToolbarPos.left}px` }}
-                onMouseDown={(e) => e.preventDefault()}
-              >
-                <span className="text-[11px] font-bold text-gray-300 mr-1">Highlight:</span>
-
-                {/* Quick Highlight Swatches */}
-                {[
-                  { label: "Yellow", color: "#fef08a" },
-                  { label: "Green", color: "#bbf7d0" },
-                  { label: "Cyan", color: "#bae6fd" },
-                  { label: "Pink", color: "#fbcfe8" },
-                  { label: "Orange", color: "#fed7aa" },
-                  { label: "Purple", color: "#e9d5ff" },
-                  { label: "Red", color: "#fecaca" },
-                ].map((sw) => (
-                  <button
-                    key={sw.color}
-                    type="button"
-                    title={`Highlight ${sw.label}`}
-                    className="w-5 h-5 rounded-full border border-white/40 hover:scale-125 transition-transform cursor-pointer"
-                    style={{ backgroundColor: sw.color }}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applyColor("hiliteColor", sw.color);
-                    }}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      applyColor("hiliteColor", sw.color);
-                    }}
-                  />
-                ))}
-
-                <div className="w-px h-4 bg-gray-700 mx-1" />
-                <span className="text-[11px] font-bold text-gray-300 mr-1">Font:</span>
-
-                {/* Quick Font Colors */}
-                {[
-                  { label: "Red", color: "#ef4444" },
-                  { label: "Blue", color: "#3b82f6" },
-                  { label: "Green", color: "#10b981" },
-                  { label: "Purple", color: "#8b5cf6" },
-                  { label: "Dark", color: "#1e293b" },
-                ].map((sw) => (
-                  <button
-                    key={sw.color}
-                    type="button"
-                    title={`Font ${sw.label}`}
-                    className="w-5 h-5 rounded-full border border-white/40 hover:scale-125 transition-transform cursor-pointer"
-                    style={{ backgroundColor: sw.color }}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applyColor("foreColor", sw.color);
-                    }}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      applyColor("foreColor", sw.color);
-                    }}
-                  />
-                ))}
-
-                <div className="w-px h-4 bg-gray-700 mx-1" />
-
-                {/* Clear Highlight Button */}
-                <button
-                  type="button"
-                  title="Clear Highlight"
-                  className="text-[11px] font-semibold text-gray-400 hover:text-white hover:underline px-1 cursor-pointer"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    applyColor("hiliteColor", "transparent");
-                  }}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    applyColor("hiliteColor", "transparent");
-                  }}
-                >
-                  Clear
-                </button>
-              </div>
-            )}
-
             {isSourceMode ? (
               <textarea
                 ref={sourceRef}
