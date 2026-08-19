@@ -1222,10 +1222,8 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
           };
 
-          if (replyToAddresses.length > 0) {
-            sesParams.ReplyToEmailAddresses = replyToAddresses.map((addr) =>
-              (campaign as any).replyToName ? `${(campaign as any).replyToName} <${addr}>` : addr
-            );
+          if (formattedReplyTos.length > 0) {
+            sesParams.ReplyToEmailAddresses = formattedReplyTos;
           }
 
           await sesv2Client.send(new SendEmailV2Command(sesParams));
