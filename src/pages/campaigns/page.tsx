@@ -113,6 +113,7 @@ export default function CampaignsPage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [listPopoverOpen, setListPopoverOpen] = useState(false);
   const [excludeListPopoverOpen, setExcludeListPopoverOpen] = useState(false);
+  const [replyListPopoverOpen, setReplyListPopoverOpen] = useState(false);
   const audienceId = selectedListIds[0] ? String(selectedListIds[0]) : "";
 
   const handleAddIndividualEmail = () => {
@@ -821,31 +822,75 @@ export default function CampaignsPage() {
                     </div>
 
                     <div className="space-y-3">
-                      {/* Select a Receptionist Contact List */}
+                      {/* Select a Receptionist Contact List (Searchable Popover) */}
                       <div className="space-y-1">
-                        <Label htmlFor="camp-reply-list" className="text-xs font-semibold">Select Receptionist Contact List (Optional)</Label>
-                        <Select
-                          value={replyToListId ? String(replyToListId) : "none"}
-                          onValueChange={(v) => setReplyToListId(v === "none" ? null : Number(v))}
-                        >
-                          <SelectTrigger className="w-full h-9 text-sm">
-                            <SelectValue placeholder="Choose a contact list for reply receiving..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">-- None (Use Manual Email Below) --</SelectItem>
-                            {lists.length === 0 ? (
-                              <SelectItem value="empty_disabled" disabled>
-                                No contact lists found (Create one under Contacts ➔ Lists)
-                              </SelectItem>
-                            ) : (
-                              lists.map((l: any) => (
-                                <SelectItem key={l.id} value={String(l.id)}>
-                                  📋 {l.name} ({l.contactCount ?? 0} receptionists/contacts)
-                                </SelectItem>
-                              ))
-                            )}
-                          </SelectContent>
-                        </Select>
+                        <Label className="text-xs font-semibold">Select Receptionist Contact List (Optional)</Label>
+                        <Popover open={replyListPopoverOpen} onOpenChange={setReplyListPopoverOpen}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={replyListPopoverOpen}
+                              className="w-full justify-between text-left font-normal h-9 text-sm border-input"
+                            >
+                              <span className="truncate">
+                                {!replyToListId
+                                  ? "-- None (Use Manual Email Below) --"
+                                  : lists.find((l: any) => l.id === replyToListId)
+                                  ? `📋 ${lists.find((l: any) => l.id === replyToListId).name} (${lists.find((l: any) => l.id === replyToListId).contactCount ?? 0} contacts)`
+                                  : `List #${replyToListId}`}
+                              </span>
+                              <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search receptionist lists by name or ID..." className="text-xs" />
+                              <CommandList className="max-h-[220px] overflow-y-auto p-1" onWheel={(e) => e.stopPropagation()}>
+                                <CommandEmpty>No lists found matching search.</CommandEmpty>
+                                <CommandGroup>
+                                  {/* Option to clear / select none */}
+                                  <CommandItem
+                                    value="none select-none clear"
+                                    onSelect={() => {
+                                      setReplyToListId(null);
+                                      setReplyListPopoverOpen(false);
+                                    }}
+                                    className="cursor-pointer text-xs flex items-center justify-between py-2 text-muted-foreground italic border-b mb-1"
+                                  >
+                                    <span>-- None (Use Manual Email Below) --</span>
+                                    {!replyToListId && <Check className="size-3.5 text-primary" />}
+                                  </CommandItem>
+
+                                  {lists.map((list: any) => {
+                                    const isSelected = replyToListId === list.id;
+                                    const searchValue = `${list.name} id-${list.id}`;
+                                    return (
+                                      <CommandItem
+                                        key={list.id}
+                                        value={searchValue}
+                                        onSelect={() => {
+                                          setReplyToListId(list.id);
+                                          setReplyListPopoverOpen(false);
+                                        }}
+                                        className="cursor-pointer text-xs flex items-center justify-between py-2"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <span className="font-semibold">📋 {list.name}</span>
+                                          <span className="text-[10px] text-muted-foreground">#{list.id}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-[11px] text-muted-foreground">({list.contactCount ?? 0} contacts)</span>
+                                          {isSelected && <Check className="size-3.5 text-emerald-600 font-bold" />}
+                                        </div>
+                                      </CommandItem>
+                                    );
+                                  })}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
                       </div>
 
                       {/* Manual Reply-To Name & Email */}
