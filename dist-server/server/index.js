@@ -915,6 +915,13 @@ function createRawMimeEmail({ from, to, replyTo, subject, html, unsubscribeUrl, 
     }
     return Buffer.from(raw);
 }
+function formatEmailWithDisplayName(name, email) {
+    const cleanEmail = email.trim();
+    if (!name || !name.trim())
+        return cleanEmail;
+    const cleanName = name.trim().replace(/"/g, '');
+    return `"${cleanName}" <${cleanEmail}>`;
+}
 // POST /api/campaigns/:id/send
 app.post("/api/campaigns/:id/send", async (req, res) => {
     try {
@@ -1044,9 +1051,10 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             }
         }
         const replyToAddresses = Array.from(replyToEmailsSet);
-        const replyToHeader = campaign.replyToName && replyToAddresses.length === 1
-            ? `${campaign.replyToName} <${replyToAddresses[0]}>`
-            : replyToAddresses.join(", ");
+        const replyToName = campaign.replyToName ? String(campaign.replyToName).trim() : null;
+        const formattedReplyTos = replyToAddresses.map((addr) => replyToName ? formatEmailWithDisplayName(replyToName, addr) : addr);
+        const replyToHeader = formattedReplyTos.join(", ");
+        const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
         for (const contact of contacts) {
             const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
             // Smart fallback derivation if contact details are missing in database
@@ -1073,7 +1081,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             try {
                 if (campaignAttachments.length > 0) {
                     const rawMimeBuffer = createRawMimeEmail({
-                        from: `${campaign.fromName} <${campaign.fromEmail}>`,
+                        from: fromHeader,
                         to: contact.email,
                         replyTo: replyToHeader,
                         subject: campaign.subject,
@@ -1082,7 +1090,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                         attachments: campaignAttachments,
                     });
                     await sesv2Client.send(new SendEmailV2Command({
-                        FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
+                        FromEmailAddress: fromHeader,
                         Destination: { ToAddresses: [contact.email] },
                         ConfigurationSetName: "career141-tracking",
                         Content: {
@@ -1099,7 +1107,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                         { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
                     ];
                     const sesParams = {
-                        FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
+                        FromEmailAddress: fromHeader,
                         Destination: { ToAddresses: [contact.email] },
                         ConfigurationSetName: "career141-tracking",
                         Content: {

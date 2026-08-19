@@ -991,6 +991,13 @@ function createRawMimeEmail({
   return Buffer.from(raw);
 }
 
+function formatEmailWithDisplayName(name: string | null | undefined, email: string): string {
+  const cleanEmail = email.trim();
+  if (!name || !name.trim()) return cleanEmail;
+  const cleanName = name.trim().replace(/"/g, '');
+  return `"${cleanName}" <${cleanEmail}>`;
+}
+
 // POST /api/campaigns/:id/send
 app.post("/api/campaigns/:id/send", async (req, res) => {
   try {
@@ -1134,9 +1141,14 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
     }
 
     const replyToAddresses = Array.from(replyToEmailsSet);
-    const replyToHeader = (campaign as any).replyToName && replyToAddresses.length === 1
-      ? `${(campaign as any).replyToName} <${replyToAddresses[0]}>`
-      : replyToAddresses.join(", ");
+    const replyToName = (campaign as any).replyToName ? String((campaign as any).replyToName).trim() : null;
+
+    const formattedReplyTos = replyToAddresses.map((addr) =>
+      replyToName ? formatEmailWithDisplayName(replyToName, addr) : addr
+    );
+
+    const replyToHeader = formattedReplyTos.join(", ");
+    const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
 
     for (const contact of contacts) {
       const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
@@ -1170,7 +1182,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       try {
         if (campaignAttachments.length > 0) {
           const rawMimeBuffer = createRawMimeEmail({
-            from: `${campaign.fromName} <${campaign.fromEmail}>`,
+            from: fromHeader,
             to: contact.email,
             replyTo: replyToHeader,
             subject: campaign.subject,
@@ -1180,7 +1192,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
           });
 
           await sesv2Client.send(new SendEmailV2Command({
-            FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
+            FromEmailAddress: fromHeader,
             Destination: { ToAddresses: [contact.email] },
             ConfigurationSetName: "career141-tracking",
             Content: {
@@ -1197,7 +1209,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
           ];
 
           const sesParams: any = {
-            FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
+            FromEmailAddress: fromHeader,
             Destination: { ToAddresses: [contact.email] },
             ConfigurationSetName: "career141-tracking",
             Content: {
