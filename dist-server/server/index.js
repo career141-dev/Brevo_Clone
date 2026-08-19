@@ -8,6 +8,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
+import { CostExplorerClient, GetCostAndUsageCommand } from "@aws-sdk/client-cost-explorer";
 import jwt from "jsonwebtoken";
 import { prisma, authStorage } from "./prisma.js";
 import { sesClient, sesv2Client } from "./lib/ses.js";
@@ -15,7 +16,7 @@ import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
 const app = express();
 const PORT = process.env.PORT ?? 3001;
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
     origin: process.env.FRONTEND_URL || "http://localhost:5173",
     credentials: true
@@ -2100,6 +2101,43 @@ app.post("/api/senders/status", async (req, res) => {
         res.status(500).json({ error: "Failed to fetch AWS status" });
     }
 });
+app.post("/api/senders/sync", async (_req, res) => {
+    try {
+        const { ListIdentitiesCommand } = await import("@aws-sdk/client-ses");
+        let allEmails = [];
+        let nextToken = undefined;
+        do {
+            const listRes = await sesClient.send(new ListIdentitiesCommand({
+                IdentityType: "EmailAddress",
+                MaxItems: 100,
+                NextToken: nextToken,
+            }));
+            allEmails = allEmails.concat(listRes.Identities ?? []);
+            nextToken = listRes.NextToken;
+        } while (nextToken);
+        let synced = 0;
+        for (const email of allEmails) {
+            const existing = await prisma.sender.findUnique({ where: { email } });
+            if (!existing) {
+                await prisma.sender.create({
+                    data: {
+                        name: email.split("@")[0] || "Unknown",
+                        email,
+                    }
+                });
+                synced++;
+            }
+        }
+        res.json({ synced });
+    }
+    catch (err) {
+        console.error("Sync senders error:", err);
+        if (err.name === "AccessDenied" || err.Code === "AccessDenied" || err.message?.includes("AccessDenied") || err.message?.includes("not authorized to perform: ses:ListIdentities")) {
+            return res.status(403).json({ error: "AWS IAM Permission Denied", detail: "Missing ses:ListIdentities permission." });
+        }
+        res.status(500).json({ error: "Failed to sync senders", detail: err.message });
+    }
+});
 app.get("/api/senders/quota", async (_req, res) => {
     try {
         const quota = await sesClient.send(new GetSendQuotaCommand({}));
@@ -2112,6 +2150,149 @@ app.get("/api/senders/quota", async (_req, res) => {
         // rather than throwing a 500 internal server error.
         console.error("SES Quota Error:", err);
         res.status(403).json({ error: "Missing ses:GetSendQuota permission or AWS credentials invalid." });
+    }
+});
+// ── Domains ─────────────────────────────────────────────────────────
+// GET /api/domains — lists all domain identities from local DB
+app.get("/api/domains", async (_req, res) => {
+    try {
+        const domains = await prisma.emailDomain.findMany({
+            orderBy: { domain: "asc" }
+        });
+        res.json({ domains });
+    }
+    catch (err) {
+        console.error("List domains error:", err);
+        res.status(500).json({ error: "Failed to list domains", detail: err.message });
+    }
+});
+app.post("/api/domains", async (req, res) => {
+    try {
+        const { domain } = req.body;
+        if (!domain)
+            return res.status(400).json({ error: "Domain is required" });
+        const { VerifyDomainIdentityCommand, VerifyDomainDkimCommand } = await import("@aws-sdk/client-ses");
+        await sesClient.send(new VerifyDomainIdentityCommand({ Domain: domain }));
+        await sesClient.send(new VerifyDomainDkimCommand({ Domain: domain }));
+        const newDomain = await prisma.emailDomain.upsert({
+            where: { domain },
+            update: {},
+            create: { domain }
+        });
+        res.status(201).json(newDomain);
+    }
+    catch (err) {
+        console.error("Add domain error:", err);
+        res.status(500).json({ error: "Failed to add domain", detail: err.message });
+    }
+});
+app.delete("/api/domains/:domain", async (req, res) => {
+    try {
+        const domain = req.params.domain;
+        await prisma.emailDomain.delete({ where: { domain } });
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error("Delete domain error:", err);
+        res.status(500).json({ error: "Failed to delete domain", detail: err.message });
+    }
+});
+app.post("/api/domains/sync", async (_req, res) => {
+    try {
+        const { ListIdentitiesCommand, GetIdentityVerificationAttributesCommand, GetIdentityDkimAttributesCommand, } = await import("@aws-sdk/client-ses");
+        // Paginate through all domain identities in SES
+        let allDomains = [];
+        let nextToken = undefined;
+        do {
+            const listRes = await sesClient.send(new ListIdentitiesCommand({
+                IdentityType: "Domain",
+                MaxItems: 100,
+                NextToken: nextToken,
+            }));
+            allDomains = allDomains.concat(listRes.Identities ?? []);
+            nextToken = listRes.NextToken;
+        } while (nextToken);
+        if (allDomains.length > 0) {
+            const chunkSize = 100;
+            const verifyMap = {};
+            const dkimMap = {};
+            for (let i = 0; i < allDomains.length; i += chunkSize) {
+                const chunk = allDomains.slice(i, i + chunkSize);
+                const [vRes, dRes] = await Promise.all([
+                    sesClient.send(new GetIdentityVerificationAttributesCommand({ Identities: chunk })),
+                    sesClient.send(new GetIdentityDkimAttributesCommand({ Identities: chunk })),
+                ]);
+                Object.assign(verifyMap, vRes.VerificationAttributes ?? {});
+                Object.assign(dkimMap, dRes.DkimAttributes ?? {});
+            }
+            for (const domain of allDomains) {
+                await prisma.emailDomain.upsert({
+                    where: { domain },
+                    update: {
+                        verificationStatus: verifyMap[domain]?.VerificationStatus ?? "Unverified",
+                        dkimStatus: dkimMap[domain]?.DkimVerificationStatus ?? "Unverified",
+                        dkimEnabled: dkimMap[domain]?.DkimEnabled ?? false,
+                    },
+                    create: {
+                        domain,
+                        verificationStatus: verifyMap[domain]?.VerificationStatus ?? "Unverified",
+                        dkimStatus: dkimMap[domain]?.DkimVerificationStatus ?? "Unverified",
+                        dkimEnabled: dkimMap[domain]?.DkimEnabled ?? false,
+                    }
+                });
+            }
+        }
+        res.json({ synced: allDomains.length });
+    }
+    catch (err) {
+        console.error("Sync domains error:", err);
+        if (err.name === "AccessDenied" || err.Code === "AccessDenied" || err.message?.includes("AccessDenied")) {
+            return res.status(403).json({ error: "AWS IAM Permission Denied", detail: "Missing ses:ListIdentities or ses:GetIdentityVerificationAttributes permissions." });
+        }
+        res.status(500).json({ error: "Failed to sync domains", detail: err.message });
+    }
+});
+// GET /api/senders/aws-identities — lists all EMAIL identities registered in AWS SES
+app.get("/api/senders/aws-identities", async (_req, res) => {
+    try {
+        const { ListIdentitiesCommand, GetIdentityVerificationAttributesCommand, GetIdentityDkimAttributesCommand, } = await import("@aws-sdk/client-ses");
+        let allEmails = [];
+        let nextToken = undefined;
+        do {
+            const listRes = await sesClient.send(new ListIdentitiesCommand({
+                IdentityType: "EmailAddress",
+                MaxItems: 100,
+                NextToken: nextToken,
+            }));
+            allEmails = allEmails.concat(listRes.Identities ?? []);
+            nextToken = listRes.NextToken;
+        } while (nextToken);
+        if (allEmails.length === 0) {
+            return res.json({ identities: [] });
+        }
+        const chunkSize = 100;
+        const verifyMap = {};
+        const dkimMap = {};
+        for (let i = 0; i < allEmails.length; i += chunkSize) {
+            const chunk = allEmails.slice(i, i + chunkSize);
+            const [vRes, dRes] = await Promise.all([
+                sesClient.send(new GetIdentityVerificationAttributesCommand({ Identities: chunk })),
+                sesClient.send(new GetIdentityDkimAttributesCommand({ Identities: chunk })),
+            ]);
+            Object.assign(verifyMap, vRes.VerificationAttributes ?? {});
+            Object.assign(dkimMap, dRes.DkimAttributes ?? {});
+        }
+        const identities = allEmails.map((email) => ({
+            email,
+            verificationStatus: verifyMap[email]?.VerificationStatus ?? "Unverified",
+            dkimStatus: dkimMap[email]?.DkimVerificationStatus ?? "Unverified",
+            dkimEnabled: dkimMap[email]?.DkimEnabled ?? false,
+        }));
+        res.json({ identities });
+    }
+    catch (err) {
+        console.error("List SES email identities error:", err);
+        res.status(500).json({ error: "Failed to list SES email identities", detail: err.message });
     }
 });
 app.get("/api/domains/dns-records", async (req, res) => {
@@ -2158,6 +2339,172 @@ app.get("/api/domains/dns-records", async (req, res) => {
     }
 });
 // ── Debug endpoints removed for security ────────────────────────────
+// ── Billing & Costs ──────────────────────────────────────────────────
+// AWS SES pricing: $0.10 per 1,000 emails
+const SES_PRICE_PER_EMAIL_USD = 0.10 / 1000;
+// GET /api/billing/exchange-rate — live USD → LKR rate (cached 5 min)
+app.get("/api/billing/exchange-rate", async (_req, res) => {
+    try {
+        const cacheKey = "billing:exchange-rate";
+        const cached = getCached(cacheKey);
+        if (cached)
+            return res.json(cached);
+        const response = await fetch("https://open.er-api.com/v6/latest/USD");
+        const data = await response.json();
+        const lkrRate = data?.rates?.LKR ?? 300;
+        const result = {
+            usd_to_lkr: lkrRate,
+            updated_at: new Date().toISOString(),
+            source: "open.er-api.com",
+        };
+        setCache(cacheKey, result, 5 * 60 * 1000); // cache for 5 minutes
+        res.json(result);
+    }
+    catch (err) {
+        console.error("Exchange rate fetch error:", err);
+        // Return a fallback rate if API fails
+        res.json({ usd_to_lkr: 300, updated_at: new Date().toISOString(), source: "fallback" });
+    }
+});
+// GET /api/billing/aws-costs — real cost data from AWS Cost Explorer
+app.get("/api/billing/aws-costs", async (req, res) => {
+    try {
+        const range = req.query.range || "current_month";
+        const now = new Date();
+        // AWS Cost Explorer MONTHLY granularity requires Start and End to be exactly the 1st of the month.
+        // The End date is exclusive.
+        let startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        let endMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        if (range === "last_30") {
+            // For last 30 days, we'll span the previous month and current month
+            startMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        }
+        else if (range === "all_time") {
+            // For all time, we go back exactly 12 months (maximum allowed by AWS by default)
+            startMonth = new Date(now.getFullYear() - 1, now.getMonth(), 1);
+        }
+        const formatYMD = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+        const startDate = formatYMD(startMonth);
+        const endDate = formatYMD(endMonth);
+        const costClient = new CostExplorerClient({
+            region: "us-east-1",
+            credentials: {
+                accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+                secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+            },
+        });
+        const command = new GetCostAndUsageCommand({
+            TimePeriod: { Start: startDate, End: endDate },
+            Granularity: "MONTHLY",
+            Filter: {
+                Dimensions: {
+                    Key: "SERVICE",
+                    Values: ["Amazon Simple Email Service"],
+                },
+            },
+            Metrics: ["UnblendedCost"],
+        });
+        const costData = await costClient.send(command);
+        let totalCostUsd = 0;
+        const monthlyBreakdown = [];
+        for (const result of costData.ResultsByTime ?? []) {
+            const amount = parseFloat(result.Total?.UnblendedCost?.Amount ?? "0");
+            totalCostUsd += amount;
+            monthlyBreakdown.push({
+                period: result.TimePeriod?.Start,
+                cost_usd: amount,
+                unit: result.Total?.UnblendedCost?.Unit ?? "USD",
+            });
+        }
+        res.json({
+            total_cost_usd: totalCostUsd,
+            range,
+            period: { start: startDate, end: endDate },
+            monthly_breakdown: monthlyBreakdown,
+        });
+    }
+    catch (err) {
+        console.error("AWS Cost Explorer error:", err);
+        // If Cost Explorer access is denied or fails, return a graceful error
+        if (err.name === "AccessDeniedException" || err.Code === "AccessDeniedException") {
+            return res.status(403).json({
+                error: "AWS Cost Explorer Access Denied",
+                detail: "Please ensure the IAM user has 'ce:GetCostAndUsage' permission.",
+            });
+        }
+        res.status(500).json({ error: "Failed to fetch AWS cost data", detail: err.message });
+    }
+});
+// GET /api/billing/summary — SES-derived cost per campaign + totals
+app.get("/api/billing/summary", async (req, res) => {
+    try {
+        const range = req.query.range || "current_month";
+        const cacheKey = `billing:summary:${range}`;
+        const cached = getCached(cacheKey);
+        if (cached)
+            return res.json(cached);
+        const now = new Date();
+        let dateFilter = undefined;
+        if (range === "current_month") {
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            dateFilter = { gte: startOfMonth };
+        }
+        else if (range === "last_30") {
+            const thirtyDaysAgo = new Date(now);
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            dateFilter = { gte: thirtyDaysAgo };
+        }
+        // all_time: no filter
+        const campaigns = await prisma.campaign.findMany({
+            where: {
+                ...(dateFilter ? { sentAt: dateFilter } : {}),
+            },
+            orderBy: { sentAt: "desc" },
+            select: {
+                id: true,
+                name: true,
+                status: true,
+                sentAt: true,
+                createdAt: true,
+                totalRecipients: true,
+                fromEmail: true,
+            },
+        });
+        const rows = campaigns.map((c) => {
+            const emails = c.totalRecipients || 0;
+            const costUsd = emails * SES_PRICE_PER_EMAIL_USD;
+            return {
+                id: c.id,
+                name: c.name,
+                status: c.status,
+                sentAt: c.sentAt,
+                createdAt: c.createdAt,
+                fromEmail: c.fromEmail,
+                emailsSent: emails,
+                cost_usd: Math.round(costUsd * 10000) / 10000, // 4 decimal places
+            };
+        });
+        const totalEmailsSent = rows.reduce((sum, r) => sum + r.emailsSent, 0);
+        const totalCostUsd = rows.reduce((sum, r) => sum + r.cost_usd, 0);
+        const result = {
+            range,
+            campaigns: rows,
+            summary: {
+                total_emails_sent: totalEmailsSent,
+                total_cost_usd: Math.round(totalCostUsd * 10000) / 10000,
+                campaign_count: rows.length,
+                sent_campaign_count: rows.filter((r) => r.status === "sent").length,
+            },
+            pricing_note: "Calculated at $0.10 per 1,000 emails (AWS SES standard rate)",
+        };
+        setCache(cacheKey, result, 5 * 60 * 1000); // 5 min cache
+        res.json(result);
+    }
+    catch (err) {
+        console.error("Billing summary error:", err);
+        res.status(500).json({ error: "Failed to fetch billing summary", detail: err.message });
+    }
+});
 // ── Static frontend (production) ────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../dist");
@@ -2170,3 +2517,4 @@ app.get(/^(?!\/api).*/, (_req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
+// Trigger restart
