@@ -95,6 +95,7 @@ export default function CampaignsPage() {
   const [fromEmail, setFromEmail] = useState("");
   const [replyToName, setReplyToName] = useState("");
   const [replyToEmail, setReplyToEmail] = useState("");
+  const [replyToListId, setReplyToListId] = useState<number | null>(null);
 
   // Sender Domain Sheet State
   const [sendersSheetOpen, setSendersSheetOpen] = useState(false);
@@ -285,6 +286,7 @@ export default function CampaignsPage() {
     setFromEmail("");
     setReplyToName("");
     setReplyToEmail("");
+    setReplyToListId(null);
     setSelectedListIds([]);
     setExcludedListIds([]);
     setSkipUnengaged(false);
@@ -310,6 +312,7 @@ export default function CampaignsPage() {
     setFromEmail(campaign.fromEmail || "");
     setReplyToName(campaign.replyToName || "");
     setReplyToEmail(campaign.replyToEmail || "");
+    setReplyToListId(campaign.replyToListId ? Number(campaign.replyToListId) : null);
     setSkipUnengaged(Boolean(campaign.skipUnengaged));
     if (campaign.audienceListIds) {
       const ids = String(campaign.audienceListIds).split(',').map(Number).filter(Boolean);
@@ -340,7 +343,7 @@ export default function CampaignsPage() {
     }
     if (campaignId) {
       updateCampaignMutation.mutate(
-        { id: campaignId, data: { fromName, fromEmail, replyToName, replyToEmail } },
+        { id: campaignId, data: { fromName, fromEmail, replyToName, replyToEmail, replyToListId } },
         { onSuccess: () => setStep(2) }
       );
     } else {
@@ -390,6 +393,7 @@ export default function CampaignsPage() {
       fromEmail,
       replyToName: replyToName.trim() || null,
       replyToEmail: replyToEmail.trim() || null,
+      replyToListId,
       audienceType: "list",
       audienceId: selectedListIds[0] || 0,
       audienceListIds: selectedListIds.join(","),
@@ -764,32 +768,57 @@ export default function CampaignsPage() {
                     </div>
                   </div>
 
-                  {/* Custom Reply-To Inbox Section */}
-                  <div className="pt-3 border-t space-y-3">
+                  {/* Custom Reply-To Inbox & Receptionist List Section */}
+                  <div className="pt-3 border-t space-y-4">
                     <div>
-                      <Label className="font-semibold text-sm">Reply-To Inbox (Optional)</Label>
-                      <p className="text-xs text-muted-foreground">When recipients click Reply in Gmail or Outlook, their replies will be delivered directly to this inbox.</p>
+                      <Label className="font-semibold text-sm">Reply-To / Receptionist Inbox (Optional)</Label>
+                      <p className="text-xs text-muted-foreground">Specify individual email addresses or choose a Receptionist Contact List to receive campaign replies in Gmail or Outlook.</p>
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
+
+                    <div className="space-y-3">
+                      {/* Select a Receptionist Contact List */}
                       <div className="space-y-1">
-                        <Label htmlFor="camp-reply-name" className="text-xs">Reply-To Name</Label>
-                        <Input
-                          id="camp-reply-name"
-                          placeholder="e.g. Support Team"
-                          value={replyToName}
-                          onChange={(e) => setReplyToName(e.target.value)}
-                          className="h-9 text-sm"
-                        />
+                        <Label htmlFor="camp-reply-list" className="text-xs font-semibold">Select Receptionist Contact List (Optional)</Label>
+                        <Select
+                          value={replyToListId ? String(replyToListId) : "none"}
+                          onValueChange={(v) => setReplyToListId(v === "none" ? null : Number(v))}
+                        >
+                          <SelectTrigger className="w-full h-9 text-sm">
+                            <SelectValue placeholder="Choose a contact list for reply receiving..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">-- None (Use Manual Email Below) --</SelectItem>
+                            {lists.map((l: any) => (
+                              <SelectItem key={l.id} value={String(l.id)}>
+                                📋 {l.name} ({l.contactCount ?? 0} receptionists/contacts)
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
-                      <div className="space-y-1">
-                        <Label htmlFor="camp-reply-email" className="text-xs">Reply-To Email</Label>
-                        <Input
-                          id="camp-reply-email"
-                          placeholder="e.g. replies@company.com"
-                          value={replyToEmail}
-                          onChange={(e) => setReplyToEmail(e.target.value)}
-                          className="h-9 text-sm"
-                        />
+
+                      {/* Manual Reply-To Name & Email */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label htmlFor="camp-reply-name" className="text-xs font-semibold">Reply-To Display Name</Label>
+                          <Input
+                            id="camp-reply-name"
+                            placeholder="e.g. Support Team"
+                            value={replyToName}
+                            onChange={(e) => setReplyToName(e.target.value)}
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="camp-reply-email" className="text-xs font-semibold">Reply-To Email(s) (Comma-separated)</Label>
+                          <Input
+                            id="camp-reply-email"
+                            placeholder="e.g. help@co.com, info@co.com"
+                            value={replyToEmail}
+                            onChange={(e) => setReplyToEmail(e.target.value)}
+                            className="h-9 text-sm"
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>

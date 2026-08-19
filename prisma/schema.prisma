@@ -122,6 +122,7 @@ model Campaign {
   fromEmail      String
   replyToEmail   String?
   replyToName    String?
+  replyToListId  Int?
   previewText    String?
   userId         String
   templateHtml   String         @db.LongText

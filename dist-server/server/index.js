@@ -854,11 +854,14 @@ function extractAttachmentsFromHtml(html) {
     }
     return attachments;
 }
-function createRawMimeEmail({ from, to, subject, html, unsubscribeUrl, attachments = [], }) {
+function createRawMimeEmail({ from, to, replyTo, subject, html, unsubscribeUrl, attachments = [], }) {
     const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
     let raw = "";
     raw += `From: ${from}\r\n`;
     raw += `To: ${to}\r\n`;
+    if (replyTo && replyTo.trim()) {
+        raw += `Reply-To: ${replyTo.trim()}\r\n`;
+    }
     raw += `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=\r\n`;
     raw += `MIME-Version: 1.0\r\n`;
     if (unsubscribeUrl) {
@@ -946,6 +949,37 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             }
         }
         const campaignAttachments = extractAttachmentsFromHtml(template);
+        // Resolve all Reply-To emails (manual comma-separated + reply-to contact list)
+        const replyToEmailsSet = new Set();
+        if (campaign.replyToEmail) {
+            const manualEmails = String(campaign.replyToEmail)
+                .split(",")
+                .map((e) => e.trim())
+                .filter((e) => e.includes("@"));
+            manualEmails.forEach((e) => replyToEmailsSet.add(e.toLowerCase()));
+        }
+        if (campaign.replyToListId) {
+            try {
+                const listContacts = await prisma.contact.findMany({
+                    where: {
+                        status: "subscribed",
+                        contactLists: { some: { listId: Number(campaign.replyToListId) } },
+                    },
+                    select: { email: true },
+                });
+                listContacts.forEach((c) => {
+                    if (c.email && c.email.includes("@"))
+                        replyToEmailsSet.add(c.email.trim().toLowerCase());
+                });
+            }
+            catch (err) {
+                console.error("Failed to fetch replyToListId contacts:", err);
+            }
+        }
+        const replyToAddresses = Array.from(replyToEmailsSet);
+        const replyToHeader = campaign.replyToName && replyToAddresses.length === 1
+            ? `${campaign.replyToName} <${replyToAddresses[0]}>`
+            : replyToAddresses.join(", ");
         for (const contact of contacts) {
             const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
             // Smart fallback derivation if contact details are missing in database
@@ -974,6 +1008,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                     const rawMimeBuffer = createRawMimeEmail({
                         from: `${campaign.fromName} <${campaign.fromEmail}>`,
                         to: contact.email,
+                        replyTo: replyToHeader,
                         subject: campaign.subject,
                         html,
                         unsubscribeUrl: unsubUrl,
@@ -992,6 +1027,13 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                     }));
                 }
                 else {
+                    const simpleHeaders = [
+                        { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                        { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+                    ];
+                    if (replyToHeader) {
+                        simpleHeaders.push({ Name: "Reply-To", Value: replyToHeader });
+                    }
                     await sesv2Client.send(new SendEmailV2Command({
                         FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
                         Destination: { ToAddresses: [contact.email] },
@@ -1000,10 +1042,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                             Simple: {
                                 Subject: { Data: campaign.subject, Charset: "UTF-8" },
                                 Body: { Html: { Data: html, Charset: "UTF-8" } },
-                                Headers: [
-                                    { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-                                    { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
-                                ],
+                                Headers: simpleHeaders,
                             },
                         },
                         EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
