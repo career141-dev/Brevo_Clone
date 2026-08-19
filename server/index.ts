@@ -708,47 +708,101 @@ app.get("/api/campaigns/stats", async (req, res) => {
 // POST create campaign draft
 app.post("/api/campaigns", async (req, res) => {
   try {
-    const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId, audienceListIds } = req.body;
+    const {
+      name,
+      subject,
+      previewText,
+      fromName,
+      fromEmail,
+      replyToName,
+      replyToEmail,
+      replyToListId,
+      templateHtml,
+      audienceType,
+      audienceId,
+      audienceListIds,
+      excludeListIds,
+      individualEmails,
+      skipUnengaged,
+    } = req.body;
+
     if (!name || !subject || !fromName || !fromEmail) {
       return res.status(400).json({ error: "name, subject, fromName, fromEmail required" });
     }
+
     const formattedListIds = Array.isArray(audienceListIds) ? audienceListIds.join(",") : (audienceListIds || null);
+    const formattedExcludeIds = Array.isArray(excludeListIds) ? excludeListIds.join(",") : (excludeListIds || null);
+
     const campaign = await prisma.campaign.create({
       data: {
         name,
         subject,
+        previewText: previewText || null,
         fromName,
         fromEmail,
+        replyToName: replyToName || null,
+        replyToEmail: replyToEmail || null,
+        replyToListId: replyToListId ? Number(replyToListId) : null,
         templateHtml: templateHtml || "",
         audienceType: audienceType || "list",
-        audienceId: audienceId || 0,
+        audienceId: audienceId ? Number(audienceId) : 0,
         audienceListIds: formattedListIds,
+        excludeListIds: formattedExcludeIds,
+        individualEmails: individualEmails || null,
+        skipUnengaged: Boolean(skipUnengaged),
         status: "draft",
       },
     });
     res.status(201).json(campaign);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to create campaign draft" });
+  } catch (err: any) {
+    console.error("Failed to create campaign draft:", err);
+    res.status(500).json({ error: "Failed to create campaign draft", details: err.message });
   }
 });
 
 // PUT update campaign
 app.put("/api/campaigns/:id", async (req, res) => {
   try {
-    const { name, subject, fromName, fromEmail, templateHtml, audienceType, audienceId, audienceListIds } = req.body;
+    const {
+      name,
+      subject,
+      previewText,
+      fromName,
+      fromEmail,
+      replyToName,
+      replyToEmail,
+      replyToListId,
+      templateHtml,
+      audienceType,
+      audienceId,
+      audienceListIds,
+      excludeListIds,
+      individualEmails,
+      skipUnengaged,
+      status,
+    } = req.body;
     
-    // Only allow updating safe fields to prevent mass assignment vulnerabilities
     const updateData: any = {};
     if (name !== undefined) updateData.name = name;
     if (subject !== undefined) updateData.subject = subject;
+    if (previewText !== undefined) updateData.previewText = previewText;
     if (fromName !== undefined) updateData.fromName = fromName;
     if (fromEmail !== undefined) updateData.fromEmail = fromEmail;
+    if (replyToName !== undefined) updateData.replyToName = replyToName;
+    if (replyToEmail !== undefined) updateData.replyToEmail = replyToEmail;
+    if (replyToListId !== undefined) updateData.replyToListId = replyToListId ? Number(replyToListId) : null;
     if (templateHtml !== undefined) updateData.templateHtml = templateHtml;
     if (audienceType !== undefined) updateData.audienceType = audienceType;
-    if (audienceId !== undefined) updateData.audienceId = audienceId;
+    if (audienceId !== undefined) updateData.audienceId = Number(audienceId) || 0;
     if (audienceListIds !== undefined) {
       updateData.audienceListIds = Array.isArray(audienceListIds) ? audienceListIds.join(",") : audienceListIds;
     }
+    if (excludeListIds !== undefined) {
+      updateData.excludeListIds = Array.isArray(excludeListIds) ? excludeListIds.join(",") : excludeListIds;
+    }
+    if (individualEmails !== undefined) updateData.individualEmails = individualEmails;
+    if (skipUnengaged !== undefined) updateData.skipUnengaged = Boolean(skipUnengaged);
+    if (status !== undefined) updateData.status = status;
 
     const campaign = await prisma.campaign.update({
       where: { id: Number(req.params.id) },
