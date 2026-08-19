@@ -407,7 +407,7 @@ export default function CampaignsPage() {
       toast.error("Please provide a sender name and email.");
       return;
     }
-    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : (replyToEmail.trim() || null);
+    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
     if (campaignId) {
       updateCampaignMutation.mutate(
         { id: campaignId, data: { fromName, fromEmail, replyToName, replyToEmail: resolvedReplyToEmail, replyToListId } },
@@ -461,7 +461,7 @@ export default function CampaignsPage() {
       return;
     }
 
-    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : (replyToEmail.trim() || null);
+    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
 
     const payload = {
       name,
