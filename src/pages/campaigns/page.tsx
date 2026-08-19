@@ -23,6 +23,7 @@ import {
   Layers,
   ChevronsUpDown,
   DollarSign,
+  UserCheck,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
@@ -103,13 +104,35 @@ export default function CampaignsPage() {
   const [newSenderEmail, setNewSenderEmail] = useState("");
 
   // Step 2: Audience / Recipients
+  const [recipientTab, setRecipientTab] = useState<"lists" | "segments" | "individual">("lists");
   const [selectedListIds, setSelectedListIds] = useState<number[]>([]);
   const [excludedListIds, setExcludedListIds] = useState<number[]>([]);
+  const [individualEmails, setIndividualEmails] = useState<string[]>([]);
+  const [newIndividualEmail, setNewIndividualEmail] = useState("");
   const [skipUnengaged, setSkipUnengaged] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [listPopoverOpen, setListPopoverOpen] = useState(false);
   const [excludeListPopoverOpen, setExcludeListPopoverOpen] = useState(false);
   const audienceId = selectedListIds[0] ? String(selectedListIds[0]) : "";
+
+  const handleAddIndividualEmail = () => {
+    const trimmed = newIndividualEmail.trim().toLowerCase();
+    if (!trimmed) return;
+    if (!trimmed.includes("@")) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    if (individualEmails.includes(trimmed)) {
+      toast.error("This email address is already added.");
+      return;
+    }
+    if (individualEmails.length >= 10) {
+      toast.error("You can add up to 10 individual contact email addresses.");
+      return;
+    }
+    setIndividualEmails([...individualEmails, trimmed]);
+    setNewIndividualEmail("");
+  };
 
   // Step 3: Template
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
@@ -287,8 +310,11 @@ export default function CampaignsPage() {
     setReplyToName("");
     setReplyToEmail("");
     setReplyToListId(null);
+    setRecipientTab("lists");
     setSelectedListIds([]);
     setExcludedListIds([]);
+    setIndividualEmails([]);
+    setNewIndividualEmail("");
     setSkipUnengaged(false);
     setShowAdvanced(false);
     setListPopoverOpen(false);
@@ -314,6 +340,15 @@ export default function CampaignsPage() {
     setReplyToEmail(campaign.replyToEmail || "");
     setReplyToListId(campaign.replyToListId ? Number(campaign.replyToListId) : null);
     setSkipUnengaged(Boolean(campaign.skipUnengaged));
+
+    if (campaign.audienceType === "individual" || campaign.individualEmails) {
+      setRecipientTab("individual");
+      const emails = String(campaign.individualEmails || "").split(",").map(e => e.trim()).filter(Boolean);
+      setIndividualEmails(emails);
+    } else {
+      setRecipientTab("lists");
+    }
+
     if (campaign.audienceListIds) {
       const ids = String(campaign.audienceListIds).split(',').map(Number).filter(Boolean);
       setSelectedListIds(ids);
@@ -352,18 +387,27 @@ export default function CampaignsPage() {
   };
 
   const handleNextStep2 = () => {
-    if (selectedListIds.length === 0) {
-      toast.error("Please select at least one target audience list.");
-      return;
+    if (recipientTab === "individual") {
+      if (individualEmails.length === 0) {
+        toast.error("Please add at least one individual contact email address.");
+        return;
+      }
+    } else {
+      if (selectedListIds.length === 0) {
+        toast.error("Please select at least one target audience list.");
+        return;
+      }
     }
+
     if (campaignId) {
       updateCampaignMutation.mutate(
         {
           id: campaignId,
           data: {
-            audienceType: "list",
+            audienceType: recipientTab === "individual" ? "individual" : "list",
             audienceId: selectedListIds[0] || 0,
-            audienceListIds: selectedListIds.join(","),
+            audienceListIds: recipientTab === "individual" ? null : selectedListIds.join(","),
+            individualEmails: recipientTab === "individual" ? individualEmails.join(",") : null,
             excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
             skipUnengaged,
           },
@@ -394,9 +438,10 @@ export default function CampaignsPage() {
       replyToName: replyToName.trim() || null,
       replyToEmail: replyToEmail.trim() || null,
       replyToListId,
-      audienceType: "list",
+      audienceType: recipientTab === "individual" ? "individual" : "list",
       audienceId: selectedListIds[0] || 0,
-      audienceListIds: selectedListIds.join(","),
+      audienceListIds: recipientTab === "individual" ? null : selectedListIds.join(","),
+      individualEmails: recipientTab === "individual" ? individualEmails.join(",") : null,
       excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
       skipUnengaged,
       templateHtml: selectedTemplateHtml,
@@ -839,151 +884,285 @@ export default function CampaignsPage() {
                   <h3 className="text-lg font-semibold">Recipients</h3>
                   <p className="text-xs text-muted-foreground">The people who receive your campaign</p>
                 </div>
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <Label className="font-semibold text-sm">Send to</Label>
-                      {selectedListIds.length > 0 && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                            {selectedListIds.length} {selectedListIds.length === 1 ? "list" : "lists"} selected
-                          </span>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setSelectedListIds([])}
-                            className="h-auto p-0 text-xs text-red-600 hover:text-red-700 hover:bg-transparent"
-                          >
-                            Clear selection
-                          </Button>
-                        </div>
-                      )}
-                    </div>
 
-                    <Popover open={listPopoverOpen} onOpenChange={setListPopoverOpen}>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          role="combobox"
-                          aria-expanded={listPopoverOpen}
-                          className="w-full justify-between text-left font-normal h-10 border-input"
-                        >
-                          <span className="truncate">
-                            {selectedListIds.length === 0
-                              ? "Select list(s), segment(s) or individual contacts"
-                              : selectedListIds.length === 1
-                              ? lists.find((l: any) => l.id === selectedListIds[0])?.name ?? "1 list selected"
-                              : `${selectedListIds.length} lists selected (${selectedListIds.map(id => lists.find((l: any) => l.id === id)?.name).filter(Boolean).join(", ")})`}
-                          </span>
-                          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-                        <Command>
-                          <CommandInput placeholder="Search lists by name or ID..." />
-                          <CommandList
-                            className="max-h-[280px] overflow-y-auto pointer-events-auto touch-auto p-1"
-                            onWheel={(e) => e.stopPropagation()}
-                          >
-                            <CommandEmpty>No lists found.</CommandEmpty>
-                            <CommandGroup>
-                              <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/50 text-xs">
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedListIds(lists.map((l: any) => l.id))}
-                                    className="text-primary hover:underline font-medium cursor-pointer"
-                                  >
-                                    Select All ({lists.length})
-                                  </button>
-                                  {selectedListIds.length > 0 && (
-                                    <>
-                                      <span className="text-gray-300">|</span>
+                {/* Recipient Tabs: Lists | Segments | Individual contacts */}
+                <div className="flex items-center gap-1 border-b pb-2">
+                  <button
+                    type="button"
+                    onClick={() => setRecipientTab("lists")}
+                    className={cn(
+                      "px-3.5 py-1.5 text-xs font-bold rounded-md transition-colors cursor-pointer",
+                      recipientTab === "lists"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 shadow-sm"
+                        : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    )}
+                  >
+                    Lists
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecipientTab("segments")}
+                    className={cn(
+                      "px-3.5 py-1.5 text-xs font-bold rounded-md transition-colors cursor-pointer",
+                      recipientTab === "segments"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 shadow-sm"
+                        : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    )}
+                  >
+                    Segments
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecipientTab("individual")}
+                    className={cn(
+                      "px-3.5 py-1.5 text-xs font-bold rounded-md transition-colors cursor-pointer flex items-center gap-1.5",
+                      recipientTab === "individual"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 shadow-sm"
+                        : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    )}
+                  >
+                    <span>Individual contacts</span>
+                    {individualEmails.length > 0 && (
+                      <span className="px-1.5 py-0.2 bg-emerald-500 text-white rounded-full text-[10px] font-extrabold">
+                        {individualEmails.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  {/* ── TAB 1: LISTS ── */}
+                  {recipientTab === "lists" && (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between mb-1">
+                          <Label className="font-semibold text-sm">Send to</Label>
+                          {selectedListIds.length > 0 && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                                {selectedListIds.length} {selectedListIds.length === 1 ? "list" : "lists"} selected
+                              </span>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setSelectedListIds([])}
+                                className="h-auto p-0 text-xs text-red-600 hover:text-red-700 hover:bg-transparent"
+                              >
+                                Clear selection
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+
+                        <Popover open={listPopoverOpen} onOpenChange={setListPopoverOpen}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={listPopoverOpen}
+                              className="w-full justify-between text-left font-normal h-10 border-input"
+                            >
+                              <span className="truncate">
+                                {selectedListIds.length === 0
+                                  ? "Select list(s), segment(s) or individual contacts"
+                                  : selectedListIds.length === 1
+                                  ? lists.find((l: any) => l.id === selectedListIds[0])?.name ?? "1 list selected"
+                                  : `${selectedListIds.length} lists selected (${selectedListIds.map(id => lists.find((l: any) => l.id === id)?.name).filter(Boolean).join(", ")})`}
+                              </span>
+                              <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search lists by name or ID..." />
+                              <CommandList
+                                className="max-h-[280px] overflow-y-auto pointer-events-auto touch-auto p-1"
+                                onWheel={(e) => e.stopPropagation()}
+                              >
+                                <CommandEmpty>No lists found.</CommandEmpty>
+                                <CommandGroup>
+                                  <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/50 text-xs">
+                                    <div className="flex items-center gap-2">
                                       <button
                                         type="button"
-                                        onClick={() => setSelectedListIds([])}
-                                        className="text-red-600 hover:underline font-medium cursor-pointer flex items-center gap-1"
+                                        onClick={() => setSelectedListIds(lists.map((l: any) => l.id))}
+                                        className="text-primary hover:underline font-medium cursor-pointer"
                                       >
-                                        Clear Selection
+                                        Select All ({lists.length})
                                       </button>
-                                    </>
-                                  )}
-                                </div>
-                                <span className="text-muted-foreground">{selectedListIds.length} / {lists.length} selected</span>
-                              </div>
-                              {lists.map((list: any) => {
-                                const isSelected = selectedListIds.includes(list.id);
-                                const uniqueValue = `${list.name} id-${list.id}`;
-                                return (
-                                  <CommandItem
-                                    key={list.id}
-                                    value={uniqueValue}
-                                    onSelect={() => {
-                                      if (isSelected) {
-                                        setSelectedListIds(selectedListIds.filter((id) => id !== list.id));
-                                      } else {
-                                        setSelectedListIds([...selectedListIds, list.id]);
-                                      }
-                                    }}
-                                    className="cursor-pointer flex items-center justify-between py-2"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <Checkbox
-                                        checked={isSelected}
-                                        onCheckedChange={() => {
+                                      {selectedListIds.length > 0 && (
+                                        <>
+                                          <span className="text-gray-300">|</span>
+                                          <button
+                                            type="button"
+                                            onClick={() => setSelectedListIds([])}
+                                            className="text-red-600 hover:underline font-medium cursor-pointer flex items-center gap-1"
+                                          >
+                                            Clear Selection
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                    <span className="text-muted-foreground">{selectedListIds.length} / {lists.length} selected</span>
+                                  </div>
+                                  {lists.map((list: any) => {
+                                    const isSelected = selectedListIds.includes(list.id);
+                                    const uniqueValue = `${list.name} id-${list.id}`;
+                                    return (
+                                      <CommandItem
+                                        key={list.id}
+                                        value={uniqueValue}
+                                        onSelect={() => {
                                           if (isSelected) {
                                             setSelectedListIds(selectedListIds.filter((id) => id !== list.id));
                                           } else {
                                             setSelectedListIds([...selectedListIds, list.id]);
                                           }
                                         }}
-                                      />
-                                      <div className="flex flex-col">
-                                        <span className="font-semibold text-sm">{list.name}</span>
-                                        <span className="text-[10px] text-muted-foreground">ID: #{list.id}</span>
-                                      </div>
-                                    </div>
-                                    <span className="text-xs text-muted-foreground">
-                                      ({list.contactCount ?? 0} contacts)
-                                    </span>
-                                  </CommandItem>
+                                        className="cursor-pointer flex items-center justify-between py-2"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <Checkbox
+                                            checked={isSelected}
+                                            onCheckedChange={() => {
+                                              if (isSelected) {
+                                                setSelectedListIds(selectedListIds.filter((id) => id !== list.id));
+                                              } else {
+                                                setSelectedListIds([...selectedListIds, list.id]);
+                                              }
+                                            }}
+                                          />
+                                          <div className="flex flex-col">
+                                            <span className="font-semibold text-sm">{list.name}</span>
+                                            <span className="text-[10px] text-muted-foreground">ID: #{list.id}</span>
+                                          </div>
+                                        </div>
+                                        <span className="text-xs text-muted-foreground">
+                                          ({list.contactCount ?? 0} contacts)
+                                        </span>
+                                      </CommandItem>
+                                    );
+                                  })}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+
+                        {/* Selected List Badges/Pills */}
+                        {selectedListIds.length > 0 && (
+                          <div className="space-y-1.5 pt-2">
+                            <div className="flex flex-wrap gap-1.5">
+                              {selectedListIds.map((id) => {
+                                const listObj = lists.find((l: any) => l.id === id);
+                                return (
+                                  <Badge
+                                    key={id}
+                                    variant="secondary"
+                                    className="flex items-center gap-1 text-xs py-1 px-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800"
+                                  >
+                                    <span className="font-medium">{listObj?.name || `List #${id}`} <span className="opacity-70 text-[10px]">#{id}</span></span>
+                                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400">({listObj?.contactCount ?? 0})</span>
+                                    <X
+                                      className="size-3 cursor-pointer ml-0.5 hover:text-red-500"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedListIds(selectedListIds.filter((item) => item !== id));
+                                      }}
+                                    />
+                                  </Badge>
                                 );
                               })}
-                            </CommandGroup>
-                          </CommandList>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
-                    {/* Selected List Badges/Pills */}
-                    {selectedListIds.length > 0 && (
-                      <div className="space-y-1.5 pt-2">
-                        <div className="flex flex-wrap gap-1.5">
-                          {selectedListIds.map((id) => {
-                            const listObj = lists.find((l: any) => l.id === id);
-                            return (
-                              <Badge
-                                key={id}
-                                variant="secondary"
-                                className="flex items-center gap-1 text-xs py-1 px-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800"
-                              >
-                                <span className="font-medium">{listObj?.name || `List #${id}`} <span className="opacity-70 text-[10px]">#{id}</span></span>
-                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400">({listObj?.contactCount ?? 0})</span>
-                                <X
-                                  className="size-3 cursor-pointer ml-0.5 hover:text-red-500"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedListIds(selectedListIds.filter((item) => item !== id));
-                                  }}
-                                />
-                              </Badge>
-                            );
-                          })}
+                  {/* ── TAB 2: SEGMENTS ── */}
+                  {recipientTab === "segments" && (
+                    <div className="p-6 bg-muted/20 border rounded-lg text-center space-y-2">
+                      <p className="text-sm font-semibold">Dynamic Contact Segments</p>
+                      <p className="text-xs text-muted-foreground">Select saved dynamic filter segments or switch to Lists or Individual contacts tab.</p>
+                    </div>
+                  )}
+
+                  {/* ── TAB 3: INDIVIDUAL CONTACTS ── */}
+                  {recipientTab === "individual" && (
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-xs text-slate-600 dark:text-slate-400">
+                          Add up to 10 email addresses from your contacts.
+                        </Label>
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder="Enter contact email address (e.g. john@example.com)..."
+                            value={newIndividualEmail}
+                            onChange={(e) => setNewIndividualEmail(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                handleAddIndividualEmail();
+                              }
+                            }}
+                            className="h-10 text-sm"
+                          />
+                          <Button
+                            type="button"
+                            onClick={handleAddIndividualEmail}
+                            disabled={individualEmails.length >= 10 || !newIndividualEmail.trim()}
+                            className="h-10 text-xs font-bold gap-1 px-4"
+                          >
+                            <Plus className="size-4" /> Add contact
+                          </Button>
                         </div>
                       </div>
-                    )}
-                  </div>
+
+                      {/* Empty State Box */}
+                      {individualEmails.length === 0 ? (
+                        <div className="p-8 border border-dashed rounded-xl bg-slate-50 dark:bg-slate-900/40 text-center space-y-3">
+                          <div className="size-10 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center mx-auto text-slate-600 dark:text-slate-400">
+                            <UserCheck className="size-5" />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-sm font-bold text-slate-800 dark:text-slate-200">There are no contacts in this list yet.</p>
+                            <p className="text-xs text-muted-foreground">Add up to 10 email addresses from your contacts.</p>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Individual Email Pills List */
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between text-xs font-semibold text-slate-600 dark:text-slate-400">
+                            <span>Selected Individual Contacts ({individualEmails.length} / 10)</span>
+                            <button
+                              type="button"
+                              onClick={() => setIndividualEmails([])}
+                              className="text-red-600 hover:underline cursor-pointer"
+                            >
+                              Clear all
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap gap-2 p-3 bg-muted/20 border rounded-lg">
+                            {individualEmails.map((email, idx) => (
+                              <Badge
+                                key={idx}
+                                variant="secondary"
+                                className="py-1 px-3 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold flex items-center gap-1.5"
+                              >
+                                <span>{email}</span>
+                                <X
+                                  className="size-3.5 cursor-pointer hover:text-red-600 ml-1"
+                                  onClick={() => setIndividualEmails(individualEmails.filter((_, i) => i !== idx))}
+                                />
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Skip Unengaged Contacts */}
                   <div className="flex items-center space-x-2 pt-1">
@@ -1089,7 +1268,9 @@ export default function CampaignsPage() {
                   <div className="bg-slate-50 dark:bg-slate-900/60 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
                     <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-slate-100">
                       <span>
-                        {isLoadingAudienceStats ? <Loader2 className="inline size-3.5 animate-spin mr-1" /> : (audienceStats?.subscribed ?? 0).toLocaleString()} recipients
+                        {recipientTab === "individual"
+                          ? `${individualEmails.length} recipients`
+                          : `${isLoadingAudienceStats ? "..." : (audienceStats?.subscribed ?? 0).toLocaleString()} recipients`}
                       </span>
                       <span className="text-slate-300">|</span>
                       <span className="text-emerald-600 dark:text-emerald-400">

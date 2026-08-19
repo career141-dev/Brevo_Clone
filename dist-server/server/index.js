@@ -906,7 +906,10 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         const targetListIds = campaign.audienceListIds
             ? campaign.audienceListIds.split(',').map((id) => Number(id.trim())).filter((n) => !isNaN(n) && n > 0)
             : (campaign.audienceId ? [campaign.audienceId] : []);
-        if (targetListIds.length === 0) {
+        const excludeListIds = campaign.excludeListIds
+            ? String(campaign.excludeListIds).split(',').map((id) => Number(id.trim())).filter((n) => !isNaN(n) && n > 0)
+            : [];
+        if (campaign.audienceType !== "individual" && targetListIds.length === 0 && !campaign.individualEmails) {
             return res.status(400).json({ error: "No audience selected" });
         }
         if (!campaign.templateHtml) {
@@ -920,20 +923,56 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         if (updateResult.count === 0) {
             return res.status(400).json({ error: "Campaign is already sending or sent" });
         }
-        // 3. Fetch subscribed contacts from the selected list(s)
-        const contacts = await prisma.contact.findMany({
-            where: {
-                status: "subscribed",
-                contactLists: { some: { listId: { in: targetListIds } } },
-            },
-        });
+        // 3. Fetch subscribed contacts from selected list(s) or individual emails
+        let contacts = [];
+        if (campaign.audienceType === "individual" || campaign.individualEmails) {
+            const emailList = String(campaign.individualEmails || "")
+                .split(",")
+                .map((e) => e.trim())
+                .filter((e) => e.includes("@"));
+            if (emailList.length > 0) {
+                const dbContacts = await prisma.contact.findMany({
+                    where: {
+                        email: { in: emailList },
+                        status: { not: "unsubscribed" },
+                    },
+                });
+                const foundEmails = new Set(dbContacts.map((c) => c.email.toLowerCase()));
+                contacts = [...dbContacts];
+                emailList.forEach((em) => {
+                    if (!foundEmails.has(em.toLowerCase())) {
+                        contacts.push({
+                            id: 0,
+                            email: em,
+                            firstName: null,
+                            lastName: null,
+                            fullName: null,
+                            company: null,
+                            designation: null,
+                            status: "subscribed",
+                        });
+                    }
+                });
+            }
+        }
+        else {
+            contacts = await prisma.contact.findMany({
+                where: {
+                    status: "subscribed",
+                    contactLists: {
+                        some: { listId: { in: targetListIds } },
+                        ...(excludeListIds.length > 0 ? { none: { listId: { in: excludeListIds } } } : {}),
+                    },
+                },
+            });
+        }
         if (contacts.length === 0) {
             // Revert status back to draft
             await prisma.campaign.update({
                 where: { id: campaignId },
                 data: { status: "draft" },
             });
-            return res.status(400).json({ error: "No subscribed contacts found in the selected audience." });
+            return res.status(400).json({ error: "No target recipients found for this campaign." });
         }
         let sent = 0;
         const errors = [];

@@ -130,6 +130,7 @@ model Campaign {
   audienceId     Int
   audienceListIds String?
   excludeListIds String?
+  individualEmails String?      @db.LongText
   skipUnengaged  Boolean        @default(false)
   status         CampaignStatus @default(draft)
   scheduledAt    DateTime?
