@@ -1195,11 +1195,8 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
             { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
           ];
-          if (replyToHeader) {
-            simpleHeaders.push({ Name: "Reply-To", Value: replyToHeader });
-          }
 
-          await sesv2Client.send(new SendEmailV2Command({
+          const sesParams: any = {
             FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
             Destination: { ToAddresses: [contact.email] },
             ConfigurationSetName: "career141-tracking",
@@ -1211,7 +1208,15 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
               },
             },
             EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-          }));
+          };
+
+          if (replyToAddresses.length > 0) {
+            sesParams.ReplyToEmailAddresses = replyToAddresses.map((addr) =>
+              (campaign as any).replyToName ? `${(campaign as any).replyToName} <${addr}>` : addr
+            );
+          }
+
+          await sesv2Client.send(new SendEmailV2Command(sesParams));
         }
         // Log "sent" event with campaignId
         await prisma.emailEvent.create({
