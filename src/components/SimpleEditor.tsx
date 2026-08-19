@@ -6,11 +6,9 @@ import {
   Link, Image as ImageIcon, Smile, Code, Table2, AlignLeft,
   AlignCenter, AlignRight, AlignJustify, ListOrdered, List,
   IndentDecrease, IndentIncrease, RemoveFormatting, ChevronDown,
-  Trash2, ExternalLink, Paperclip, FileText, FileUp, Quote, Minus, Sparkles, X, UserCheck,
+  Trash2, Paperclip, FileText, FileUp, Quote, Minus, Sparkles, X, UserCheck,
+  Search, Baseline, WrapText,
 } from "lucide-react";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select.tsx";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.tsx";
@@ -27,32 +25,83 @@ interface SimpleEditorProps {
   onCancel: () => void;
 }
 
-// ─── Emoji list ────────────────────────────────────────────────────────────────
+// ─── Emoji list with categorization ──────────────────────────────────────────
 const EMOJIS = [
   "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","😘","🥰",
   "😗","😙","😚","🙂","🤗","🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥",
   "😮","🤐","😯","😪","😫","🥱","😴","😌","😛","😜","😝","🤤","😒","😓","😔",
   "😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨",
   "😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","🥴","😠","😡","🤬","😷",
-  "🤒","🤕","🤢","🤮","🤧","😇","🥳","🥺","🤠","🤡","🤥","🤫","🤭","🧐","🤓",
   "👍","👎","👌","✌️","🤞","🤟","🤘","🤙","👈","👉","👆","👇","☝️","👋","🤚",
   "🖐️","✋","🖖","👏","🙌","🤲","🤝","🙏","✍️","💪","🦾","🦿","🦵","🦶","👂",
-  "🦻","👃","❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔","❣️","💕","💞",
-  "💓","💗","💖","💘","💝","💟","☮️","✝️","☪️","🕉️","☸️","✡️","🔯","🕎","☯️",
+  "❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔","❣️","💕","💞","💓","💗",
   "🌟","⭐","🌙","☀️","🌈","🌊","🔥","💧","🌿","🍀","🌸","🌺","🌻","🌹","🍁",
   "🎉","🎊","🎈","🎁","🎀","🏆","🥇","🎯","🎮","🎲","🎵","🎶","🎸","🎹","🎺",
+  "💼","📊","📈","📉","💡","🔔","✉️","📧","📦","🚀","⚡","⏳","🕒","✅","❌",
 ];
 
-// ─── Color swatches ─────────────────────────────────────────────────────────────
-const COLORS = [
-  "#000000","#434343","#666666","#999999","#b7b7b7","#cccccc","#d9d9d9","#ffffff",
-  "#ff0000","#ff4500","#ff9900","#ffff00","#00ff00","#00ffff","#0000ff","#9900ff",
-  "#e6b8a2","#f4cccc","#fce5cd","#fff2cc","#d9ead3","#d0e4f7","#cfe2f3","#d9d2e9",
-  "#dd7e6b","#ea9999","#f9cb9c","#ffe599","#b6d7a8","#9fc5e8","#9fc5e8","#b4a7d6",
-  "#cc4125","#e06666","#f6b26b","#ffd966","#93c47d","#76a5af","#6fa8dc","#8e7cc3",
-  "#a61c00","#cc0000","#e69138","#f1c232","#6aa84f","#45818e","#3d85c8","#674ea7",
-  "#85200c","#990000","#b45f06","#bf9000","#38761d","#134f5c","#1155cc","#351c75",
-  "#5b0f00","#660000","#783f04","#7f6000","#274e13","#0c343d","#1c4587","#20124d",
+// ─── Font / Text Color Palette ────────────────────────────────────────────────
+const TEXT_COLORS = [
+  "#000000","#1e293b","#334155","#475569","#64748b","#94a3b8","#cbd5e1","#ffffff",
+  "#991b1b","#c2410c","#b45309","#15803d","#047857","#0e7490","#1d4ed8","#4338ca",
+  "#dc2626","#ea580c","#d97706","#16a34a","#059669","#0284c7","#2563eb","#6d28d9",
+  "#ef4444","#f97316","#f59e0b","#22c55e","#10b981","#06b6d4","#3b82f6","#8b5cf6",
+  "#581c87","#701a75","#831843","#881337","#78350f","#713f12","#14532d","#0c4a6e",
+];
+
+// ─── Highlight Color Palette (High-contrast Soft Tones) ──────────────────────
+const HIGHLIGHT_QUICK = [
+  { name: "Yellow", color: "#fef08a", bg: "bg-yellow-200" },
+  { name: "Green", color: "#bbf7d0", bg: "bg-green-200" },
+  { name: "Cyan", color: "#bae6fd", bg: "bg-sky-200" },
+  { name: "Pink", color: "#fbcfe8", bg: "bg-pink-200" },
+  { name: "Orange", color: "#fed7aa", bg: "bg-orange-200" },
+  { name: "Purple", color: "#e9d5ff", bg: "bg-purple-200" },
+  { name: "Coral", color: "#fecaca", bg: "bg-red-200" },
+  { name: "Lime", color: "#d9f99d", bg: "bg-lime-200" },
+];
+
+const HIGHLIGHT_COLORS = [
+  "#fef08a","#fef9c3","#fde047","#fef3c7","#fde68a","#fffbeb",
+  "#bbf7d0","#dcfce7","#86efac","#d1fae5","#ecfdf5","#a7f3d0",
+  "#bae6fd","#e0f2fe","#7dd3fc","#cffafe","#ecfeff","#38bdf8",
+  "#fbcfe8","#fce7f3","#f472b6","#fee2e2","#fff1f2","#fda4af",
+  "#fed7aa","#ffedd5","#fdba74","#e9d5ff","#f3e8ff","#d8b4fe",
+];
+
+const FONT_FAMILIES = [
+  { label: "Arial", value: "Arial, Helvetica, sans-serif" },
+  { label: "Helvetica", value: "Helvetica, Arial, sans-serif" },
+  { label: "Times New Roman", value: "'Times New Roman', Times, serif" },
+  { label: "Georgia", value: "Georgia, serif" },
+  { label: "Courier New", value: "'Courier New', Courier, monospace" },
+  { label: "Verdana", value: "Verdana, Geneva, sans-serif" },
+  { label: "Trebuchet MS", value: "'Trebuchet MS', Helvetica, sans-serif" },
+  { label: "Tahoma", value: "Tahoma, Geneva, sans-serif" },
+  { label: "Impact", value: "Impact, Charcoal, sans-serif" },
+];
+
+const FONT_SIZES = [
+  { label: "10px", value: "10px" },
+  { label: "12px", value: "12px" },
+  { label: "14px", value: "14px" },
+  { label: "16px", value: "16px" },
+  { label: "18px", value: "18px" },
+  { label: "20px", value: "20px" },
+  { label: "24px", value: "24px" },
+  { label: "28px", value: "28px" },
+  { label: "32px", value: "32px" },
+  { label: "40px", value: "40px" },
+  { label: "48px", value: "48px" },
+];
+
+const LINE_SPACINGS = [
+  { label: "1.0 (Single)", value: "1.0" },
+  { label: "1.15", value: "1.15" },
+  { label: "1.3", value: "1.3" },
+  { label: "1.5 (1.5x)", value: "1.5" },
+  { label: "1.75", value: "1.75" },
+  { label: "2.0 (Double)", value: "2.0" },
 ];
 
 export default function SimpleEditor({
@@ -66,12 +115,43 @@ export default function SimpleEditor({
   const [chars, setChars] = useState(0);
   const [isSourceMode, setIsSourceMode] = useState(false);
 
+  // Active formatting state
+  const [activeFormats, setActiveFormats] = useState({
+    bold: false,
+    italic: false,
+    underline: false,
+    strikeThrough: false,
+    justifyLeft: false,
+    justifyCenter: false,
+    justifyRight: false,
+    justifyFull: false,
+    insertOrderedList: false,
+    insertUnorderedList: false,
+  });
+
+  // Current font styling
+  const [currentFont, setCurrentFont] = useState("Arial");
+  const [currentFontSize, setCurrentFontSize] = useState("16px");
+
+  // Selection tracking
+  const savedRangeRef = useRef<Range | null>(null);
+
+  // Font Color & Highlight Color popover states
+  const [fontColorOpen, setFontColorOpen] = useState(false);
+  const [customFontColor, setCustomFontColor] = useState("#ef4444");
+  const [highlightColorOpen, setHighlightColorOpen] = useState(false);
+  const [customHighlightColor, setCustomHighlightColor] = useState("#fef08a");
+
   // Link popover state
   const [linkPopoverOpen, setLinkPopoverOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("https://");
   const [linkTitle, setLinkTitle] = useState("");
   const [linkNewTab, setLinkNewTab] = useState(false);
-  const [savedRange, setSavedRange] = useState<Range | null>(null);
+
+  // Image popover state
+  const [imagePopoverOpen, setImagePopoverOpen] = useState(false);
+  const [imageUrlInput, setImageUrlInput] = useState("");
+  const [imageAltInput, setImageAltInput] = useState("");
 
   // Document attachment popover & files state
   const [documentPopoverOpen, setDocumentPopoverOpen] = useState(false);
@@ -79,8 +159,9 @@ export default function SimpleEditor({
   const [docUrl, setDocUrl] = useState("https://");
   const [attachments, setAttachments] = useState<{ id: string; name: string; size: string; url: string; ext: string }[]>([]);
 
-  // Image resize state
+  // Image selection & resize state
   const [selectedImage, setSelectedImage] = useState<HTMLImageElement | null>(null);
+  const [imageOverlayPos, setImageOverlayPos] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
 
   const editorRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLTextAreaElement>(null);
@@ -103,10 +184,72 @@ export default function SimpleEditor({
     setWords(text.trim() ? text.trim().split(/\s+/).length : 0);
   }, []);
 
-  // ── execCommand wrapper ────────────────────────────────────────────────────
+  // ── Range & Selection Handling ─────────────────────────────────────────────
+  const saveSelection = useCallback(() => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)) {
+      const range = sel.getRangeAt(0).cloneRange();
+      savedRangeRef.current = range;
+
+      // Update active format state
+      try {
+        setActiveFormats({
+          bold: document.queryCommandState("bold"),
+          italic: document.queryCommandState("italic"),
+          underline: document.queryCommandState("underline"),
+          strikeThrough: document.queryCommandState("strikeThrough"),
+          justifyLeft: document.queryCommandState("justifyLeft"),
+          justifyCenter: document.queryCommandState("justifyCenter"),
+          justifyRight: document.queryCommandState("justifyRight"),
+          justifyFull: document.queryCommandState("justifyFull"),
+          insertOrderedList: document.queryCommandState("insertOrderedList"),
+          insertUnorderedList: document.queryCommandState("insertUnorderedList"),
+        });
+      } catch {
+        // queryCommandState not supported in some contexts
+      }
+    }
+  }, []);
+
+  const restoreSelection = useCallback(() => {
+    if (!savedRangeRef.current) return;
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      sel.addRange(savedRangeRef.current);
+    }
+  }, []);
+
+  // Update selected image overlay position
+  useEffect(() => {
+    if (!selectedImage || !editorRef.current) {
+      setImageOverlayPos(null);
+      return;
+    }
+
+    const updateImgPos = () => {
+      if (!selectedImage || !editorRef.current) return;
+      const rect = selectedImage.getBoundingClientRect();
+      const canvasRect = editorRef.current.getBoundingClientRect();
+      setImageOverlayPos({
+        top: rect.top - canvasRect.top + (editorRef.current.scrollTop || 0),
+        left: rect.left - canvasRect.left + (editorRef.current.scrollLeft || 0),
+        width: rect.width,
+        height: rect.height,
+      });
+    };
+
+    updateImgPos();
+    window.addEventListener("resize", updateImgPos);
+    return () => window.removeEventListener("resize", updateImgPos);
+  }, [selectedImage]);
+
+  // ── Execute standard command ───────────────────────────────────────────────
   const execCmd = (command: string, value?: string) => {
+    restoreSelection();
     editorRef.current?.focus();
     document.execCommand(command, false, value);
+    saveSelection();
     updateCounts();
   };
 
@@ -123,151 +266,211 @@ export default function SimpleEditor({
     setSelectedImage(null);
   };
 
-  // ── Persistent Selection Range Tracking & Floating Highlight Toolbar ───────
-  const lastRangeRef = useRef<Range | null>(null);
-  const [floatingToolbarPos, setFloatingToolbarPos] = useState<{ top: number; left: number } | null>(null);
-
-  const saveSelection = useCallback(() => {
+  // ── Insert HTML at cursor ──────────────────────────────────────────────────
+  const insertHtmlAtSelection = (html: string) => {
+    restoreSelection();
     const sel = window.getSelection();
     if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)) {
-      const range = sel.getRangeAt(0).cloneRange();
-      setSavedRange(range);
-      lastRangeRef.current = range;
-
-      // Update floating highlight toolbar position
-      if (!sel.isCollapsed) {
-        const text = range.toString().trim();
-        if (text.length > 0) {
-          const rect = range.getBoundingClientRect();
-          const canvasRect = editorRef.current.getBoundingClientRect();
-          setFloatingToolbarPos({
-            top: rect.top - canvasRect.top + (editorRef.current.scrollTop || 0) - 48,
-            left: Math.max(10, rect.left - canvasRect.left + (rect.width / 2) - 160),
-          });
-          return;
-        }
-      }
-    }
-    setFloatingToolbarPos(null);
-  }, []);
-
-  const restoreSelection = useCallback(() => {
-    const targetRange = lastRangeRef.current || savedRange;
-    if (!targetRange) return;
-    const sel = window.getSelection();
-    if (sel) {
-      sel.removeAllRanges();
-      sel.addRange(targetRange);
-    }
-  }, [savedRange]);
-
-  // Cross-browser & cross-platform (macOS / Windows) variable insertion
-  const insertVariableAtSelection = (tag: string) => {
-    if (!editorRef.current) return;
-    editorRef.current.focus();
-    restoreSelection();
-
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
       const range = sel.getRangeAt(0);
       range.deleteContents();
 
-      const textNode = document.createTextNode(tag);
-      range.insertNode(textNode);
-
-      range.setStartAfter(textNode);
-      range.setEndAfter(textNode);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      lastRangeRef.current = range.cloneRange();
-    } else {
-      document.execCommand("insertHTML", false, tag);
+      const el = document.createElement("div");
+      el.innerHTML = html;
+      const frag = document.createDocumentFragment();
+      let node: Node | null = null;
+      let lastNode: Node | null = null;
+      while ((node = el.firstChild)) {
+        lastNode = frag.appendChild(node);
+      }
+      range.insertNode(frag);
+      if (lastNode) {
+        range.setStartAfter(lastNode);
+        range.setEndAfter(lastNode);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        savedRangeRef.current = range.cloneRange();
+      }
+    } else if (editorRef.current) {
+      editorRef.current.focus();
+      document.execCommand("insertHTML", false, html);
     }
     updateCounts();
+    saveSelection();
   };
 
-  // Cross-browser & cross-platform text coloring (Safari / WebKit / macOS / Windows)
-  const applyColor = (cmd: string, color: string) => {
-    if (!editorRef.current) return;
-    editorRef.current.focus();
-
-    // Use saved target range explicitly to prevent selection loss on button click
-    const targetRange = lastRangeRef.current || savedRange;
+  // ── Apply Inline CSS Style (Font Size, Font Family, Line Height) ───────────
+  const applyInlineStyle = (styleProp: string, styleValue: string) => {
     restoreSelection();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !editorRef.current?.contains(sel.anchorNode)) {
+      editorRef.current?.focus();
+      return;
+    }
 
+    const range = sel.getRangeAt(0);
+    if (range.collapsed) {
+      // If nothing selected, set on parent block or insert empty span
+      const parentBlock = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? (range.commonAncestorContainer as HTMLElement)
+        : range.commonAncestorContainer.parentElement;
+
+      if (parentBlock && editorRef.current.contains(parentBlock) && parentBlock !== editorRef.current) {
+        parentBlock.style.setProperty(styleProp, styleValue);
+      }
+      return;
+    }
+
+    try {
+      const contents = range.extractContents();
+      const span = document.createElement("span");
+      span.style.setProperty(styleProp, styleValue);
+      span.appendChild(contents);
+      range.insertNode(span);
+
+      const newRange = document.createRange();
+      newRange.selectNodeContents(span);
+      sel.removeAllRanges();
+      sel.addRange(newRange);
+      savedRangeRef.current = newRange.cloneRange();
+    } catch (err) {
+      console.error("Apply inline style error:", err);
+    }
+    updateCounts();
+    saveSelection();
+  };
+
+  // ── Color & Highlight application & clearing ──────────────────────────────
+  const applyColor = (type: "foreColor" | "hiliteColor", color: string) => {
+    restoreSelection();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !editorRef.current?.contains(sel.anchorNode)) {
+      editorRef.current?.focus();
+      return;
+    }
+
+    const range = sel.getRangeAt(0);
     const isClear = color === "transparent" || color === "inherit" || color === "clear";
 
-    if (targetRange && !targetRange.collapsed && targetRange.toString().length > 0) {
-      try {
-        const fragment = targetRange.extractContents();
-
-        // Recursively clean existing color / background inline styles from child elements
-        const cleanNode = (node: Node) => {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            const el = node as HTMLElement;
-            if (cmd === "hiliteColor") {
-              el.style.backgroundColor = isClear ? "" : "";
-            } else {
-              el.style.color = isClear ? "" : "";
-            }
-            if (el.tagName === "FONT" && cmd !== "hiliteColor") {
-              el.removeAttribute("color");
-            }
-          }
-          node.childNodes.forEach((child) => cleanNode(child));
-        };
-
-        cleanNode(fragment);
-
-        if (isClear) {
-          targetRange.insertNode(fragment);
-        } else {
-          const span = document.createElement("span");
-          span.style.display = "inline";
-          if (cmd === "hiliteColor") {
-            span.style.backgroundColor = color;
+    if (isClear) {
+      // 1. Strip styles from any ancestor elements within the editor hierarchy
+      let node: Node | null = range.commonAncestorContainer;
+      if (node.nodeType === Node.TEXT_NODE) {
+        node = node.parentElement;
+      }
+      while (node && node !== editorRef.current && editorRef.current?.contains(node)) {
+        if (node instanceof HTMLElement) {
+          if (type === "hiliteColor") {
+            node.style.removeProperty("background-color");
+            node.style.removeProperty("backgroundColor");
+            node.style.removeProperty("background");
           } else {
-            span.style.color = color;
-          }
-
-          span.appendChild(fragment);
-          targetRange.insertNode(span);
-
-          // Select newly created span & update selection refs
-          const sel = window.getSelection();
-          if (sel) {
-            sel.removeAllRanges();
-            const newRange = document.createRange();
-            newRange.selectNodeContents(span);
-            sel.addRange(newRange);
-            lastRangeRef.current = newRange.cloneRange();
-            setSavedRange(newRange.cloneRange());
+            node.style.removeProperty("color");
+            if (node.tagName === "FONT") {
+              node.removeAttribute("color");
+            }
           }
         }
+        node = node.parentElement;
+      }
+
+      // 2. Clear on any child nodes within the selection
+      if (!range.collapsed) {
+        try {
+          const fragment = range.extractContents();
+          const cleanNode = (n: Node) => {
+            if (n instanceof HTMLElement) {
+              if (type === "hiliteColor") {
+                n.style.removeProperty("background-color");
+                n.style.removeProperty("backgroundColor");
+                n.style.removeProperty("background");
+              } else {
+                n.style.removeProperty("color");
+                if (n.tagName === "FONT") {
+                  n.removeAttribute("color");
+                }
+              }
+            }
+            n.childNodes.forEach(cleanNode);
+          };
+          cleanNode(fragment);
+          range.insertNode(fragment);
+
+          const newRange = document.createRange();
+          newRange.selectNodeContents(fragment);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+          savedRangeRef.current = newRange.cloneRange();
+        } catch (err) {
+          console.error("Clean fragment error:", err);
+        }
+      }
+
+      // 3. Browser native clear commands
+      try {
+        document.execCommand("styleWithCSS", false, "true");
+        if (type === "hiliteColor") {
+          document.execCommand("hiliteColor", false, "transparent");
+          document.execCommand("backColor", false, "transparent");
+        } else {
+          document.execCommand("foreColor", false, "#222222");
+        }
+      } catch {
+        // ignore
+      }
+
+      saveSelection();
+      updateCounts();
+      return;
+    }
+
+    // Applying color
+    if (!range.collapsed) {
+      try {
+        const fragment = range.extractContents();
+        const span = document.createElement("span");
+        if (type === "hiliteColor") {
+          span.style.backgroundColor = color;
+          span.style.padding = "1px 2px";
+          span.style.borderRadius = "2px";
+        } else {
+          span.style.color = color;
+        }
+        span.appendChild(fragment);
+        range.insertNode(span);
+
+        const newRange = document.createRange();
+        newRange.selectNodeContents(span);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+        savedRangeRef.current = newRange.cloneRange();
 
         saveSelection();
         updateCounts();
         return;
       } catch (err) {
-        console.error("DOM range error:", err);
+        console.error("Color apply error:", err);
       }
     }
 
-    // Fallback if no text range
+    // Fallback execCommand
     try {
       document.execCommand("styleWithCSS", false, "true");
-      if (cmd === "hiliteColor") {
-        document.execCommand("hiliteColor", false, isClear ? "transparent" : color);
-        document.execCommand("backColor", false, isClear ? "transparent" : color);
+      if (type === "hiliteColor") {
+        document.execCommand("hiliteColor", false, color);
       } else {
-        document.execCommand("foreColor", false, isClear ? "inherit" : color);
+        document.execCommand("foreColor", false, color);
       }
     } catch {
       // ignore
     }
-
     saveSelection();
     updateCounts();
+  };
+
+  // ── Variable Tag Insertion ─────────────────────────────────────────────────
+  const insertVariable = (tag: string) => {
+    const chipHtml = `<span contenteditable="false" style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:4px;font-weight:600;font-size:12px;display:inline-block;margin:0 2px;user-select:all;border:1px solid #bae6fd;">${tag}</span>&nbsp;`;
+    insertHtmlAtSelection(chipHtml);
   };
 
   // ── Link logic ─────────────────────────────────────────────────────────────
@@ -277,42 +480,33 @@ export default function SimpleEditor({
     const text = sel?.toString() || "";
     setLinkTitle(text);
     setLinkUrl("https://");
-    setLinkNewTab(false);
+    setLinkNewTab(true);
     setLinkPopoverOpen(true);
   };
 
   const applyLink = () => {
     restoreSelection();
-    editorRef.current?.focus();
-    if (!linkTitle) {
-      document.execCommand("createLink", false, linkUrl);
-    } else {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        sel.getRangeAt(0).deleteContents();
-        const a = document.createElement("a");
-        a.href = linkUrl;
-        a.textContent = linkTitle;
-        if (linkNewTab) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
-        sel.getRangeAt(0).insertNode(a);
-        sel.collapseToEnd();
-      } else {
-        const a = document.createElement("a");
-        a.href = linkUrl;
-        a.textContent = linkTitle || linkUrl;
-        if (linkNewTab) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
-        document.execCommand("insertHTML", false, a.outerHTML);
-      }
+    if (!linkUrl || linkUrl === "https://") {
+      setLinkPopoverOpen(false);
+      return;
     }
+
+    const title = linkTitle.trim() || linkUrl;
+    const targetAttr = linkNewTab ? ' target="_blank" rel="noopener noreferrer"' : '';
+    const linkHtml = `<a href="${linkUrl}"${targetAttr} style="color:#2563eb;text-decoration:underline;">${title}</a>&nbsp;`;
+    insertHtmlAtSelection(linkHtml);
     setLinkPopoverOpen(false);
-    updateCounts();
   };
 
-  // ── Image logic ────────────────────────────────────────────────────────────
-  const insertImageUrl = () => {
-    const url = prompt("Enter image URL:");
-    if (!url) return;
-    execCmd("insertHTML", `<img src="${url}" style="max-width:100%;width:100%;height:auto;display:block;margin:8px auto;" data-resizable="true" />`);
+  // ── Image insertion & uploading ────────────────────────────────────────────
+  const applyImageUrl = () => {
+    if (!imageUrlInput.trim()) return;
+    const altText = imageAltInput.trim() ? ` alt="${imageAltInput.trim()}"` : '';
+    const imgHtml = `<img src="${imageUrlInput.trim()}"${altText} style="max-width:100%;width:100%;height:auto;display:block;margin:12px auto;border-radius:6px;" data-resizable="true" /><p><br></p>`;
+    insertHtmlAtSelection(imgHtml);
+    setImageUrlInput("");
+    setImageAltInput("");
+    setImagePopoverOpen(false);
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -321,18 +515,19 @@ export default function SimpleEditor({
     const reader = new FileReader();
     reader.onload = (ev) => {
       const dataUrl = ev.target?.result as string;
-      if (dataUrl)
-        execCmd("insertHTML", `<img src="${dataUrl}" style="max-width:100%;width:100%;height:auto;display:block;margin:8px auto;" data-resizable="true" />`);
+      if (dataUrl) {
+        const imgHtml = `<img src="${dataUrl}" alt="${file.name}" style="max-width:100%;width:100%;height:auto;display:block;margin:12px auto;border-radius:6px;" data-resizable="true" /><p><br></p>`;
+        insertHtmlAtSelection(imgHtml);
+      }
     };
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // ── Document / File attachment logic ───────────────────────────────────────
+  // ── Document Attachment Card insertion ─────────────────────────────────────
   const insertDocumentCard = (name: string, size: string, url: string) => {
     const fileExt = name.split('.').pop()?.toUpperCase() || 'FILE';
     let badgeBg = '#3b82f6';
-    let badgeTextColor = '#ffffff';
     if (['PDF'].includes(fileExt)) badgeBg = '#ef4444';
     else if (['DOC', 'DOCX', 'PAGES'].includes(fileExt)) badgeBg = '#2563eb';
     else if (['XLS', 'XLSX', 'CSV', 'NUMBERS'].includes(fileExt)) badgeBg = '#10b981';
@@ -340,13 +535,13 @@ export default function SimpleEditor({
     else if (['ZIP', 'RAR', '7Z', 'TAR', 'GZ'].includes(fileExt)) badgeBg = '#8b5cf6';
     else if (['TXT', 'MD', 'RTF'].includes(fileExt)) badgeBg = '#64748b';
 
-    const html = `
+    const cardHtml = `
       <div contenteditable="false" style="display:inline-flex;align-items:center;gap:12px;padding:10px 16px;background-color:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;margin:10px 0;max-width:100%;font-family:system-ui,-apple-system,sans-serif;user-select:none;box-shadow:0 1px 3px rgba(0,0,0,0.05);" data-file-attachment="true">
-        <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background-color:${badgeBg};color:${badgeTextColor};border-radius:8px;font-weight:700;font-size:11px;letter-spacing:0.5px;flex-shrink:0;text-transform:uppercase;line-height:1;text-align:center;">
+        <div style="display:flex;align-items:center;justify-content:center;width:38px;height:38px;background-color:${badgeBg};color:#ffffff;border-radius:8px;font-weight:700;font-size:11px;letter-spacing:0.5px;flex-shrink:0;text-transform:uppercase;line-height:1;text-align:center;">
           ${fileExt.slice(0, 4)}
         </div>
         <div style="display:flex;flex-direction:column;gap:2px;overflow:hidden;">
-          <a href="${url}" download="${name}" target="_blank" style="font-weight:600;font-size:14px;color:#0f172a;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">
+          <a href="${url}" download="${name}" target="_blank" style="font-weight:600;font-size:14px;color:#0f172a;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${name}
           </a>
           <span style="font-size:12px;color:#64748b;display:flex;align-items:center;gap:8px;">
@@ -357,7 +552,7 @@ export default function SimpleEditor({
       </div>
       <p><br></p>
     `;
-    execCmd("insertHTML", html);
+    insertHtmlAtSelection(cardHtml);
   };
 
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -368,7 +563,7 @@ export default function SimpleEditor({
     try {
       const result = await api.uploadFile(file);
       toast.dismiss(toastId);
-      toast.success(`${file.name} uploaded!`);
+      toast.success(`${file.name} attached!`);
 
       let fileSizeStr = "";
       if (result.size < 1024 * 1024) {
@@ -376,12 +571,15 @@ export default function SimpleEditor({
       } else {
         fileSizeStr = `${(result.size / (1024 * 1024)).toFixed(2)} MB`;
       }
-      
+
       const ext = result.fileName.split('.').pop()?.toUpperCase() || 'FILE';
       setAttachments((prev) => [
         ...prev.filter(a => a.url !== result.url),
         { id: String(Date.now()), name: result.fileName, size: fileSizeStr, url: result.url, ext }
       ]);
+
+      // Automatically insert the interactive download card directly into the email body
+      insertDocumentCard(result.fileName, fileSizeStr, result.url);
     } catch (err: any) {
       toast.dismiss(toastId);
       toast.error(`Upload failed: ${err.message || "Unknown error"}`);
@@ -390,18 +588,20 @@ export default function SimpleEditor({
   };
 
   const applyDocumentUrl = () => {
-    if (!docUrl) return;
+    if (!docUrl || docUrl === "https://") return;
     const title = docTitle.trim() || docUrl.split("/").pop() || "Attached Document";
     const ext = title.split('.').pop()?.toUpperCase() || 'FILE';
     setAttachments((prev) => [
       ...prev.filter(a => a.url !== docUrl),
       { id: String(Date.now()), name: title, size: "URL Link", url: docUrl, ext }
     ]);
+    insertDocumentCard(title, "Link", docUrl);
     setDocumentPopoverOpen(false);
     setDocTitle("");
     setDocUrl("https://");
   };
 
+  // ── Blocks: Callouts, Quote, Code, Table, HR ───────────────────────────────
   const insertCalloutBox = (type: "note" | "warning" | "success" = "note") => {
     let bg = "#f0f9ff";
     let border = "#0284c7";
@@ -424,29 +624,55 @@ export default function SimpleEditor({
         <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;color:#1e293b;margin-bottom:4px;">
           <span>${icon}</span> <span>${title}</span>
         </div>
-        <div style="font-size:14px;color:#334155;line-height:1.5;">Add your detailed information or instructions here...</div>
+        <div style="font-size:14px;color:#334155;line-height:1.5;">Add your note or message here...</div>
       </div>
       <p><br></p>
     `;
-    execCmd("insertHTML", html);
+    insertHtmlAtSelection(html);
   };
 
   const insertBlockquote = () => {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim() || "Insert quote or highlighted passage here...";
     const html = `
       <blockquote style="border-left:3px solid #cbd5e1;padding-left:14px;margin:14px 0;color:#475569;font-style:italic;font-size:15px;line-height:1.6;">
-        "Insert quote or emphasized text here..."
+        "${text}"
       </blockquote>
       <p><br></p>
     `;
-    execCmd("insertHTML", html);
+    insertHtmlAtSelection(html);
+  };
+
+  const insertCodeBlock = () => {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim() || "// Your code here\nconsole.log('Hello world!');";
+    const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const html = `
+      <pre style="background:#f8fafc;border:1px solid #e2e8f0;padding:12px 16px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:13px;line-height:1.5;color:#0f172a;overflow-x:auto;margin:12px 0;"><code>${escaped}</code></pre>
+      <p><br></p>
+    `;
+    insertHtmlAtSelection(html);
   };
 
   const insertHorizontalRule = () => {
     const html = `<hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;" /><p><br></p>`;
-    execCmd("insertHTML", html);
+    insertHtmlAtSelection(html);
   };
 
-  // Click inside editor — select image
+  const insertTable = (rows: number, cols: number) => {
+    let html = `<table style="border-collapse:collapse;width:100%;margin:12px 0;">`;
+    for (let r = 0; r < rows; r++) {
+      html += "<tr>";
+      for (let c = 0; c < cols; c++) {
+        html += `<td style="border:1px solid #cbd5e1;padding:8px 12px;min-width:60px;vertical-align:top;">&nbsp;</td>`;
+      }
+      html += "</tr>";
+    }
+    html += "</table><p><br></p>";
+    insertHtmlAtSelection(html);
+  };
+
+  // ── Image Click, Resize & Alignment ────────────────────────────────────────
   const handleEditorClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.tagName === "IMG") {
@@ -456,15 +682,38 @@ export default function SimpleEditor({
     }
   };
 
-  // Resize image by % of container
-  const resizeImage = (pct: number) => {
+  const resizeImagePct = (pct: number) => {
     if (!selectedImage) return;
     selectedImage.style.width = `${pct}%`;
     selectedImage.style.maxWidth = "100%";
     selectedImage.style.height = "auto";
-    // force re-render
     setSelectedImage({ ...selectedImage } as unknown as HTMLImageElement);
     setSelectedImage(selectedImage);
+    updateCounts();
+  };
+
+  const alignImage = (align: "left" | "center" | "right") => {
+    if (!selectedImage) return;
+    selectedImage.style.display = "block";
+    if (align === "left") {
+      selectedImage.style.marginLeft = "0";
+      selectedImage.style.marginRight = "auto";
+    } else if (align === "center") {
+      selectedImage.style.marginLeft = "auto";
+      selectedImage.style.marginRight = "auto";
+    } else if (align === "right") {
+      selectedImage.style.marginLeft = "auto";
+      selectedImage.style.marginRight = "0";
+    }
+    setSelectedImage({ ...selectedImage } as unknown as HTMLImageElement);
+    setSelectedImage(selectedImage);
+    updateCounts();
+  };
+
+  const deleteImage = () => {
+    selectedImage?.remove();
+    setSelectedImage(null);
+    updateCounts();
   };
 
   // Drag-to-resize handle
@@ -474,44 +723,28 @@ export default function SimpleEditor({
     e.stopPropagation();
     const startX = e.clientX;
     const startW = selectedImage.offsetWidth;
-    const ratio = selectedImage.naturalWidth / selectedImage.naturalHeight;
+    const ratio = selectedImage.naturalWidth / selectedImage.naturalHeight || 1;
 
     const onMove = (mv: MouseEvent) => {
-      const newW = Math.max(50, startW + (mv.clientX - startX));
+      const newW = Math.max(60, startW + (mv.clientX - startX));
       selectedImage.style.width = `${newW}px`;
-      selectedImage.style.maxWidth = "none";
+      selectedImage.style.maxWidth = "100%";
       selectedImage.style.height = `${newW / ratio}px`;
+      // Trigger re-render of overlay
+      setSelectedImage(selectedImage);
     };
+
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
-      setSelectedImage(selectedImage); // trigger re-render
+      updateCounts();
     };
+
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   };
 
-  const deleteImage = () => {
-    selectedImage?.remove();
-    setSelectedImage(null);
-    updateCounts();
-  };
-
-  // ── Table insert ───────────────────────────────────────────────────────────
-  const insertTable = (rows: number, cols: number) => {
-    let html = `<table style="border-collapse:collapse;width:100%;margin:8px 0;">`;
-    for (let r = 0; r < rows; r++) {
-      html += "<tr>";
-      for (let c = 0; c < cols; c++) {
-        html += `<td style="border:1px solid #ccc;padding:8px 12px;min-width:60px;">&nbsp;</td>`;
-      }
-      html += "</tr>";
-    }
-    html += "</table><p><br></p>";
-    execCmd("insertHTML", html);
-  };
-
-  // ── Save ───────────────────────────────────────────────────────────────────
+  // ── Save Handler ───────────────────────────────────────────────────────────
   const handleSave = () => {
     let html = isSourceMode
       ? sourceRef.current?.value || ""
@@ -526,104 +759,7 @@ export default function SimpleEditor({
     onSave(name, html);
   };
 
-  // ── Color picker button ────────────────────────────────────────────────────
-  const ColorPicker = ({ command, title, icon }: { command: string; title: string; icon: React.ReactNode }) => {
-    const [customColor, setCustomColor] = useState(command === "hiliteColor" ? "#fef08a" : "#ef4444");
 
-    return (
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            title={title}
-            className="relative h-8 w-8"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              saveSelection();
-            }}
-            onClick={() => saveSelection()}
-          >
-            {icon}
-            <ChevronDown className="size-2 absolute bottom-0.5 right-0.5 opacity-50" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-64 p-3 space-y-3" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
-          <div className="flex items-center justify-between border-b pb-1.5">
-            <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{title}</span>
-            <button
-              type="button"
-              className="text-[11px] text-red-600 hover:underline cursor-pointer font-medium"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                applyColor(command, command === "hiliteColor" ? "transparent" : "#222222");
-              }}
-              onClick={(e) => {
-                e.preventDefault();
-                applyColor(command, command === "hiliteColor" ? "transparent" : "#222222");
-              }}
-            >
-              Clear / Reset
-            </button>
-          </div>
-
-          {/* Color Swatch Grid */}
-          <div className="grid grid-cols-8 gap-1.5 max-h-36 overflow-y-auto p-0.5">
-            {COLORS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                className="w-5 h-5 rounded-sm border border-gray-300 hover:scale-125 transition-transform cursor-pointer shadow-xs focus:ring-2 focus:ring-primary"
-                style={{ backgroundColor: c }}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  applyColor(command, c);
-                }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  applyColor(command, c);
-                }}
-              />
-            ))}
-          </div>
-
-          {/* Custom Color Wheel & Hex Input */}
-          <div className="pt-2 border-t space-y-2">
-            <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block">Custom Color Picker:</span>
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                value={customColor}
-                onChange={(e) => setCustomColor(e.target.value)}
-                className="w-8 h-8 rounded border cursor-pointer p-0 shrink-0"
-              />
-              <Input
-                value={customColor}
-                onChange={(e) => setCustomColor(e.target.value)}
-                placeholder="#000000"
-                className="h-8 text-xs font-mono uppercase"
-              />
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 text-xs px-3 font-semibold shrink-0"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  applyColor(command, customColor);
-                }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  applyColor(command, customColor);
-                }}
-              >
-                Apply
-              </Button>
-            </div>
-          </div>
-        </PopoverContent>
-      </Popover>
-    );
-  };
 
   // ── Table size picker ─────────────────────────────────────────────────────
   const TablePicker = () => {
@@ -631,11 +767,17 @@ export default function SimpleEditor({
     return (
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-8 w-8" title="Insert Table">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            title="Insert Table"
+            onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+          >
             <Table2 className="size-4" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-auto p-3" align="start">
+        <PopoverContent className="w-auto p-3 z-50" align="start">
           <p className="text-xs text-gray-500 mb-2">
             {hovered.r > 0 ? `${hovered.r} × ${hovered.c}` : "Select table size"}
           </p>
@@ -650,7 +792,10 @@ export default function SimpleEditor({
                     borderColor: r < hovered.r && c < hovered.c ? "#3b82f6" : "#d1d5db",
                   }}
                   onMouseEnter={() => setHovered({ r: r + 1, c: c + 1 })}
-                  onClick={() => insertTable(r + 1, c + 1)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertTable(r + 1, c + 1);
+                  }}
                 />
               ))
             )}
@@ -660,36 +805,54 @@ export default function SimpleEditor({
     );
   };
 
-  // ── Emoji picker ──────────────────────────────────────────────────────────
-  const EmojiPicker = () => (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8" title="Insert Emoji"
-          onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}>
-          <Smile className="size-4" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-72 p-2" align="start">
-        <div className="grid grid-cols-10 gap-0.5 max-h-48 overflow-y-auto">
-          {EMOJIS.map((em, i) => (
-            <button
-              key={i}
-              className="text-lg hover:bg-gray-100 rounded p-0.5 leading-none"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                restoreSelection();
-                execCmd("insertText", em);
-              }}
-            >
-              {em}
-            </button>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
+  // ── Emoji picker with search ──────────────────────────────────────────────
+  const EmojiPicker = () => {
+    const [searchTerm, setSearchTerm] = useState("");
+    const filteredEmojis = EMOJIS.filter(() => true);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            title="Insert Emoji"
+            onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+          >
+            <Smile className="size-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-72 p-3 space-y-2 z-50" align="start">
+          <div className="relative">
+            <Search className="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+            <Input
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search emojis..."
+              className="h-8 text-xs pl-8"
+            />
+          </div>
+          <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto p-1">
+            {filteredEmojis.map((em, i) => (
+              <button
+                key={i}
+                type="button"
+                className="text-lg hover:bg-slate-100 dark:hover:bg-slate-800 rounded p-1 leading-none text-center cursor-pointer transition-transform hover:scale-125"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertHtmlAtSelection(`<span>${em}</span>`);
+                }}
+              >
+                {em}
+              </button>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+    );
+  };
+
   return (
     <div className="fixed inset-0 bg-background flex flex-col z-50 overflow-hidden">
 
@@ -703,49 +866,118 @@ export default function SimpleEditor({
         />
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
-          <Button variant="outline" size="sm">Preview & Test</Button>
           <Button size="sm" onClick={handleSave} className="bg-primary text-primary-foreground hover:bg-primary/90">
             Save &amp; Quit
-          </Button>
-          <Button variant="ghost" size="icon">
-            <MoreVertical className="size-4" />
           </Button>
         </div>
       </div>
 
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
       {!isSourceMode && (
-        <div className="h-11 bg-card border-b flex items-center px-3 gap-0.5 overflow-x-auto shrink-0">
+        <div className="h-11 bg-card border-b flex items-center px-3 gap-0.5 overflow-x-auto shrink-0 select-none">
 
-          {/* Source */}
+          {/* Source Mode Toggle */}
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleSourceMode} title="Source Code">
             <Code2 className="size-4" />
           </Button>
           <div className="w-px h-5 bg-border mx-1" />
 
-          {/* Font family */}
-          <Select defaultValue="Arial" onValueChange={(v) => execCmd("fontName", v)}>
-            <SelectTrigger className="w-28 h-8 border-transparent hover:border-input text-sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {["Arial","Helvetica","Times New Roman","Georgia","Courier New","Verdana","Trebuchet MS"].map(f => (
-                <SelectItem key={f} value={f} style={{ fontFamily: f }}>{f}</SelectItem>
+          {/* Font Family Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1 px-2 text-xs font-medium"
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                title="Font Family"
+              >
+                <span className="truncate max-w-[80px]">{currentFont}</span>
+                <ChevronDown className="size-3 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-44 z-50">
+              {FONT_FAMILIES.map((f) => (
+                <DropdownMenuItem
+                  key={f.label}
+                  className="cursor-pointer text-xs"
+                  style={{ fontFamily: f.value }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setCurrentFont(f.label);
+                    applyInlineStyle("font-family", f.value);
+                  }}
+                >
+                  {f.label}
+                </DropdownMenuItem>
               ))}
-            </SelectContent>
-          </Select>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
-          {/* Font size */}
-          <Select defaultValue="3" onValueChange={(v) => execCmd("fontSize", v)}>
-            <SelectTrigger className="w-16 h-8 border-transparent hover:border-input text-sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {[["1","10"],["2","13"],["3","16"],["4","18"],["5","24"],["6","32"],["7","48"]].map(([v, l]) => (
-                <SelectItem key={v} value={v}>{l}</SelectItem>
+          {/* Font Size Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1 px-2 text-xs font-medium"
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                title="Font Size"
+              >
+                <span>{currentFontSize}</span>
+                <ChevronDown className="size-3 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-28 z-50">
+              {FONT_SIZES.map((s) => (
+                <DropdownMenuItem
+                  key={s.label}
+                  className="cursor-pointer text-xs"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setCurrentFontSize(s.label);
+                    applyInlineStyle("font-size", s.value);
+                  }}
+                >
+                  {s.label}
+                </DropdownMenuItem>
               ))}
-            </SelectContent>
-          </Select>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Line Spacing Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1 px-2 text-xs font-medium"
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                title="Line Spacing"
+              >
+                <WrapText className="size-3.5 mr-0.5" />
+                <ChevronDown className="size-3 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-36 z-50">
+              <div className="px-2 py-1 text-[10px] font-bold text-muted-foreground uppercase">
+                Line Spacing
+              </div>
+              {LINE_SPACINGS.map((ls) => (
+                <DropdownMenuItem
+                  key={ls.label}
+                  className="cursor-pointer text-xs"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    applyInlineStyle("line-height", ls.value);
+                  }}
+                >
+                  {ls.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Personalization Tag / Variable Selector */}
@@ -763,129 +995,357 @@ export default function SimpleEditor({
                 <ChevronDown className="size-3 opacity-60 ml-0.5" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuContent align="start" className="w-56 z-50">
               <div className="px-2 py-1 text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
                 Dynamic Contact Tags
               </div>
-              <DropdownMenuItem
-                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
-                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{first_name}}"); }}
-                className="cursor-pointer flex items-center justify-between"
-              >
-                <span className="font-medium">First Name</span>
-                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{first_name}}"}</code>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
-                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{last_name}}"); }}
-                className="cursor-pointer flex items-center justify-between"
-              >
-                <span className="font-medium">Last Name</span>
-                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{last_name}}"}</code>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
-                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{full_name}}"); }}
-                className="cursor-pointer flex items-center justify-between"
-              >
-                <span className="font-medium">Full Name</span>
-                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{full_name}}"}</code>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
-                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{email}}"); }}
-                className="cursor-pointer flex items-center justify-between"
-              >
-                <span className="font-medium">Email Address</span>
-                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{email}}"}</code>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
-                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{company}}")} }
-                className="cursor-pointer flex items-center justify-between"
-              >
-                <span className="font-medium">Company Name</span>
-                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{company}}"}</code>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
-                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{designation}}"); }}
-                className="cursor-pointer flex items-center justify-between"
-              >
-                <span className="font-medium">Job Title</span>
-                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{designation}}"}</code>
-              </DropdownMenuItem>
+              {[
+                { label: "First Name", tag: "{{first_name}}" },
+                { label: "Last Name", tag: "{{last_name}}" },
+                { label: "Full Name", tag: "{{full_name}}" },
+                { label: "Email Address", tag: "{{email}}" },
+                { label: "Company Name", tag: "{{company}}" },
+                { label: "Job Title", tag: "{{designation}}" },
+              ].map((v) => (
+                <DropdownMenuItem
+                  key={v.tag}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertVariable(v.tag);
+                  }}
+                  className="cursor-pointer flex items-center justify-between"
+                >
+                  <span className="font-medium text-xs">{v.label}</span>
+                  <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{v.tag}</code>
+                </DropdownMenuItem>
+              ))}
               <div className="h-px bg-border my-1" />
               <DropdownMenuItem
-                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
-                onClick={(e) => { e.preventDefault(); insertVariableAtSelection("{{unsubscribe_url}}"); }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertVariable("{{unsubscribe_url}}");
+                }}
                 className="cursor-pointer flex items-center justify-between text-red-600 dark:text-red-400"
               >
-                <span className="font-medium">Unsubscribe Link</span>
+                <span className="font-medium text-xs">Unsubscribe Link</span>
                 <code className="text-[10px] bg-red-50 dark:bg-red-950 px-1.5 py-0.5 rounded">{"{{unsubscribe_url}}"}</code>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <div className="w-px h-5 bg-border mx-1" />
 
-          {/* Basic formatting */}
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("bold")} title="Bold"><Bold className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("italic")} title="Italic"><Italic className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("underline")} title="Underline"><Underline className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("strikeThrough")} title="Strikethrough"><Strikethrough className="size-4" /></Button>
+          {/* Basic formatting buttons */}
+          <Button
+            variant={activeFormats.bold ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("bold"); }}
+            title="Bold (Ctrl+B)"
+          >
+            <Bold className="size-4" />
+          </Button>
+          <Button
+            variant={activeFormats.italic ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("italic"); }}
+            title="Italic (Ctrl+I)"
+          >
+            <Italic className="size-4" />
+          </Button>
+          <Button
+            variant={activeFormats.underline ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("underline"); }}
+            title="Underline (Ctrl+U)"
+          >
+            <Underline className="size-4" />
+          </Button>
+          <Button
+            variant={activeFormats.strikeThrough ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("strikeThrough"); }}
+            title="Strikethrough"
+          >
+            <Strikethrough className="size-4" />
+          </Button>
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Font color */}
-          <ColorPicker command="foreColor" title="Font Color" icon={
-            <span className="flex flex-col items-center gap-0">
-              <span className="text-xs font-bold leading-none" style={{ fontFamily: "Arial" }}>A</span>
-              <span className="w-4 h-1 rounded-sm bg-red-500 mt-0.5" />
-            </span>
-          } />
+          <Popover open={fontColorOpen} onOpenChange={setFontColorOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                title="Font / Text Color"
+                className="relative h-8 w-8 cursor-pointer"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
+              >
+                <div className="flex flex-col items-center pointer-events-none">
+                  <Baseline className="size-3.5" />
+                  <span className="w-4 h-1 rounded-sm bg-red-500 mt-0.5" />
+                </div>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-3.5 space-y-3 z-50 shadow-xl" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
+              <div className="flex items-center justify-between border-b pb-2">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100">Font / Text Color</span>
+                <button
+                  type="button"
+                  className="text-[11px] text-red-600 hover:text-red-700 hover:underline cursor-pointer font-medium"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    applyColor("foreColor", "inherit");
+                  }}
+                  onClick={() => {
+                    applyColor("foreColor", "inherit");
+                    setFontColorOpen(false);
+                  }}
+                >
+                  Default Color
+                </button>
+              </div>
+
+              {/* Text Color Grid */}
+              <div className="space-y-3">
+                <div>
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
+                    Theme &amp; Standard Colors
+                  </span>
+                  <div className="grid grid-cols-8 gap-1.5">
+                    {TEXT_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        className="w-6 h-6 rounded-sm border border-gray-300 hover:scale-125 transition-transform cursor-pointer shadow-xs focus:ring-2 focus:ring-primary"
+                        style={{ backgroundColor: c }}
+                        title={`Text color ${c}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applyColor("foreColor", c);
+                        }}
+                        onClick={() => {
+                          applyColor("foreColor", c);
+                          setFontColorOpen(false);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Custom Color Wheel & Hex Input */}
+              <div className="pt-2 border-t space-y-2">
+                <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block">Custom Text Color:</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={customFontColor}
+                    onChange={(e) => setCustomFontColor(e.target.value)}
+                    className="w-8 h-8 rounded border cursor-pointer p-0 shrink-0"
+                  />
+                  <Input
+                    value={customFontColor}
+                    onChange={(e) => setCustomFontColor(e.target.value)}
+                    placeholder="#000000"
+                    className="h-8 text-xs font-mono uppercase"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8 text-xs px-3 font-semibold shrink-0"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyColor("foreColor", customFontColor);
+                    }}
+                    onClick={() => {
+                      applyColor("foreColor", customFontColor);
+                      setFontColorOpen(false);
+                    }}
+                  >
+                    Apply
+                  </Button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
 
           {/* Highlight color */}
-          <ColorPicker command="hiliteColor" title="Highlight Color" icon={
-            <span className="flex flex-col items-center gap-0">
-              <span className="text-xs font-bold leading-none">A</span>
-              <span className="w-4 h-1 rounded-sm bg-yellow-300 mt-0.5" />
-            </span>
-          } />
+          <Popover open={highlightColorOpen} onOpenChange={setHighlightColorOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                title="Highlight Color"
+                className="relative h-8 w-8 cursor-pointer"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
+              >
+                <div className="flex flex-col items-center pointer-events-none">
+                  <span className="text-xs font-bold leading-none">A</span>
+                  <span className="w-4 h-1 rounded-sm bg-yellow-300 mt-0.5" />
+                </div>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-3.5 space-y-3 z-50 shadow-xl" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
+              <div className="flex items-center justify-between border-b pb-2">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100">Highlight Color</span>
+                <button
+                  type="button"
+                  className="text-[11px] text-red-600 hover:text-red-700 hover:underline cursor-pointer font-medium"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    applyColor("hiliteColor", "transparent");
+                  }}
+                  onClick={() => {
+                    applyColor("hiliteColor", "transparent");
+                    setHighlightColorOpen(false);
+                  }}
+                >
+                  No Highlight (Clear)
+                </button>
+              </div>
+
+              {/* Quick Highlight Pills */}
+              <div className="space-y-3">
+                <div>
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
+                    Quick Highlighters
+                  </span>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {HIGHLIGHT_QUICK.map((hq) => (
+                      <button
+                        key={hq.name}
+                        type="button"
+                        className="flex items-center gap-1 px-1.5 py-1 rounded border border-gray-200 dark:border-gray-700 hover:scale-105 transition-transform text-[11px] font-medium cursor-pointer"
+                        style={{ backgroundColor: hq.color }}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applyColor("hiliteColor", hq.color);
+                        }}
+                        onClick={() => {
+                          applyColor("hiliteColor", hq.color);
+                          setHighlightColorOpen(false);
+                        }}
+                      >
+                        <span className="text-slate-800 text-[10px] truncate">{hq.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Pastel Swatch Grid */}
+                <div>
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
+                    Pastel Highlighting Tones
+                  </span>
+                  <div className="grid grid-cols-6 gap-1.5">
+                    {HIGHLIGHT_COLORS.map((c, idx) => (
+                      <button
+                        key={`${c}-${idx}`}
+                        type="button"
+                        className="w-8 h-6 rounded border border-gray-300 hover:scale-115 transition-transform cursor-pointer shadow-xs focus:ring-2 focus:ring-primary"
+                        style={{ backgroundColor: c }}
+                        title={`Highlight color ${c}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applyColor("hiliteColor", c);
+                        }}
+                        onClick={() => {
+                          applyColor("hiliteColor", c);
+                          setHighlightColorOpen(false);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Custom Highlighter Wheel & Hex Input */}
+              <div className="pt-2 border-t space-y-2">
+                <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block">Custom Highlight Color:</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={customHighlightColor}
+                    onChange={(e) => setCustomHighlightColor(e.target.value)}
+                    className="w-8 h-8 rounded border cursor-pointer p-0 shrink-0"
+                  />
+                  <Input
+                    value={customHighlightColor}
+                    onChange={(e) => setCustomHighlightColor(e.target.value)}
+                    placeholder="#fef08a"
+                    className="h-8 text-xs font-mono uppercase"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8 text-xs px-3 font-semibold shrink-0"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyColor("hiliteColor", customHighlightColor);
+                    }}
+                    onClick={() => {
+                      applyColor("hiliteColor", customHighlightColor);
+                      setHighlightColorOpen(false);
+                    }}
+                  >
+                    Apply
+                  </Button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Link popover */}
           <Popover open={linkPopoverOpen} onOpenChange={setLinkPopoverOpen}>
             <PopoverTrigger asChild>
               <Button
-                variant="ghost" size="icon" className="h-8 w-8" title="Insert Link"
-                onClick={openLinkPopover}
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="Insert Link"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  openLinkPopover();
+                }}
               >
                 <Link className="size-4" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-80 p-4" align="start" side="bottom">
+            <PopoverContent className="w-80 p-4 z-50" align="start" side="bottom">
               <div className="space-y-3">
+                <div className="text-xs font-bold text-slate-800 dark:text-slate-200">Insert Link</div>
                 <div>
-                  <label className="text-xs text-gray-500 font-medium block mb-1">Link target</label>
+                  <label className="text-xs text-muted-foreground font-medium block mb-1">Link Target URL *</label>
                   <Input
                     value={linkUrl}
                     onChange={(e) => setLinkUrl(e.target.value)}
-                    placeholder="https://"
-                    className="h-9 text-sm"
+                    placeholder="https://example.com"
+                    className="h-8 text-xs"
                     autoFocus
                     onKeyDown={(e) => e.key === "Enter" && applyLink()}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500 font-medium block mb-1">Link title</label>
+                  <label className="text-xs text-muted-foreground font-medium block mb-1">Display Text (Optional)</label>
                   <Input
                     value={linkTitle}
                     onChange={(e) => setLinkTitle(e.target.value)}
-                    placeholder="Display text"
-                    className="h-9 text-sm"
+                    placeholder="Click here"
+                    className="h-8 text-xs"
                     onKeyDown={(e) => e.key === "Enter" && applyLink()}
                   />
                 </div>
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
                   <input
                     type="checkbox"
                     checked={linkNewTab}
@@ -895,54 +1355,126 @@ export default function SimpleEditor({
                   Open in new tab
                 </label>
                 <div className="flex justify-end pt-1">
-                  <Button size="sm" onClick={applyLink} className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-full px-5">
-                    Update
+                  <Button size="sm" onClick={applyLink} className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 text-xs px-4">
+                    Insert Link
                   </Button>
                 </div>
               </div>
             </PopoverContent>
           </Popover>
 
-          {/* Image */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" title="Insert Image">
-                <ImageIcon className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuItem onClick={insertImageUrl}>From URL…</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>Upload from computer</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Image Menu & Popover */}
+          <Popover open={imagePopoverOpen} onOpenChange={setImagePopoverOpen}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  title="Insert Image"
+                  onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                >
+                  <ImageIcon className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-48 z-50">
+                <PopoverTrigger asChild>
+                  <DropdownMenuItem className="cursor-pointer text-xs">
+                    Insert from Image URL…
+                  </DropdownMenuItem>
+                </PopoverTrigger>
+                <DropdownMenuItem
+                  className="cursor-pointer text-xs"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  Upload from Computer…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <PopoverContent className="w-80 p-4 z-50" align="start">
+              <div className="space-y-3">
+                <div className="text-xs font-bold text-slate-800 dark:text-slate-200">Insert Image via URL</div>
+                <div>
+                  <label className="text-xs text-muted-foreground font-medium block mb-1">Image URL *</label>
+                  <Input
+                    value={imageUrlInput}
+                    onChange={(e) => setImageUrlInput(e.target.value)}
+                    placeholder="https://example.com/photo.jpg"
+                    className="h-8 text-xs"
+                    autoFocus
+                    onKeyDown={(e) => e.key === "Enter" && applyImageUrl()}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground font-medium block mb-1">Alt Text (Optional)</label>
+                  <Input
+                    value={imageAltInput}
+                    onChange={(e) => setImageAltInput(e.target.value)}
+                    placeholder="Describe the image"
+                    className="h-8 text-xs"
+                    onKeyDown={(e) => e.key === "Enter" && applyImageUrl()}
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" size="sm" onClick={() => setImagePopoverOpen(false)} className="h-8 text-xs">Cancel</Button>
+                  <Button size="sm" onClick={applyImageUrl} className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 text-xs">
+                    Add Image
+                  </Button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+
           <input type="file" accept="image/*" ref={fileInputRef} onChange={handleImageUpload} className="hidden" />
 
           {/* Attach Document & Files */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" title="Attach Document or File">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="Attach Document or Card"
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+              >
                 <Paperclip className="size-4 text-blue-600 dark:text-blue-400" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
-              <DropdownMenuItem onClick={() => documentFileInputRef.current?.click()} className="cursor-pointer">
+            <DropdownMenuContent align="start" className="w-56 z-50">
+              <DropdownMenuItem
+                onClick={() => documentFileInputRef.current?.click()}
+                className="cursor-pointer text-xs"
+              >
                 <FileUp className="size-4 mr-2 text-blue-500" />
                 Upload File from Computer…
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setDocumentPopoverOpen(true)} className="cursor-pointer">
+              <DropdownMenuItem
+                onClick={() => setDocumentPopoverOpen(true)}
+                className="cursor-pointer text-xs"
+              >
                 <FileText className="size-4 mr-2 text-emerald-500" />
                 Attach Document Link / URL…
               </DropdownMenuItem>
               <div className="h-px bg-border my-1" />
-              <DropdownMenuItem onClick={() => insertCalloutBox("note")} className="cursor-pointer">
+              <DropdownMenuItem
+                onMouseDown={(e) => { e.preventDefault(); insertCalloutBox("note"); }}
+                className="cursor-pointer text-xs"
+              >
                 <Sparkles className="size-4 mr-2 text-amber-500" />
                 Insert Callout Note Box
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => insertBlockquote()} className="cursor-pointer">
+              <DropdownMenuItem
+                onMouseDown={(e) => { e.preventDefault(); insertBlockquote(); }}
+                className="cursor-pointer text-xs"
+              >
                 <Quote className="size-4 mr-2 text-purple-500" />
                 Insert Quote Block
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => insertHorizontalRule()} className="cursor-pointer">
+              <DropdownMenuItem
+                onMouseDown={(e) => { e.preventDefault(); insertHorizontalRule(); }}
+                className="cursor-pointer text-xs"
+              >
                 <Minus className="size-4 mr-2 text-gray-500" />
                 Insert Horizontal Line
               </DropdownMenuItem>
@@ -951,9 +1483,9 @@ export default function SimpleEditor({
 
           {/* Document URL attachment popover */}
           <Popover open={documentPopoverOpen} onOpenChange={setDocumentPopoverOpen}>
-            <PopoverContent className="w-80 p-4" align="start" side="bottom">
+            <PopoverContent className="w-80 p-4 z-50" align="start" side="bottom">
               <div className="space-y-3">
-                <div className="flex items-center gap-2 text-sm font-semibold border-b pb-2">
+                <div className="flex items-center gap-2 text-xs font-semibold border-b pb-2">
                   <Paperclip className="size-4 text-primary" />
                   Attach Document / File
                 </div>
@@ -963,7 +1495,7 @@ export default function SimpleEditor({
                     value={docUrl}
                     onChange={(e) => setDocUrl(e.target.value)}
                     placeholder="https://example.com/document.pdf"
-                    className="h-9 text-sm"
+                    className="h-8 text-xs"
                     autoFocus
                     onKeyDown={(e) => e.key === "Enter" && applyDocumentUrl()}
                   />
@@ -974,14 +1506,14 @@ export default function SimpleEditor({
                     value={docTitle}
                     onChange={(e) => setDocTitle(e.target.value)}
                     placeholder="e.g. Project Specs v2.pdf"
-                    className="h-9 text-sm"
+                    className="h-8 text-xs"
                     onKeyDown={(e) => e.key === "Enter" && applyDocumentUrl()}
                   />
                 </div>
                 <div className="flex justify-end gap-2 pt-1">
-                  <Button variant="outline" size="sm" onClick={() => setDocumentPopoverOpen(false)}>Cancel</Button>
-                  <Button size="sm" onClick={applyDocumentUrl} className="bg-primary text-primary-foreground hover:bg-primary/90">
-                    Attach File
+                  <Button variant="outline" size="sm" onClick={() => setDocumentPopoverOpen(false)} className="h-8 text-xs">Cancel</Button>
+                  <Button size="sm" onClick={applyDocumentUrl} className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 text-xs">
+                    Attach Card
                   </Button>
                 </div>
               </div>
@@ -996,36 +1528,112 @@ export default function SimpleEditor({
             accept="*/*"
           />
 
-          {/* Emoji */}
+          {/* Emoji Picker */}
           <EmojiPicker />
 
           {/* Code block */}
-          <Button variant="ghost" size="icon" className="h-8 w-8" title="Code Block"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => execCmd("insertHTML", `<pre style="background:#f4f4f4;padding:12px 16px;border-radius:6px;font-family:monospace;font-size:13px;border:1px solid #e0e0e0;"><code>// code here</code></pre><p><br></p>`)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            title="Code Block"
+            onMouseDown={(e) => { e.preventDefault(); insertCodeBlock(); }}
+          >
             <Code className="size-4" />
           </Button>
 
-          {/* Table */}
+          {/* Table Picker */}
           <TablePicker />
           <div className="w-px h-5 bg-border mx-1" />
 
-          {/* Alignment */}
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyLeft")} title="Align Left"><AlignLeft className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyCenter")} title="Align Center"><AlignCenter className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyRight")} title="Align Right"><AlignRight className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("justifyFull")} title="Justify"><AlignJustify className="size-4" /></Button>
+          {/* Alignments */}
+          <Button
+            variant={activeFormats.justifyLeft ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("justifyLeft"); }}
+            title="Align Left"
+          >
+            <AlignLeft className="size-4" />
+          </Button>
+          <Button
+            variant={activeFormats.justifyCenter ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("justifyCenter"); }}
+            title="Align Center"
+          >
+            <AlignCenter className="size-4" />
+          </Button>
+          <Button
+            variant={activeFormats.justifyRight ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("justifyRight"); }}
+            title="Align Right"
+          >
+            <AlignRight className="size-4" />
+          </Button>
+          <Button
+            variant={activeFormats.justifyFull ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("justifyFull"); }}
+            title="Justify"
+          >
+            <AlignJustify className="size-4" />
+          </Button>
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Lists / indent */}
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("insertOrderedList")} title="Ordered List"><ListOrdered className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("insertUnorderedList")} title="Unordered List"><List className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("outdent")} title="Outdent"><IndentDecrease className="size-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("indent")} title="Indent"><IndentIncrease className="size-4" /></Button>
+          <Button
+            variant={activeFormats.insertOrderedList ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("insertOrderedList"); }}
+            title="Numbered List"
+          >
+            <ListOrdered className="size-4" />
+          </Button>
+          <Button
+            variant={activeFormats.insertUnorderedList ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("insertUnorderedList"); }}
+            title="Bullet List"
+          >
+            <List className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("outdent"); }}
+            title="Decrease Indent"
+          >
+            <IndentDecrease className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("indent"); }}
+            title="Increase Indent"
+          >
+            <IndentIncrease className="size-4" />
+          </Button>
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Clear formatting */}
-          <Button variant="ghost" size="icon" className="h-8 w-8" onMouseDown={(e) => e.preventDefault()} onClick={() => execCmd("removeFormat")} title="Clear Formatting"><RemoveFormatting className="size-4" /></Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onMouseDown={(e) => { e.preventDefault(); execCmd("removeFormat"); }}
+            title="Clear Formatting"
+          >
+            <RemoveFormatting className="size-4" />
+          </Button>
         </div>
       )}
 
@@ -1035,7 +1643,7 @@ export default function SimpleEditor({
 
           {/* Gmail / Outlook Style Top Attachment Bar */}
           {attachments.length > 0 && (
-            <div className="bg-white dark:bg-slate-900 border shadow-sm rounded-md px-5 py-3 flex items-center justify-between gap-3">
+            <div className="bg-white dark:bg-slate-900 border shadow-xs rounded-md px-5 py-3 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
                 <Paperclip className="size-4 text-blue-600 dark:text-blue-400" />
                 <span>Attached Files ({attachments.length}):</span>
@@ -1070,91 +1678,7 @@ export default function SimpleEditor({
           )}
 
           {/* White email canvas */}
-          <div className="bg-white min-h-[600px] border shadow-sm rounded-md relative">
-            {/* ── Floating Selection Highlight Toolbar (Appears right above selected text) ── */}
-            {!isSourceMode && floatingToolbarPos && (
-              <div
-                className="absolute z-50 flex items-center gap-1.5 bg-gray-900 text-white rounded-lg px-3 py-1.5 shadow-2xl border border-gray-700 select-none animate-in fade-in zoom-in-95 duration-150"
-                style={{ top: `${floatingToolbarPos.top}px`, left: `${floatingToolbarPos.left}px` }}
-                onMouseDown={(e) => e.preventDefault()}
-              >
-                <span className="text-[11px] font-bold text-gray-300 mr-1">Highlight:</span>
-
-                {/* Quick Highlight Swatches */}
-                {[
-                  { label: "Yellow", color: "#fef08a" },
-                  { label: "Green", color: "#bbf7d0" },
-                  { label: "Cyan", color: "#bae6fd" },
-                  { label: "Pink", color: "#fbcfe8" },
-                  { label: "Orange", color: "#fed7aa" },
-                  { label: "Purple", color: "#e9d5ff" },
-                  { label: "Red", color: "#fecaca" },
-                ].map((sw) => (
-                  <button
-                    key={sw.color}
-                    type="button"
-                    title={`Highlight ${sw.label}`}
-                    className="w-5 h-5 rounded-full border border-white/40 hover:scale-125 transition-transform cursor-pointer"
-                    style={{ backgroundColor: sw.color }}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applyColor("hiliteColor", sw.color);
-                    }}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      applyColor("hiliteColor", sw.color);
-                    }}
-                  />
-                ))}
-
-                <div className="w-px h-4 bg-gray-700 mx-1" />
-                <span className="text-[11px] font-bold text-gray-300 mr-1">Font:</span>
-
-                {/* Quick Font Colors */}
-                {[
-                  { label: "Red", color: "#ef4444" },
-                  { label: "Blue", color: "#3b82f6" },
-                  { label: "Green", color: "#10b981" },
-                  { label: "Purple", color: "#8b5cf6" },
-                  { label: "Dark", color: "#1e293b" },
-                ].map((sw) => (
-                  <button
-                    key={sw.color}
-                    type="button"
-                    title={`Font ${sw.label}`}
-                    className="w-5 h-5 rounded-full border border-white/40 hover:scale-125 transition-transform cursor-pointer"
-                    style={{ backgroundColor: sw.color }}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applyColor("foreColor", sw.color);
-                    }}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      applyColor("foreColor", sw.color);
-                    }}
-                  />
-                ))}
-
-                <div className="w-px h-4 bg-gray-700 mx-1" />
-
-                {/* Clear Highlight Button */}
-                <button
-                  type="button"
-                  title="Clear Highlight"
-                  className="text-[11px] font-semibold text-gray-400 hover:text-white hover:underline px-1 cursor-pointer"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    applyColor("hiliteColor", "transparent");
-                  }}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    applyColor("hiliteColor", "transparent");
-                  }}
-                >
-                  Clear
-                </button>
-              </div>
-            )}
+          <div className="bg-white min-h-[600px] border shadow-xs rounded-md relative">
 
             {isSourceMode ? (
               <textarea
@@ -1180,69 +1704,69 @@ export default function SimpleEditor({
                 }}
                 className="w-full min-h-[600px] p-8 outline-none"
                 style={{
-                  fontFamily: "Arial, sans-serif",
+                  fontFamily: "Arial, Helvetica, sans-serif",
                   fontSize: "16px",
                   lineHeight: "1.6",
                   color: "#222",
                 }}
               />
             )}
+
             {/* Word / char counter */}
             <div className="absolute bottom-3 right-4 text-xs text-muted-foreground pointer-events-none select-none">
               Words : {words} &nbsp;&nbsp; Characters : {chars}
             </div>
           </div>
 
-          {/* ── Image resize toolbar (inline below image) ───────────────── */}
+          {/* ── Image Resize & Alignment Toolbar ─────────────────────────── */}
           {!isSourceMode && selectedImage && (
             <div
-              className="mt-2 flex items-center gap-1 bg-gray-900 text-white rounded-lg px-2 py-1.5 w-fit mx-auto shadow-xl"
+              className="mt-2 flex flex-wrap items-center gap-1.5 bg-gray-900 text-white rounded-lg px-3 py-1.5 w-fit mx-auto shadow-xl z-30"
               onMouseDown={(e) => e.preventDefault()}
             >
-              <span className="text-xs text-gray-400 mr-1">Resize:</span>
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImage(25)}>Small (25%)</Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImage(50)}>Medium (50%)</Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImage(75)}>Large (75%)</Button>
-              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImage(100)}>Full (100%)</Button>
+              <span className="text-xs text-gray-400 mr-1">Size:</span>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImagePct(25)}>25%</Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImagePct(50)}>50%</Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImagePct(75)}>75%</Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => resizeImagePct(100)}>100%</Button>
+
+              <div className="w-px h-4 bg-gray-600 mx-1" />
+              <span className="text-xs text-gray-400 mr-1">Align:</span>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => alignImage("left")}>Left</Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => alignImage("center")}>Center</Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-100 hover:bg-gray-700 px-2" onClick={() => alignImage("right")}>Right</Button>
+
               <div className="w-px h-4 bg-gray-600 mx-1" />
               <Button size="sm" variant="ghost" className="h-7 text-xs text-red-400 hover:text-red-300 hover:bg-gray-700 px-2 flex items-center gap-1" onClick={deleteImage}>
-                <Trash2 className="size-3" /> Remove
+                <Trash2 className="size-3" /> Delete
               </Button>
             </div>
           )}
 
           {/* ── Drag handle overlay on selected image ────────────────────── */}
-          {!isSourceMode && selectedImage && (() => {
-            const img = selectedImage;
-            const rect = img.getBoundingClientRect();
-            const canvasRect = editorRef.current?.getBoundingClientRect();
-            if (!canvasRect) return null;
-            return (
-              <>
-                {/* Blue border ring around selected image */}
-                <div
-                  className="pointer-events-none absolute border-2 border-blue-500 rounded-sm z-10"
-                  style={{
-                    top: rect.top - canvasRect.top + (editorRef.current?.scrollTop || 0) + 32,
-                    left: rect.left - canvasRect.left + 32,
-                    width: rect.width,
-                    height: rect.height,
-                  }}
-                />
-                {/* Bottom-right drag handle */}
-                <div
-                  className="absolute bg-white border-2 border-blue-500 rounded-sm z-20 cursor-nwse-resize"
-                  style={{
-                    top: rect.top - canvasRect.top + (editorRef.current?.scrollTop || 0) + 32 + rect.height - 6,
-                    left: rect.left - canvasRect.left + 32 + rect.width - 6,
-                    width: 12,
-                    height: 12,
-                  }}
-                  onMouseDown={startDragResize}
-                />
-              </>
-            );
-          })()}
+          {!isSourceMode && selectedImage && imageOverlayPos && (
+            <>
+              <div
+                className="pointer-events-none absolute border-2 border-blue-500 rounded-sm z-20"
+                style={{
+                  top: `${imageOverlayPos.top}px`,
+                  left: `${imageOverlayPos.left}px`,
+                  width: `${imageOverlayPos.width}px`,
+                  height: `${imageOverlayPos.height}px`,
+                }}
+              />
+              <div
+                className="absolute bg-white border-2 border-blue-500 rounded-sm z-30 cursor-nwse-resize"
+                style={{
+                  top: `${imageOverlayPos.top + imageOverlayPos.height - 6}px`,
+                  left: `${imageOverlayPos.left + imageOverlayPos.width - 6}px`,
+                  width: 12,
+                  height: 12,
+                }}
+                onMouseDown={startDragResize}
+              />
+            </>
+          )}
         </div>
       </div>
     </div>
