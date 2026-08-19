@@ -6,7 +6,7 @@ import {
   Link, Image as ImageIcon, Smile, Code, Table2, AlignLeft,
   AlignCenter, AlignRight, AlignJustify, ListOrdered, List,
   IndentDecrease, IndentIncrease, RemoveFormatting, ChevronDown,
-  Trash2, ExternalLink, Paperclip, FileText, FileUp, Quote, Minus, Sparkles, X,
+  Trash2, ExternalLink, Paperclip, FileText, FileUp, Quote, Minus, Sparkles, X, UserCheck,
 } from "lucide-react";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -547,6 +547,79 @@ export default function SimpleEditor({
               ))}
             </SelectContent>
           </Select>
+          <div className="w-px h-5 bg-border mx-1" />
+
+          {/* Personalization Tag / Variable Selector */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100"
+                onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+                title="Insert Dynamic Contact Variable"
+              >
+                <UserCheck className="size-3.5" />
+                <span>Add Variable</span>
+                <ChevronDown className="size-3 opacity-60 ml-0.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              <div className="px-2 py-1 text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                Dynamic Contact Tags
+              </div>
+              <DropdownMenuItem
+                onClick={() => { restoreSelection(); execCmd("insertText", "{{first_name}}"); }}
+                className="cursor-pointer flex items-center justify-between"
+              >
+                <span className="font-medium">First Name</span>
+                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{first_name}}"}</code>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => { restoreSelection(); execCmd("insertText", "{{last_name}}"); }}
+                className="cursor-pointer flex items-center justify-between"
+              >
+                <span className="font-medium">Last Name</span>
+                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{last_name}}"}</code>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => { restoreSelection(); execCmd("insertText", "{{full_name}}"); }}
+                className="cursor-pointer flex items-center justify-between"
+              >
+                <span className="font-medium">Full Name</span>
+                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{full_name}}"}</code>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => { restoreSelection(); execCmd("insertText", "{{email}}"); }}
+                className="cursor-pointer flex items-center justify-between"
+              >
+                <span className="font-medium">Email Address</span>
+                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{email}}"}</code>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => { restoreSelection(); execCmd("insertText", "{{company}}"); }}
+                className="cursor-pointer flex items-center justify-between"
+              >
+                <span className="font-medium">Company Name</span>
+                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{company}}"}</code>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => { restoreSelection(); execCmd("insertText", "{{designation}}"); }}
+                className="cursor-pointer flex items-center justify-between"
+              >
+                <span className="font-medium">Job Title</span>
+                <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-emerald-600 dark:text-emerald-400">{"{{designation}}"}</code>
+              </DropdownMenuItem>
+              <div className="h-px bg-border my-1" />
+              <DropdownMenuItem
+                onClick={() => { restoreSelection(); execCmd("insertText", "{{unsubscribe_url}}"); }}
+                className="cursor-pointer flex items-center justify-between text-red-600 dark:text-red-400"
+              >
+                <span className="font-medium">Unsubscribe Link</span>
+                <code className="text-[10px] bg-red-50 dark:bg-red-950 px-1.5 py-0.5 rounded">{"{{unsubscribe_url}}"}</code>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <div className="w-px h-5 bg-border mx-1" />
 
           {/* Basic formatting */}
