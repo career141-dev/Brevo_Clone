@@ -838,6 +838,100 @@ app.post("/api/campaigns/:id/duplicate", async (req, res) => {
   }
 });
 
+function extractAttachmentsFromHtml(html: string): { filename: string; content: Buffer; contentType: string }[] {
+  const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
+  const regex = /\/uploads\/([^"'\s>]+)/g;
+  let match;
+  const seenFiles = new Set<string>();
+
+  while ((match = regex.exec(html)) !== null) {
+    const filenameOnDisk = match[1];
+    if (seenFiles.has(filenameOnDisk)) continue;
+    seenFiles.add(filenameOnDisk);
+
+    const filePath = path.join(uploadsDir, filenameOnDisk);
+    if (fs.existsSync(filePath)) {
+      try {
+        const content = fs.readFileSync(filePath);
+        const cleanFilename = filenameOnDisk.replace(/^\d+_/, "");
+        const ext = path.extname(cleanFilename).toLowerCase();
+
+        let contentType = "application/octet-stream";
+        if (ext === ".pdf") contentType = "application/pdf";
+        else if (ext === ".docx" || ext === ".doc") contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        else if (ext === ".xlsx" || ext === ".xls") contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        else if (ext === ".pptx" || ext === ".ppt") contentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        else if (ext === ".zip") contentType = "application/zip";
+        else if (ext === ".png") contentType = "image/png";
+        else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+        else if (ext === ".txt") contentType = "text/plain";
+        else if (ext === ".csv") contentType = "text/csv";
+
+        attachments.push({
+          filename: cleanFilename,
+          content,
+          contentType,
+        });
+      } catch (err) {
+        console.error("Failed to read attachment file:", filePath, err);
+      }
+    }
+  }
+
+  return attachments;
+}
+
+function createRawMimeEmail({
+  from,
+  to,
+  subject,
+  html,
+  unsubscribeUrl,
+  attachments = [],
+}: {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+  unsubscribeUrl?: string;
+  attachments?: { filename: string; content: Buffer; contentType: string }[];
+}): Buffer {
+  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+
+  let raw = "";
+  raw += `From: ${from}\r\n`;
+  raw += `To: ${to}\r\n`;
+  raw += `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=\r\n`;
+  raw += `MIME-Version: 1.0\r\n`;
+  if (unsubscribeUrl) {
+    raw += `List-Unsubscribe: <${unsubscribeUrl}>\r\n`;
+    raw += `List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n`;
+  }
+
+  if (attachments.length > 0) {
+    raw += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
+    raw += `--${boundary}\r\n`;
+    raw += `Content-Type: text/html; charset=UTF-8\r\n`;
+    raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
+    raw += Buffer.from(html).toString("base64") + "\r\n\r\n";
+
+    for (const att of attachments) {
+      raw += `--${boundary}\r\n`;
+      raw += `Content-Type: ${att.contentType}; name="${att.filename}"\r\n`;
+      raw += `Content-Disposition: attachment; filename="${att.filename}"\r\n`;
+      raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
+      raw += att.content.toString("base64") + "\r\n\r\n";
+    }
+    raw += `--${boundary}--\r\n`;
+  } else {
+    raw += `Content-Type: text/html; charset=UTF-8\r\n`;
+    raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
+    raw += Buffer.from(html).toString("base64") + "\r\n";
+  }
+
+  return Buffer.from(raw);
+}
+
 // POST /api/campaigns/:id/send
 app.post("/api/campaigns/:id/send", async (req, res) => {
   try {
@@ -904,6 +998,8 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       }
     }
 
+    const campaignAttachments = extractAttachmentsFromHtml(template);
+
     for (const contact of contacts) {
       const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
       let html = template
@@ -919,25 +1015,45 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       html = injectTracking(html, contact.email, campaignId);
 
       try {
-        await sesv2Client.send(new SendEmailV2Command({
-          FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
-          Destination: { ToAddresses: [contact.email] },
-          // Use config set ONLY for bounce/complaint/delivery SNS events.
-          // Click and open tracking must be DISABLED in the config set so AWS does
-          // NOT double-wrap our own tracking URLs with awstrack.me redirects.
-          ConfigurationSetName: "career141-tracking",
-          Content: {
-            Simple: {
-              Subject: { Data: campaign.subject, Charset: "UTF-8" },
-              Body: { Html: { Data: html, Charset: "UTF-8" } },
-              Headers: [
-                { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-                { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
-              ],
+        if (campaignAttachments.length > 0) {
+          const rawMimeBuffer = createRawMimeEmail({
+            from: `${campaign.fromName} <${campaign.fromEmail}>`,
+            to: contact.email,
+            subject: campaign.subject,
+            html,
+            unsubscribeUrl: unsubUrl,
+            attachments: campaignAttachments,
+          });
+
+          await sesv2Client.send(new SendEmailV2Command({
+            FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
+            Destination: { ToAddresses: [contact.email] },
+            ConfigurationSetName: "career141-tracking",
+            Content: {
+              Raw: {
+                Data: rawMimeBuffer,
+              },
             },
-          },
-          EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-        }));
+            EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
+          }));
+        } else {
+          await sesv2Client.send(new SendEmailV2Command({
+            FromEmailAddress: `${campaign.fromName} <${campaign.fromEmail}>`,
+            Destination: { ToAddresses: [contact.email] },
+            ConfigurationSetName: "career141-tracking",
+            Content: {
+              Simple: {
+                Subject: { Data: campaign.subject, Charset: "UTF-8" },
+                Body: { Html: { Data: html, Charset: "UTF-8" } },
+                Headers: [
+                  { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                  { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+                ],
+              },
+            },
+            EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
+          }));
+        }
         // Log "sent" event with campaignId
         await prisma.emailEvent.create({
           data: {
