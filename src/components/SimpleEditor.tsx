@@ -6,7 +6,7 @@ import {
   Link, Image as ImageIcon, Smile, Code, Table2, AlignLeft,
   AlignCenter, AlignRight, AlignJustify, ListOrdered, List,
   IndentDecrease, IndentIncrease, RemoveFormatting, ChevronDown,
-  Trash2, ExternalLink, Paperclip, FileText, FileUp, Quote, Minus, Sparkles,
+  Trash2, ExternalLink, Paperclip, FileText, FileUp, Quote, Minus, Sparkles, X,
 } from "lucide-react";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -73,10 +73,11 @@ export default function SimpleEditor({
   const [linkNewTab, setLinkNewTab] = useState(false);
   const [savedRange, setSavedRange] = useState<Range | null>(null);
 
-  // Document attachment popover state
+  // Document attachment popover & files state
   const [documentPopoverOpen, setDocumentPopoverOpen] = useState(false);
   const [docTitle, setDocTitle] = useState("");
   const [docUrl, setDocUrl] = useState("https://");
+  const [attachments, setAttachments] = useState<{ id: string; name: string; size: string; url: string; ext: string }[]>([]);
 
   // Image resize state
   const [selectedImage, setSelectedImage] = useState<HTMLImageElement | null>(null);
@@ -241,7 +242,12 @@ export default function SimpleEditor({
       } else {
         fileSizeStr = `${(result.size / (1024 * 1024)).toFixed(2)} MB`;
       }
-      insertDocumentCard(result.fileName, fileSizeStr, result.url);
+      
+      const ext = result.fileName.split('.').pop()?.toUpperCase() || 'FILE';
+      setAttachments((prev) => [
+        ...prev.filter(a => a.url !== result.url),
+        { id: String(Date.now()), name: result.fileName, size: fileSizeStr, url: result.url, ext }
+      ]);
     } catch (err: any) {
       toast.dismiss(toastId);
       toast.error(`Upload failed: ${err.message || "Unknown error"}`);
@@ -252,7 +258,11 @@ export default function SimpleEditor({
   const applyDocumentUrl = () => {
     if (!docUrl) return;
     const title = docTitle.trim() || docUrl.split("/").pop() || "Attached Document";
-    insertDocumentCard(title, "", docUrl);
+    const ext = title.split('.').pop()?.toUpperCase() || 'FILE';
+    setAttachments((prev) => [
+      ...prev.filter(a => a.url !== docUrl),
+      { id: String(Date.now()), name: title, size: "URL Link", url: docUrl, ext }
+    ]);
     setDocumentPopoverOpen(false);
     setDocTitle("");
     setDocUrl("https://");
@@ -369,9 +379,16 @@ export default function SimpleEditor({
 
   // ── Save ───────────────────────────────────────────────────────────────────
   const handleSave = () => {
-    const html = isSourceMode
+    let html = isSourceMode
       ? sourceRef.current?.value || ""
       : editorRef.current?.innerHTML || "";
+
+    if (attachments.length > 0) {
+      const attHtml = attachments.map(a => `<span data-attachment-file="${a.url}" data-attachment-name="${a.name}" style="display:none;"></span>`).join("");
+      if (!html.includes('data-attachment-file')) {
+        html += attHtml;
+      }
+    }
     onSave(name, html);
   };
 
@@ -735,7 +752,43 @@ export default function SimpleEditor({
 
       {/* ── Editor Canvas ─────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto bg-muted/30 flex justify-center p-8">
-        <div className="relative w-full max-w-4xl">
+        <div className="relative w-full max-w-4xl space-y-3">
+
+          {/* Gmail / Outlook Style Top Attachment Bar */}
+          {attachments.length > 0 && (
+            <div className="bg-white dark:bg-slate-900 border shadow-sm rounded-md px-5 py-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
+                <Paperclip className="size-4 text-blue-600 dark:text-blue-400" />
+                <span>Attached Files ({attachments.length}):</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {attachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 shadow-xs text-xs"
+                  >
+                    <div className="w-5 h-5 rounded bg-blue-600 text-white flex items-center justify-center text-[9px] font-bold uppercase shrink-0">
+                      {att.ext.slice(0, 3)}
+                    </div>
+                    <div className="flex flex-col max-w-[180px]">
+                      <a href={att.url} target="_blank" rel="noreferrer" className="font-semibold text-slate-800 dark:text-slate-200 hover:underline truncate">
+                        {att.name}
+                      </a>
+                      <span className="text-[10px] text-slate-500">{att.size || "Attached File"}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAttachments(attachments.filter(a => a.id !== att.id))}
+                      className="text-slate-400 hover:text-red-500 ml-1 cursor-pointer"
+                      title="Remove attachment"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* White email canvas */}
           <div className="bg-white min-h-[600px] border shadow-sm rounded-md relative">
