@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { 
   Send, MailOpen, MousePointerClick, AlertTriangle, UserMinus, 
-  Search, ChevronLeft, ChevronRight, Clock, Ban, FileX, Info
+  Search, ChevronLeft, ChevronRight, Clock, Ban, FileX, Info, Paperclip
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -264,10 +264,25 @@ export function CampaignContactEvents({ campaignId }: CampaignContactEventsProps
                       </div>
                       
                       {event.url && (
-                        <div className="mt-3 p-2 bg-muted/50 rounded-md text-xs break-all border">
-                          <span className="font-semibold text-primary mr-1">Link:</span>
-                          <a href={event.url} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">
-                            {event.url}
+                        <div className={cn(
+                          "mt-3 p-2.5 rounded-md text-xs break-all border flex flex-col gap-1",
+                          event.url.includes("/uploads/") || /\.(pdf|docx?|xlsx?|zip|png|jpe?g)$/i.test(event.url)
+                            ? "bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800"
+                            : "bg-muted/50 border"
+                        )}>
+                          {event.url.includes("/uploads/") || /\.(pdf|docx?|xlsx?|zip|png|jpe?g)$/i.test(event.url) ? (
+                            <div className="flex items-center justify-between gap-2 text-blue-700 dark:text-blue-300 font-semibold mb-0.5">
+                              <span className="flex items-center gap-1.5">
+                                <Paperclip className="size-3.5" />
+                                <span>Downloaded Attachment:</span>
+                              </span>
+                              <Badge className="bg-blue-600 text-white text-[10px]">Document Download</Badge>
+                            </div>
+                          ) : (
+                            <span className="font-semibold text-primary">Clicked Link:</span>
+                          )}
+                          <a href={event.url} target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline font-mono text-[11px]">
+                            {event.url.split("/").pop() || event.url}
                           </a>
                         </div>
                       )}
