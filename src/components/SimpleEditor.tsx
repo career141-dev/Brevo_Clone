@@ -195,30 +195,54 @@ export default function SimpleEditor({
     const targetRange = lastRangeRef.current || savedRange;
     restoreSelection();
 
+    const isClear = color === "transparent" || color === "inherit" || color === "clear";
+
     if (targetRange && !targetRange.collapsed && targetRange.toString().length > 0) {
-      // ALWAYS use saved target DOM Range element wrapping to guarantee styling
       try {
-        const span = document.createElement("span");
-        span.style.display = "inline";
-        if (cmd === "hiliteColor") {
-          span.style.backgroundColor = color;
+        const fragment = targetRange.extractContents();
+
+        // Recursively clean existing color / background inline styles from child elements
+        const cleanNode = (node: Node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node as HTMLElement;
+            if (cmd === "hiliteColor") {
+              el.style.backgroundColor = isClear ? "" : "";
+            } else {
+              el.style.color = isClear ? "" : "";
+            }
+            if (el.tagName === "FONT" && cmd !== "hiliteColor") {
+              el.removeAttribute("color");
+            }
+          }
+          node.childNodes.forEach((child) => cleanNode(child));
+        };
+
+        cleanNode(fragment);
+
+        if (isClear) {
+          targetRange.insertNode(fragment);
         } else {
-          span.style.color = color;
-        }
+          const span = document.createElement("span");
+          span.style.display = "inline";
+          if (cmd === "hiliteColor") {
+            span.style.backgroundColor = color;
+          } else {
+            span.style.color = color;
+          }
 
-        const contents = targetRange.extractContents();
-        span.appendChild(contents);
-        targetRange.insertNode(span);
+          span.appendChild(fragment);
+          targetRange.insertNode(span);
 
-        // Select newly created span & update selection refs
-        const sel = window.getSelection();
-        if (sel) {
-          sel.removeAllRanges();
-          const newRange = document.createRange();
-          newRange.selectNodeContents(span);
-          sel.addRange(newRange);
-          lastRangeRef.current = newRange.cloneRange();
-          setSavedRange(newRange.cloneRange());
+          // Select newly created span & update selection refs
+          const sel = window.getSelection();
+          if (sel) {
+            sel.removeAllRanges();
+            const newRange = document.createRange();
+            newRange.selectNodeContents(span);
+            sel.addRange(newRange);
+            lastRangeRef.current = newRange.cloneRange();
+            setSavedRange(newRange.cloneRange());
+          }
         }
 
         saveSelection();
@@ -233,10 +257,10 @@ export default function SimpleEditor({
     try {
       document.execCommand("styleWithCSS", false, "true");
       if (cmd === "hiliteColor") {
-        document.execCommand("hiliteColor", false, color);
-        document.execCommand("backColor", false, color);
+        document.execCommand("hiliteColor", false, isClear ? "transparent" : color);
+        document.execCommand("backColor", false, isClear ? "transparent" : color);
       } else {
-        document.execCommand("foreColor", false, color);
+        document.execCommand("foreColor", false, isClear ? "inherit" : color);
       }
     } catch {
       // ignore
