@@ -6,7 +6,7 @@ import {
   Link, Image as ImageIcon, Smile, Code, Table2, AlignLeft,
   AlignCenter, AlignRight, AlignJustify, ListOrdered, List,
   IndentDecrease, IndentIncrease, RemoveFormatting, ChevronDown,
-  Trash2, ExternalLink,
+  Trash2, ExternalLink, Paperclip, FileText, FileUp, Quote, Minus, Sparkles,
 } from "lucide-react";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -71,12 +71,18 @@ export default function SimpleEditor({
   const [linkNewTab, setLinkNewTab] = useState(false);
   const [savedRange, setSavedRange] = useState<Range | null>(null);
 
+  // Document attachment popover state
+  const [documentPopoverOpen, setDocumentPopoverOpen] = useState(false);
+  const [docTitle, setDocTitle] = useState("");
+  const [docUrl, setDocUrl] = useState("https://");
+
   // Image resize state
   const [selectedImage, setSelectedImage] = useState<HTMLImageElement | null>(null);
 
   const editorRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const documentFileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Init ───────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -183,6 +189,113 @@ export default function SimpleEditor({
     };
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  // ── Document / File attachment logic ───────────────────────────────────────
+  const insertDocumentCard = (name: string, size: string, url: string) => {
+    const fileExt = name.split('.').pop()?.toUpperCase() || 'FILE';
+    let badgeBg = '#3b82f6';
+    let badgeTextColor = '#ffffff';
+    if (['PDF'].includes(fileExt)) badgeBg = '#ef4444';
+    else if (['DOC', 'DOCX', 'PAGES'].includes(fileExt)) badgeBg = '#2563eb';
+    else if (['XLS', 'XLSX', 'CSV', 'NUMBERS'].includes(fileExt)) badgeBg = '#10b981';
+    else if (['PPT', 'PPTX', 'KEYNOTE'].includes(fileExt)) badgeBg = '#f97316';
+    else if (['ZIP', 'RAR', '7Z', 'TAR', 'GZ'].includes(fileExt)) badgeBg = '#8b5cf6';
+    else if (['TXT', 'MD', 'RTF'].includes(fileExt)) badgeBg = '#64748b';
+
+    const html = `
+      <div contenteditable="false" style="display:inline-flex;align-items:center;gap:12px;padding:10px 16px;background-color:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;margin:10px 0;max-width:100%;font-family:system-ui,-apple-system,sans-serif;user-select:none;box-shadow:0 1px 3px rgba(0,0,0,0.05);" data-file-attachment="true">
+        <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background-color:${badgeBg};color:${badgeTextColor};border-radius:8px;font-weight:700;font-size:11px;letter-spacing:0.5px;flex-shrink:0;text-transform:uppercase;line-height:1;text-align:center;">
+          ${fileExt.slice(0, 4)}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px;overflow:hidden;">
+          <a href="${url}" download="${name}" target="_blank" style="font-weight:600;font-size:14px;color:#0f172a;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">
+            ${name}
+          </a>
+          <span style="font-size:12px;color:#64748b;display:flex;align-items:center;gap:8px;">
+            <span>📎 Attachment ${size ? `• ${size}` : ''}</span>
+            <span style="color:${badgeBg};font-weight:600;">Download / View</span>
+          </span>
+        </div>
+      </div>
+      <p><br></p>
+    `;
+    execCmd("insertHTML", html);
+  };
+
+  const handleDocumentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const fileName = file.name;
+    let fileSizeStr = "";
+    if (file.size < 1024 * 1024) {
+      fileSizeStr = `${(file.size / 1024).toFixed(1)} KB`;
+    } else {
+      fileSizeStr = `${(file.size / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      if (dataUrl) {
+        insertDocumentCard(fileName, fileSizeStr, dataUrl);
+      }
+    };
+    reader.readAsDataURL(file);
+    if (documentFileInputRef.current) documentFileInputRef.current.value = "";
+  };
+
+  const applyDocumentUrl = () => {
+    if (!docUrl) return;
+    const title = docTitle.trim() || docUrl.split("/").pop() || "Attached Document";
+    insertDocumentCard(title, "", docUrl);
+    setDocumentPopoverOpen(false);
+    setDocTitle("");
+    setDocUrl("https://");
+  };
+
+  const insertCalloutBox = (type: "note" | "warning" | "success" = "note") => {
+    let bg = "#f0f9ff";
+    let border = "#0284c7";
+    let icon = "💡";
+    let title = "Note";
+    if (type === "warning") {
+      bg = "#fffbe0";
+      border = "#d97706";
+      icon = "⚠️";
+      title = "Warning";
+    } else if (type === "success") {
+      bg = "#f0fdf4";
+      border = "#16a34a";
+      icon = "✅";
+      title = "Tip";
+    }
+
+    const html = `
+      <div style="background-color:${bg};border-left:4px solid ${border};padding:12px 16px;border-radius:6px;margin:12px 0;font-family:sans-serif;">
+        <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;color:#1e293b;margin-bottom:4px;">
+          <span>${icon}</span> <span>${title}</span>
+        </div>
+        <div style="font-size:14px;color:#334155;line-height:1.5;">Add your detailed information or instructions here...</div>
+      </div>
+      <p><br></p>
+    `;
+    execCmd("insertHTML", html);
+  };
+
+  const insertBlockquote = () => {
+    const html = `
+      <blockquote style="border-left:3px solid #cbd5e1;padding-left:14px;margin:14px 0;color:#475569;font-style:italic;font-size:15px;line-height:1.6;">
+        "Insert quote or emphasized text here..."
+      </blockquote>
+      <p><br></p>
+    `;
+    execCmd("insertHTML", html);
+  };
+
+  const insertHorizontalRule = () => {
+    const html = `<hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;" /><p><br></p>`;
+    execCmd("insertHTML", html);
   };
 
   // Click inside editor — select image
@@ -503,6 +616,85 @@ export default function SimpleEditor({
             </DropdownMenuContent>
           </DropdownMenu>
           <input type="file" accept="image/*" ref={fileInputRef} onChange={handleImageUpload} className="hidden" />
+
+          {/* Attach Document & Files */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" title="Attach Document or File">
+                <Paperclip className="size-4 text-blue-600 dark:text-blue-400" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              <DropdownMenuItem onClick={() => documentFileInputRef.current?.click()} className="cursor-pointer">
+                <FileUp className="size-4 mr-2 text-blue-500" />
+                Upload File from Computer…
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setDocumentPopoverOpen(true)} className="cursor-pointer">
+                <FileText className="size-4 mr-2 text-emerald-500" />
+                Attach Document Link / URL…
+              </DropdownMenuItem>
+              <div className="h-px bg-border my-1" />
+              <DropdownMenuItem onClick={() => insertCalloutBox("note")} className="cursor-pointer">
+                <Sparkles className="size-4 mr-2 text-amber-500" />
+                Insert Callout Note Box
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => insertBlockquote()} className="cursor-pointer">
+                <Quote className="size-4 mr-2 text-purple-500" />
+                Insert Quote Block
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => insertHorizontalRule()} className="cursor-pointer">
+                <Minus className="size-4 mr-2 text-gray-500" />
+                Insert Horizontal Line
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Document URL attachment popover */}
+          <Popover open={documentPopoverOpen} onOpenChange={setDocumentPopoverOpen}>
+            <PopoverContent className="w-80 p-4" align="start" side="bottom">
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm font-semibold border-b pb-2">
+                  <Paperclip className="size-4 text-primary" />
+                  Attach Document / File
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground font-medium block mb-1">Document URL *</label>
+                  <Input
+                    value={docUrl}
+                    onChange={(e) => setDocUrl(e.target.value)}
+                    placeholder="https://example.com/document.pdf"
+                    className="h-9 text-sm"
+                    autoFocus
+                    onKeyDown={(e) => e.key === "Enter" && applyDocumentUrl()}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground font-medium block mb-1">Document Title (Optional)</label>
+                  <Input
+                    value={docTitle}
+                    onChange={(e) => setDocTitle(e.target.value)}
+                    placeholder="e.g. Project Specs v2.pdf"
+                    className="h-9 text-sm"
+                    onKeyDown={(e) => e.key === "Enter" && applyDocumentUrl()}
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" size="sm" onClick={() => setDocumentPopoverOpen(false)}>Cancel</Button>
+                  <Button size="sm" onClick={applyDocumentUrl} className="bg-primary text-primary-foreground hover:bg-primary/90">
+                    Attach File
+                  </Button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          <input
+            type="file"
+            ref={documentFileInputRef}
+            onChange={handleDocumentUpload}
+            className="hidden"
+            accept="*/*"
+          />
 
           {/* Emoji */}
           <EmojiPicker />
