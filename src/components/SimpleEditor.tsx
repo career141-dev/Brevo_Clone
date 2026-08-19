@@ -497,46 +497,103 @@ export default function SimpleEditor({
   };
 
   // ── Color picker button ────────────────────────────────────────────────────
-  const ColorPicker = ({ command, title, icon }: { command: string; title: string; icon: React.ReactNode }) => (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          title={title}
-          className="relative h-8 w-8"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            saveSelection();
-          }}
-          onClick={() => saveSelection()}
-        >
-          {icon}
-          <ChevronDown className="size-2 absolute bottom-0.5 right-0.5 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-56 p-2" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
-        <div className="grid grid-cols-8 gap-1">
-          {COLORS.map((c) => (
+  const ColorPicker = ({ command, title, icon }: { command: string; title: string; icon: React.ReactNode }) => {
+    const [customColor, setCustomColor] = useState(command === "hiliteColor" ? "#fef08a" : "#ef4444");
+
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            title={title}
+            className="relative h-8 w-8"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              saveSelection();
+            }}
+            onClick={() => saveSelection()}
+          >
+            {icon}
+            <ChevronDown className="size-2 absolute bottom-0.5 right-0.5 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-64 p-3 space-y-3" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
+          <div className="flex items-center justify-between border-b pb-1.5">
+            <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{title}</span>
             <button
-              key={c}
               type="button"
-              className="w-5 h-5 rounded-sm border border-gray-200 hover:scale-110 transition-transform cursor-pointer"
-              style={{ backgroundColor: c }}
+              className="text-[11px] text-red-600 hover:underline cursor-pointer font-medium"
               onMouseDown={(e) => {
                 e.preventDefault();
-                applyColor(command, c);
+                applyColor(command, command === "hiliteColor" ? "transparent" : "#222222");
               }}
               onClick={(e) => {
                 e.preventDefault();
-                applyColor(command, c);
+                applyColor(command, command === "hiliteColor" ? "transparent" : "#222222");
               }}
-            />
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
+            >
+              Clear / Reset
+            </button>
+          </div>
+
+          {/* Color Swatch Grid */}
+          <div className="grid grid-cols-8 gap-1.5 max-h-36 overflow-y-auto p-0.5">
+            {COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                className="w-5 h-5 rounded-sm border border-gray-300 hover:scale-125 transition-transform cursor-pointer shadow-xs focus:ring-2 focus:ring-primary"
+                style={{ backgroundColor: c }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  applyColor(command, c);
+                }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  applyColor(command, c);
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Custom Color Wheel & Hex Input */}
+          <div className="pt-2 border-t space-y-2">
+            <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block">Custom Color Picker:</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={customColor}
+                onChange={(e) => setCustomColor(e.target.value)}
+                className="w-8 h-8 rounded border cursor-pointer p-0 shrink-0"
+              />
+              <Input
+                value={customColor}
+                onChange={(e) => setCustomColor(e.target.value)}
+                placeholder="#000000"
+                className="h-8 text-xs font-mono uppercase"
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 text-xs px-3 font-semibold shrink-0"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  applyColor(command, customColor);
+                }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  applyColor(command, customColor);
+                }}
+              >
+                Apply
+              </Button>
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
+    );
+  };
 
   // ── Table size picker ─────────────────────────────────────────────────────
   const TablePicker = () => {
