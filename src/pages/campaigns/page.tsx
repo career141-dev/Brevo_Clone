@@ -261,7 +261,10 @@ export default function CampaignsPage() {
       resetWizard();
     },
     onError: (err: any) => {
-      toast.error(err?.message || "Failed to send campaign.");
+      const serverDetails = err?.response?.data?.details;
+      const serverError = err?.response?.data?.error;
+      const msg = serverDetails ? `${serverError || "Send failed"}: ${serverDetails}` : (serverError || err?.message || "Failed to send campaign.");
+      toast.error(msg, { duration: 6000 });
     },
   });
 
