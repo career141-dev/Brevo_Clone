@@ -123,8 +123,9 @@ export default function SimpleEditor({
     setSelectedImage(null);
   };
 
-  // ── Persistent Selection Range Tracking (Cross-Browser & Cross-Platform) ────
+  // ── Persistent Selection Range Tracking & Floating Highlight Toolbar ───────
   const lastRangeRef = useRef<Range | null>(null);
+  const [floatingToolbarPos, setFloatingToolbarPos] = useState<{ top: number; left: number } | null>(null);
 
   const saveSelection = useCallback(() => {
     const sel = window.getSelection();
@@ -132,7 +133,22 @@ export default function SimpleEditor({
       const range = sel.getRangeAt(0).cloneRange();
       setSavedRange(range);
       lastRangeRef.current = range;
+
+      // Update floating highlight toolbar position
+      if (!sel.isCollapsed) {
+        const text = range.toString().trim();
+        if (text.length > 0) {
+          const rect = range.getBoundingClientRect();
+          const canvasRect = editorRef.current.getBoundingClientRect();
+          setFloatingToolbarPos({
+            top: rect.top - canvasRect.top + (editorRef.current.scrollTop || 0) - 48,
+            left: Math.max(10, rect.left - canvasRect.left + (rect.width / 2) - 160),
+          });
+          return;
+        }
+      }
     }
+    setFloatingToolbarPos(null);
   }, []);
 
   const restoreSelection = useCallback(() => {
@@ -174,56 +190,46 @@ export default function SimpleEditor({
   const applyColor = (cmd: string, color: string) => {
     if (!editorRef.current) return;
     editorRef.current.focus();
+
+    // Use saved target range explicitly to prevent selection loss on button click
+    const targetRange = lastRangeRef.current || savedRange;
     restoreSelection();
 
-    const sel = window.getSelection();
+    if (targetRange && !targetRange.collapsed && targetRange.toString().length > 0) {
+      // ALWAYS use saved target DOM Range element wrapping to guarantee styling
+      try {
+        const span = document.createElement("span");
+        span.style.display = "inline";
+        if (cmd === "hiliteColor") {
+          span.style.backgroundColor = color;
+        } else {
+          span.style.color = color;
+        }
 
-    if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
-      const range = sel.getRangeAt(0);
+        const contents = targetRange.extractContents();
+        span.appendChild(contents);
+        targetRange.insertNode(span);
 
-      if (!range.collapsed && range.toString().length > 0) {
-        // ALWAYS use direct DOM Range element wrapping to guarantee styling
-        try {
-          const span = document.createElement("span");
-          span.style.display = "inline";
-          if (cmd === "hiliteColor") {
-            span.style.backgroundColor = color;
-          } else {
-            span.style.color = color;
-          }
-
-          const contents = range.extractContents();
-          span.appendChild(contents);
-          range.insertNode(span);
-
-          // Select newly created span
+        // Select newly created span & update selection refs
+        const sel = window.getSelection();
+        if (sel) {
           sel.removeAllRanges();
           const newRange = document.createRange();
           newRange.selectNodeContents(span);
           sel.addRange(newRange);
           lastRangeRef.current = newRange.cloneRange();
-
-          saveSelection();
-          updateCounts();
-          return;
-        } catch (err) {
-          // Fallback to execCommand if surround/extract fails
-          try {
-            document.execCommand("styleWithCSS", false, "true");
-            if (cmd === "hiliteColor") {
-              document.execCommand("hiliteColor", false, color);
-              document.execCommand("backColor", false, color);
-            } else {
-              document.execCommand("foreColor", false, color);
-            }
-          } catch {
-            // ignore
-          }
+          setSavedRange(newRange.cloneRange());
         }
+
+        saveSelection();
+        updateCounts();
+        return;
+      } catch (err) {
+        console.error("DOM range error:", err);
       }
     }
 
-    // Fallback if no active text range
+    // Fallback if no text range
     try {
       document.execCommand("styleWithCSS", false, "true");
       if (cmd === "hiliteColor") {
@@ -1041,6 +1047,91 @@ export default function SimpleEditor({
 
           {/* White email canvas */}
           <div className="bg-white min-h-[600px] border shadow-sm rounded-md relative">
+            {/* ── Floating Selection Highlight Toolbar (Appears right above selected text) ── */}
+            {!isSourceMode && floatingToolbarPos && (
+              <div
+                className="absolute z-50 flex items-center gap-1.5 bg-gray-900 text-white rounded-lg px-3 py-1.5 shadow-2xl border border-gray-700 select-none animate-in fade-in zoom-in-95 duration-150"
+                style={{ top: `${floatingToolbarPos.top}px`, left: `${floatingToolbarPos.left}px` }}
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                <span className="text-[11px] font-bold text-gray-300 mr-1">Highlight:</span>
+
+                {/* Quick Highlight Swatches */}
+                {[
+                  { label: "Yellow", color: "#fef08a" },
+                  { label: "Green", color: "#bbf7d0" },
+                  { label: "Cyan", color: "#bae6fd" },
+                  { label: "Pink", color: "#fbcfe8" },
+                  { label: "Orange", color: "#fed7aa" },
+                  { label: "Purple", color: "#e9d5ff" },
+                  { label: "Red", color: "#fecaca" },
+                ].map((sw) => (
+                  <button
+                    key={sw.color}
+                    type="button"
+                    title={`Highlight ${sw.label}`}
+                    className="w-5 h-5 rounded-full border border-white/40 hover:scale-125 transition-transform cursor-pointer"
+                    style={{ backgroundColor: sw.color }}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyColor("hiliteColor", sw.color);
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      applyColor("hiliteColor", sw.color);
+                    }}
+                  />
+                ))}
+
+                <div className="w-px h-4 bg-gray-700 mx-1" />
+                <span className="text-[11px] font-bold text-gray-300 mr-1">Font:</span>
+
+                {/* Quick Font Colors */}
+                {[
+                  { label: "Red", color: "#ef4444" },
+                  { label: "Blue", color: "#3b82f6" },
+                  { label: "Green", color: "#10b981" },
+                  { label: "Purple", color: "#8b5cf6" },
+                  { label: "Dark", color: "#1e293b" },
+                ].map((sw) => (
+                  <button
+                    key={sw.color}
+                    type="button"
+                    title={`Font ${sw.label}`}
+                    className="w-5 h-5 rounded-full border border-white/40 hover:scale-125 transition-transform cursor-pointer"
+                    style={{ backgroundColor: sw.color }}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyColor("foreColor", sw.color);
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      applyColor("foreColor", sw.color);
+                    }}
+                  />
+                ))}
+
+                <div className="w-px h-4 bg-gray-700 mx-1" />
+
+                {/* Clear Highlight Button */}
+                <button
+                  type="button"
+                  title="Clear Highlight"
+                  className="text-[11px] font-semibold text-gray-400 hover:text-white hover:underline px-1 cursor-pointer"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    applyColor("hiliteColor", "transparent");
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    applyColor("hiliteColor", "transparent");
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+
             {isSourceMode ? (
               <textarea
                 ref={sourceRef}
