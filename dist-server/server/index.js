@@ -997,7 +997,10 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                 where: { id: campaignId },
                 data: { status: "draft" },
             });
-            return res.status(400).json({ error: "No target recipients found for this campaign." });
+            return res.status(400).json({
+                error: "No target contacts found",
+                details: "No subscribed recipient emails were found in the selected audience list or individual contacts. Please edit the campaign, add recipient emails, and try sending again."
+            });
         }
         let sent = 0;
         const errors = [];
