@@ -21,6 +21,10 @@ import { UAParser } from "ua-parser-js";
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
+// Required for Railway / reverse proxy environments — trusts the first proxy hop
+// This allows express-rate-limit to correctly read X-Forwarded-For headers
+app.set("trust proxy", 1);
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:5173",
