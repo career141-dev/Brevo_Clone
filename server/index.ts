@@ -968,7 +968,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
 
     // 2. Mark as sending atomically to prevent race condition
     const updateResult = await prisma.campaign.updateMany({
-      where: { id: campaignId, status: "draft" },
+      where: { id: campaignId, status: { in: ["draft", "scheduled", "paused", "sending"] } },
       data: { status: "sending" },
     });
     
