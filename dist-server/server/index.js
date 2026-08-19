@@ -948,12 +948,23 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         const campaignAttachments = extractAttachmentsFromHtml(template);
         for (const contact of contacts) {
             const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
+            // Smart fallback derivation if contact details are missing in database
+            const rawFirstName = (contact.firstName || "").trim();
+            const rawLastName = (contact.lastName || "").trim();
+            const rawFullName = (contact.fullName || "").trim();
+            // Extract username from email as fallback (e.g. sanjeev@career141.com -> Sanjeev)
+            const emailPrefix = contact.email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+            const firstName = rawFirstName || (rawFullName ? rawFullName.split(" ")[0] : emailPrefix);
+            const lastName = rawLastName || (rawFullName.includes(" ") ? rawFullName.split(" ").slice(1).join(" ") : "");
+            const fullName = rawFullName || (rawFirstName ? `${rawFirstName} ${rawLastName}`.trim() : emailPrefix);
+            const company = (contact.company || "").trim();
+            const designation = (contact.designation || "").trim();
             let html = template
-                .replace(/{{first_name}}/g, contact.firstName || "")
-                .replace(/{{last_name}}/g, contact.lastName || "")
-                .replace(/{{full_name}}/g, contact.fullName || "")
-                .replace(/{{company}}/g, contact.company || "")
-                .replace(/{{designation}}/g, contact.designation || "")
+                .replace(/{{first_name}}/g, firstName)
+                .replace(/{{last_name}}/g, lastName)
+                .replace(/{{full_name}}/g, fullName)
+                .replace(/{{company}}/g, company)
+                .replace(/{{designation}}/g, designation)
                 .replace(/{{email}}/g, contact.email)
                 .replace(/{{unsubscribe_url}}/g, unsubUrl);
             // Inject open-tracking pixel and rewrite links through click tracker
