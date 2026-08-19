@@ -17,6 +17,8 @@ import {
 import {
   Popover, PopoverContent, PopoverTrigger,
 } from "@/components/ui/popover.tsx";
+import { api } from "@/lib/api.ts";
+import { toast } from "sonner";
 
 interface SimpleEditorProps {
   initialName?: string;
@@ -223,25 +225,27 @@ export default function SimpleEditor({
     execCmd("insertHTML", html);
   };
 
-  const handleDocumentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const fileName = file.name;
-    let fileSizeStr = "";
-    if (file.size < 1024 * 1024) {
-      fileSizeStr = `${(file.size / 1024).toFixed(1)} KB`;
-    } else {
-      fileSizeStr = `${(file.size / (1024 * 1024)).toFixed(2)} MB`;
-    }
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string;
-      if (dataUrl) {
-        insertDocumentCard(fileName, fileSizeStr, dataUrl);
+    const toastId = toast.loading(`Uploading ${file.name}...`);
+    try {
+      const result = await api.uploadFile(file);
+      toast.dismiss(toastId);
+      toast.success(`${file.name} uploaded!`);
+
+      let fileSizeStr = "";
+      if (result.size < 1024 * 1024) {
+        fileSizeStr = `${(result.size / 1024).toFixed(1)} KB`;
+      } else {
+        fileSizeStr = `${(result.size / (1024 * 1024)).toFixed(2)} MB`;
       }
-    };
-    reader.readAsDataURL(file);
+      insertDocumentCard(result.fileName, fileSizeStr, result.url);
+    } catch (err: any) {
+      toast.dismiss(toastId);
+      toast.error(`Upload failed: ${err.message || "Unknown error"}`);
+    }
     if (documentFileInputRef.current) documentFileInputRef.current.value = "";
   };
 

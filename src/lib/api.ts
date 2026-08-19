@@ -227,6 +227,24 @@ export const api = {
         monthly_breakdown: { period: string; cost_usd: number; unit: string }[];
       }>(`/billing/aws-costs?range=${range}`),
   },
+  uploadFile: (file: File) =>
+    new Promise<{ url: string; fileName: string; size: number }>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        try {
+          const fileData = ev.target?.result as string;
+          const res = await request<{ url: string; fileName: string; size: number }>("/upload", {
+            method: "POST",
+            body: JSON.stringify({ fileName: file.name, fileData }),
+          });
+          resolve(res);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(file);
+    }),
 };
 
 export async function downloadExport(contactIds: number[], format: "csv" | "json") {

@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Prisma } from "@prisma/client";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import fs from "node:fs";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -25,7 +26,49 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:5173",
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const uploadsDir = path.resolve(__dirname, "../../public/uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+app.use("/uploads", express.static(uploadsDir));
+
+// POST /api/upload - Handle file upload and return public downloadable URL
+app.post("/api/upload", async (req, res) => {
+  try {
+    const { fileName, fileData } = req.body;
+    if (!fileName || !fileData) {
+      return res.status(400).json({ error: "fileName and fileData required" });
+    }
+
+    const base64Data = fileData.replace(/^data:[^;]+;base64,/, "");
+    const buffer = Buffer.from(base64Data, "base64");
+
+    const ext = path.extname(fileName) || ".bin";
+    const safeName = path.basename(fileName, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
+    const uniqueFileName = `${Date.now()}_${safeName}${ext}`;
+    const filePath = path.join(uploadsDir, uniqueFileName);
+
+    await fs.promises.writeFile(filePath, buffer);
+
+    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
+
+    res.json({
+      url: fileUrl,
+      fileName,
+      size: buffer.length,
+    });
+  } catch (err: any) {
+    console.error("File upload error:", err);
+    res.status(500).json({ error: "Failed to upload file", details: err.message });
+  }
+});
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -2730,7 +2773,6 @@ app.get("/api/billing/summary", async (req, res) => {
 
 // ── Static frontend (production) ────────────────────────────────────
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../dist");
 
 app.use(express.static(distPath));
