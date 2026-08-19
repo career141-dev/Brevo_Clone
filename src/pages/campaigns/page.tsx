@@ -1577,11 +1577,32 @@ export default function CampaignsPage() {
                       <span className="font-medium text-gray-900 dark:text-gray-100">{fromName} &lt;{fromEmail}&gt;</span>
                     </div>
                     <div>
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">Reply-To (Receptionist Inbox)</span>
+                      {replyToEmails.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 mt-0.5">
+                          {replyToEmails.map((email) => (
+                            <span
+                              key={email}
+                              className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300 text-xs font-semibold px-2 py-0.5 rounded-full"
+                            >
+                              📬 {email}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                          ⚠️ Not set — replies will go to the From address
+                        </span>
+                      )}
+                    </div>
+                    <div className="col-span-2">
                       <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">Audience</span>
                       <span className="font-medium text-gray-900 dark:text-gray-100">
-                        {selectedListIds.length === 0
-                          ? "No list selected"
-                          : selectedListIds.map((id) => lists.find((l: any) => l.id === id)?.name || `List #${id}`).join(", ")}
+                        {recipientTab === "individual"
+                          ? `${individualEmails.length} individual contact(s): ${individualEmails.join(", ")}`
+                          : selectedListIds.length === 0
+                            ? "No list selected"
+                            : selectedListIds.map((id) => lists.find((l: any) => l.id === id)?.name || `List #${id}`).join(", ")}
                       </span>
                     </div>
                   </div>
