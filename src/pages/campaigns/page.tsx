@@ -747,11 +747,24 @@ export default function CampaignsPage() {
                 <div className="space-y-3">
                   <div className="space-y-1">
                     <div className="flex items-center justify-between mb-1">
-                      <Label>Send to List(s)</Label>
+                      <Label className="font-semibold">Send to List(s)</Label>
                       {selectedListIds.length > 0 && (
-                        <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                          {selectedListIds.length} {selectedListIds.length === 1 ? "list" : "lists"} selected
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                            {selectedListIds.length} {selectedListIds.length === 1 ? "list" : "lists"} selected
+                          </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSelectedListIds([])}
+                            className="h-6 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 px-2 flex items-center gap-1 cursor-pointer font-medium"
+                            title="Clear all selected lists"
+                          >
+                            <Trash2 className="size-3" />
+                            Clear selection
+                          </Button>
+                        </div>
                       )}
                     </div>
                     <Popover open={listPopoverOpen} onOpenChange={setListPopoverOpen}>
@@ -774,32 +787,44 @@ export default function CampaignsPage() {
                       </PopoverTrigger>
                       <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
                         <Command>
-                          <CommandInput placeholder="Search lists..." />
-                          <CommandList>
+                          <CommandInput placeholder="Search lists by name or ID..." />
+                          <CommandList
+                            className="max-h-[280px] overflow-y-auto pointer-events-auto touch-auto p-1"
+                            onWheel={(e) => e.stopPropagation()}
+                          >
                             <CommandEmpty>No lists found.</CommandEmpty>
                             <CommandGroup>
                               <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/50 text-xs">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (selectedListIds.length === lists.length) {
-                                      setSelectedListIds([]);
-                                    } else {
-                                      setSelectedListIds(lists.map((l: any) => l.id));
-                                    }
-                                  }}
-                                  className="text-primary hover:underline font-medium cursor-pointer"
-                                >
-                                  {selectedListIds.length === lists.length ? "Deselect All" : "Select All Lists"}
-                                </button>
-                                <span className="text-muted-foreground">{lists.length} total lists</span>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedListIds(lists.map((l: any) => l.id))}
+                                    className="text-primary hover:underline font-medium cursor-pointer"
+                                  >
+                                    Select All ({lists.length})
+                                  </button>
+                                  {selectedListIds.length > 0 && (
+                                    <>
+                                      <span className="text-gray-300">|</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedListIds([])}
+                                        className="text-red-600 hover:underline font-medium cursor-pointer flex items-center gap-1"
+                                      >
+                                        Clear Selection
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                                <span className="text-muted-foreground">{selectedListIds.length} / {lists.length} selected</span>
                               </div>
                               {lists.map((list: any) => {
                                 const isSelected = selectedListIds.includes(list.id);
+                                const uniqueValue = `${list.name} id-${list.id}`;
                                 return (
                                   <CommandItem
                                     key={list.id}
-                                    value={list.name}
+                                    value={uniqueValue}
                                     onSelect={() => {
                                       if (isSelected) {
                                         setSelectedListIds(selectedListIds.filter((id) => id !== list.id));
@@ -807,7 +832,7 @@ export default function CampaignsPage() {
                                         setSelectedListIds([...selectedListIds, list.id]);
                                       }
                                     }}
-                                    className="cursor-pointer flex items-center justify-between"
+                                    className="cursor-pointer flex items-center justify-between py-2"
                                   >
                                     <div className="flex items-center gap-2">
                                       <Checkbox
@@ -820,7 +845,10 @@ export default function CampaignsPage() {
                                           }
                                         }}
                                       />
-                                      <span className="font-semibold">{list.name}</span>
+                                      <div className="flex flex-col">
+                                        <span className="font-semibold text-sm">{list.name}</span>
+                                        <span className="text-[10px] text-muted-foreground">ID: #{list.id}</span>
+                                      </div>
                                     </div>
                                     <span className="text-xs text-muted-foreground">
                                       ({list.contactCount ?? 0} contacts)
@@ -836,27 +864,29 @@ export default function CampaignsPage() {
 
                     {/* Selected List Badges/Pills */}
                     {selectedListIds.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 pt-2">
-                        {selectedListIds.map((id) => {
-                          const listObj = lists.find((l: any) => l.id === id);
-                          return (
-                            <Badge
-                              key={id}
-                              variant="secondary"
-                              className="flex items-center gap-1 text-xs py-1 px-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800"
-                            >
-                              <span className="font-medium">{listObj?.name || `List #${id}`}</span>
-                              <span className="text-[10px] text-emerald-600 dark:text-emerald-400">({listObj?.contactCount ?? 0})</span>
-                              <X
-                                className="size-3 cursor-pointer ml-0.5 hover:text-red-500"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedListIds(selectedListIds.filter((item) => item !== id));
-                                }}
-                              />
-                            </Badge>
-                          );
-                        })}
+                      <div className="space-y-1.5 pt-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {selectedListIds.map((id) => {
+                            const listObj = lists.find((l: any) => l.id === id);
+                            return (
+                              <Badge
+                                key={id}
+                                variant="secondary"
+                                className="flex items-center gap-1 text-xs py-1 px-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800"
+                              >
+                                <span className="font-medium">{listObj?.name || `List #${id}`} <span className="opacity-70 text-[10px]">#{id}</span></span>
+                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400">({listObj?.contactCount ?? 0})</span>
+                                <X
+                                  className="size-3 cursor-pointer ml-0.5 hover:text-red-500"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedListIds(selectedListIds.filter((item) => item !== id));
+                                  }}
+                                />
+                              </Badge>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
