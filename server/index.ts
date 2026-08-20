@@ -18,6 +18,8 @@ import { sesClient, sesv2Client } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
 
+import { uploadToR2, isR2Configured } from "./lib/r2.js";
+
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
@@ -41,7 +43,7 @@ if (!fs.existsSync(uploadsDir)) {
 }
 app.use("/uploads", express.static(uploadsDir));
 
-// POST /api/upload - Handle file upload and return public downloadable URL
+// POST /api/upload - Handle file upload and return public downloadable URL (Cloudflare R2 + local fallback)
 app.post("/api/upload", async (req, res) => {
   try {
     const { fileName, fileData } = req.body;
@@ -57,16 +59,42 @@ app.post("/api/upload", async (req, res) => {
     const uniqueFileName = `${Date.now()}_${safeName}${ext}`;
     const filePath = path.join(uploadsDir, uniqueFileName);
 
-    await fs.promises.writeFile(filePath, buffer);
+    let fileUrl = "";
+    let isR2 = false;
 
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
+    // 1. Upload to Cloudflare R2 for zero-egress, high-speed CDN delivery
+    if (isR2Configured) {
+      try {
+        let contentType = "application/octet-stream";
+        if (ext === ".pdf") contentType = "application/pdf";
+        else if (ext === ".docx" || ext === ".doc") contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        else if (ext === ".xlsx" || ext === ".xls") contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        else if (ext === ".pptx" || ext === ".ppt") contentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        else if (ext === ".zip") contentType = "application/zip";
+        else if (ext === ".png") contentType = "image/png";
+        else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+
+        const r2Result = await uploadToR2(buffer, fileName, contentType);
+        fileUrl = r2Result.url;
+        isR2 = true;
+      } catch (r2Err) {
+        console.warn("[R2 UPLOAD FAILED, FALLING BACK TO DISK]:", r2Err);
+      }
+    }
+
+    // 2. Local disk fallback
+    if (!fileUrl) {
+      await fs.promises.writeFile(filePath, buffer);
+      const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+      const host = req.headers["x-forwarded-host"] || req.headers.host;
+      fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
+    }
 
     res.json({
       url: fileUrl,
       fileName,
       size: buffer.length,
+      isR2,
     });
   } catch (err: any) {
     console.error("File upload error:", err);

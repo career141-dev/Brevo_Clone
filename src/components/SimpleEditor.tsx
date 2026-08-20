@@ -516,11 +516,11 @@ export default function SimpleEditor({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const toastId = toast.loading(`Uploading ${file.name}...`);
+    const toastId = toast.loading(`Uploading ${file.name} to Cloudflare R2...`);
     try {
       const result = await api.uploadFile(file);
       toast.dismiss(toastId);
-      toast.success(`${file.name} uploaded!`);
+      toast.success(`${file.name} uploaded successfully!`);
 
       let fileSizeStr = "";
       if (result.size < 1024 * 1024) {
@@ -530,6 +530,10 @@ export default function SimpleEditor({
       }
       
       const ext = result.fileName.split('.').pop()?.toUpperCase() || 'FILE';
+
+      // Insert professional PDF / Document download card into the email body
+      insertDocumentCard(result.fileName, fileSizeStr, result.url);
+
       setAttachments((prev) => [
         ...prev.filter(a => a.url !== result.url),
         { id: String(Date.now()), name: result.fileName, size: fileSizeStr, url: result.url, ext }
