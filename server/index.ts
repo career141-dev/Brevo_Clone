@@ -1438,23 +1438,28 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
             },
           });
           sent++;
+
+          // Periodically update totalRecipients in DB so UI live counters update
+          if (sent % 50 === 0) {
+            await prisma.campaign.update({
+              where: { id: campaignId },
+              data: { totalRecipients: sent },
+            }).catch(() => {});
+          }
         } catch (e: any) {
           errors.push(`${contact.email}: ${e.message}`);
         }
         await new Promise((r) => setTimeout(r, 72));
       }
 
-      if (sent > 0) {
-        await prisma.campaign.update({
-          where: { id: campaignId },
-          data: { status: "sent", sentAt: new Date(), totalRecipients: sent },
-        });
-      } else {
-        await prisma.campaign.update({
-          where: { id: campaignId },
-          data: { status: "draft" },
-        });
-      }
+      const finalSentCount = await prisma.emailEvent.count({
+        where: { campaignId, eventType: "sent" },
+      });
+
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "sent", sentAt: new Date(), totalRecipients: finalSentCount },
+      });
       console.log(`[BACKGROUND SEND] Campaign ${campaignId} finished. Sent: ${sent}/${contacts.length}. Errors: ${errors.length}`);
     })();
   } catch (err: any) {
