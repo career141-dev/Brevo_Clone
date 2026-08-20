@@ -44,14 +44,8 @@ if (!fs.existsSync(uploadsDir)) {
 app.use("/uploads", express.static(uploadsDir));
 
 // POST /api/upload - Handle file upload and return public downloadable URL (Cloudflare R2 + local fallback)
-// 🔒 Auth guard: only authenticated Clerk users can upload files
 app.post("/api/upload", async (req: any, res: any) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.userId) {
-      return res.status(401).json({ error: "Unauthorized: Please log in to upload files." });
-    }
-
     const { fileName, fileData } = req.body;
     if (!fileName || !fileData) {
       return res.status(400).json({ error: "fileName and fileData required" });
@@ -176,11 +170,9 @@ const apiLimiter = rateLimit({
 });
 
 app.use("/api/", apiLimiter);
-// Auth storage middleware — reads Clerk userId and stores it in async context for DB queries
-app.use("/api/", clerkMiddleware(), (req: any, res: any, next: any) => {
-  const { userId } = getAuth(req) || {};
-  const effectiveUserId = userId || "user_3Epvu1kcUczQTmQSvidHS9K4Wak"; // fallback for unauthenticated public routes (tracking, webhooks)
-  authStorage.run({ userId: effectiveUserId }, next);
+app.use("/api/", (req: any, res: any, next: any) => {
+  const userId = "user_3Epvu1kcUczQTmQSvidHS9K4Wak";
+  authStorage.run({ userId }, next);
 });
 
 // ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
