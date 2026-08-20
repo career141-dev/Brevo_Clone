@@ -120,7 +120,7 @@ model Campaign {
   subject        String
   fromName       String
   fromEmail      String
-  replyToEmail   String?
+  replyToEmail   String?        @db.Text
   replyToName    String?
   replyToListId  Int?
   previewText    String?
@@ -128,8 +128,8 @@ model Campaign {
   templateHtml   String         @db.LongText
   audienceType   AudienceType
   audienceId     Int
-  audienceListIds String?
-  excludeListIds String?
+  audienceListIds String?       @db.Text
+  excludeListIds String?        @db.Text
   individualEmails String?      @db.LongText
   skipUnengaged  Boolean        @default(false)
   status         CampaignStatus @default(draft)

@@ -240,8 +240,11 @@ export default function CampaignsPage() {
       setStep(2);
       toast.success("Campaign details saved!");
     },
-    onError: () => {
-      toast.error("Failed to save campaign details.");
+    onError: (err: any) => {
+      const serverDetails = err?.response?.data?.details;
+      const serverError = err?.response?.data?.error;
+      const msg = serverDetails ? `${serverError || "Save failed"}: ${serverDetails}` : (serverError || err?.message || "Failed to save campaign details.");
+      toast.error(msg, { duration: 6000 });
     },
   });
 
@@ -252,8 +255,11 @@ export default function CampaignsPage() {
       queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
       toast.success("Campaign updated successfully!");
     },
-    onError: () => {
-      toast.error("Failed to update campaign.");
+    onError: (err: any) => {
+      const serverDetails = err?.response?.data?.details;
+      const serverError = err?.response?.data?.error;
+      const msg = serverDetails ? `${serverError || "Update failed"}: ${serverDetails}` : (serverError || err?.message || "Failed to update campaign.");
+      toast.error(msg, { duration: 6000 });
     },
   });
 
