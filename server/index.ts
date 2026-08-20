@@ -102,6 +102,45 @@ app.post("/api/upload", async (req, res) => {
   }
 });
 
+// GET /api/download - Force-download files with Content-Disposition: attachment
+app.get("/api/download", async (req, res) => {
+  try {
+    const fileUrl = req.query.url as string;
+    const rawName = (req.query.name as string) || "document.pdf";
+    const cleanName = rawName.replace(/^(\d+_)+/, "").replace(/[^a-zA-Z0-9_\- .]/g, "_");
+
+    if (!fileUrl) {
+      return res.status(400).send("Missing file URL");
+    }
+
+    res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
+
+    // 1. If remote R2 / HTTP URL, fetch and stream to client
+    if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) {
+      const response = await fetch(fileUrl);
+      if (!response.ok) {
+        return res.status(response.status).send("File not found on storage");
+      }
+      const contentType = response.headers.get("content-type") || "application/octet-stream";
+      res.setHeader("Content-Type", contentType);
+      const arrayBuffer = await response.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    }
+
+    // 2. If local /uploads/ file
+    const localDiskName = fileUrl.replace(/^\/uploads\//, "");
+    const localPath = path.join(uploadsDir, localDiskName);
+    if (fs.existsSync(localPath)) {
+      return res.download(localPath, cleanName);
+    }
+
+    res.status(404).send("File not found");
+  } catch (err: any) {
+    console.error("Download endpoint error:", err);
+    res.status(500).send("Failed to download file");
+  }
+});
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5000,
@@ -1001,6 +1040,10 @@ function normalizeEmailHtml(html: string): string {
 
   // Rewrite any localhost / 127.0.0.1 upload URLs to production domain
   normalized = normalized.replace(/https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/uploads\//g, `${baseUrl}/uploads/`);
+
+  // Rewrite relative or localhost /api/download URLs to production domain
+  normalized = normalized.replace(/https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/api\/download/g, `${baseUrl}/api/download`);
+  normalized = normalized.replace(/href=(["'])\/api\/download/g, `href=$1${baseUrl}/api/download`);
 
   return normalized;
 }

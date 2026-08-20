@@ -494,6 +494,8 @@ export default function SimpleEditor({
     else if (['ZIP', 'RAR', '7Z', 'TAR', 'GZ'].includes(fileExt)) badgeBg = '#8b5cf6';
     else if (['TXT', 'MD', 'RTF'].includes(fileExt)) badgeBg = '#64748b';
 
+    const downloadUrl = `/api/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(cleanName)}`;
+
     const html = `
       <table border="0" cellpadding="0" cellspacing="0" style="margin: 16px 0; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; max-width: 480px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.06);" data-file-attachment="true">
         <tr>
@@ -515,7 +517,7 @@ export default function SimpleEditor({
                   👁️ View
                 </a>
                 <span style="color: #cbd5e1; margin: 0 6px;">|</span>
-                <a href="${url}" download="${cleanName}" target="_blank" style="color: #ef4444; font-weight: 600; text-decoration: none;">
+                <a href="${downloadUrl}" target="_blank" style="color: #ef4444; font-weight: 600; text-decoration: none;">
                   ⬇️ Download
                 </a>
               </span>
