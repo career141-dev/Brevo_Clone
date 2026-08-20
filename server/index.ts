@@ -991,11 +991,28 @@ function extractAttachmentsFromHtml(html: string): { filename: string; content: 
     if (seenFiles.has(cleanDiskName)) continue;
     seenFiles.add(cleanDiskName);
 
-    const filePath = path.join(uploadsDir, cleanDiskName);
-    if (fs.existsSync(filePath)) {
+    let targetPath = path.join(uploadsDir, cleanDiskName);
+    if (!fs.existsSync(targetPath)) {
+      const cleanBase = cleanDiskName.replace(/^\d+_/, "").toLowerCase();
       try {
-        const content = fs.readFileSync(filePath);
-        const cleanFilename = cleanDiskName.replace(/^\d+_/, "");
+        const diskFiles = fs.readdirSync(uploadsDir);
+        const matched = diskFiles.find(f => {
+          const lower = f.toLowerCase();
+          return lower.endsWith(cleanBase) || lower.includes(cleanBase);
+        });
+        if (matched) {
+          targetPath = path.join(uploadsDir, matched);
+          console.log(`[ATTACHMENT MATCH] Found matching disk file for ${cleanDiskName} -> ${matched}`);
+        }
+      } catch (e) {
+        console.warn("Fuzzy lookup error:", e);
+      }
+    }
+
+    if (fs.existsSync(targetPath)) {
+      try {
+        const content = fs.readFileSync(targetPath);
+        const cleanFilename = path.basename(targetPath).replace(/^\d+_/, "");
         const ext = path.extname(cleanFilename).toLowerCase();
 
         let contentType = "application/octet-stream";
@@ -1015,10 +1032,10 @@ function extractAttachmentsFromHtml(html: string): { filename: string; content: 
           contentType,
         });
       } catch (err) {
-        console.error("Failed to read attachment file:", filePath, err);
+        console.error("Failed to read attachment file:", targetPath, err);
       }
     } else {
-      console.warn("[ATTACHMENT] File not found on disk:", filePath);
+      console.warn("[ATTACHMENT] File not found on disk:", targetPath);
     }
   }
 
