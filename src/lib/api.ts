@@ -118,6 +118,8 @@ export const api = {
       request<any>(`/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     send: (id: number) =>
       request<any>(`/campaigns/${id}/send`, { method: "POST" }),
+    reset: (id: number, targetStatus?: string) =>
+      request<any>(`/campaigns/${id}/reset`, { method: "POST", body: JSON.stringify({ targetStatus }) }),
     sendTest: (id: number, testEmail: string, draftData?: any) =>
       request<any>(`/campaigns/${id}/send-test`, {
         method: "POST",

@@ -360,6 +360,18 @@ export default function CampaignsPage() {
     },
   });
 
+  const resetCampaignMutation = useMutation({
+    mutationFn: (id: number) => api.campaigns.reset(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
+      toast.success("Campaign status updated!");
+    },
+    onError: () => {
+      toast.error("Failed to reset campaign status.");
+    },
+  });
+
   const createSenderMutation = useMutation({
     mutationFn: (data: { name: string; email: string }) => api.senders.create(data),
     onSuccess: () => {
@@ -901,6 +913,15 @@ export default function CampaignsPage() {
                             <DropdownMenuItem className="cursor-pointer" onClick={() => handleOpenEdit(campaign)}>
                               <Edit className="size-4 mr-2" />
                               Edit Draft
+                            </DropdownMenuItem>
+                          )}
+                          {campaign.status === "sending" && (
+                            <DropdownMenuItem
+                              className="cursor-pointer text-amber-600 focus:text-amber-700 font-medium"
+                              onClick={() => resetCampaignMutation.mutate(campaign.id)}
+                            >
+                              <RefreshCw className="size-4 mr-2" />
+                              Reset Status
                             </DropdownMenuItem>
                           )}
                           <DropdownMenuItem
