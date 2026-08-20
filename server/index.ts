@@ -208,13 +208,19 @@ app.get("/api/contacts/stats", async (req, res) => {
       }
     }
 
+    const cacheKey = `contacts:stats:${listIdsQuery || listIdQuery || 'global'}`;
+    const cached = getCached(cacheKey);
+    if (cached) return res.json(cached);
+
     const [total, subscribed, unsubscribed, bounced] = await Promise.all([
       prisma.contact.count({ where: baseWhere }),
       prisma.contact.count({ where: { ...baseWhere, status: "subscribed" } }),
       prisma.contact.count({ where: { ...baseWhere, status: "unsubscribed" } }),
       prisma.contact.count({ where: { ...baseWhere, status: "bounced" } }),
     ]);
-    res.json({ total, subscribed, unsubscribed, bounced });
+    const result = { total, subscribed, unsubscribed, bounced };
+    setCache(cacheKey, result, 15 * 1000);
+    res.json(result);
   } catch (err) {
     console.error("=== Prisma Stats Error ===");
     console.error("Message:", (err as any).message);
@@ -686,6 +692,10 @@ app.delete("/api/templates/:id", async (req, res) => {
 // GET campaign stats
 app.get("/api/campaigns/stats", async (req, res) => {
   try {
+    const cacheKey = 'campaigns:stats:global';
+    const cached = getCached(cacheKey);
+    if (cached) return res.json(cached);
+
     const [total, sent, draft, scheduled, sending] = await Promise.all([
       prisma.campaign.count(),
       prisma.campaign.count({ where: { status: "sent" } }),
@@ -693,7 +703,9 @@ app.get("/api/campaigns/stats", async (req, res) => {
       prisma.campaign.count({ where: { status: "scheduled" } }),
       prisma.campaign.count({ where: { status: "sending" } }),
     ]);
-    res.json({ total, sent, draft, scheduled, sending });
+    const result = { total, sent, draft, scheduled, sending };
+    setCache(cacheKey, result, 15 * 1000);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch campaign stats" });
   }
