@@ -482,8 +482,9 @@ export default function SimpleEditor({
 
   // ── Document / File attachment logic ───────────────────────────────────────
   const insertDocumentCard = (name: string, size: string, url: string) => {
-    const cleanName = name.replace(/^\d+_/, "");
-    const fileExt = cleanName.split('.').pop()?.toUpperCase() || 'FILE';
+    // Strip timestamps and cleanup name
+    const cleanName = name.replace(/^(\d+_)+/, "").replace(/_/g, " ");
+    const fileExt = (name.split('.').pop() || 'FILE').toUpperCase();
     let badgeBg = '#3b82f6';
     let badgeTextColor = '#ffffff';
     if (['PDF'].includes(fileExt)) badgeBg = '#ef4444';
@@ -494,20 +495,30 @@ export default function SimpleEditor({
     else if (['TXT', 'MD', 'RTF'].includes(fileExt)) badgeBg = '#64748b';
 
     const html = `
-      <div contenteditable="false" style="display:inline-flex;align-items:center;gap:12px;padding:10px 16px;background-color:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;margin:10px 0;max-width:100%;font-family:system-ui,-apple-system,sans-serif;user-select:none;box-shadow:0 1px 3px rgba(0,0,0,0.05);" data-file-attachment="true">
-        <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;background-color:${badgeBg};color:${badgeTextColor};border-radius:8px;font-weight:700;font-size:11px;letter-spacing:0.5px;flex-shrink:0;text-transform:uppercase;line-height:1;text-align:center;">
-          ${fileExt.slice(0, 4)}
-        </div>
-        <div style="display:flex;flex-direction:column;gap:2px;overflow:hidden;">
-          <a href="${url}" download="${cleanName}" target="_blank" style="font-weight:600;font-size:14px;color:#0f172a;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">
-            ${cleanName}
-          </a>
-          <span style="font-size:12px;color:#64748b;display:flex;align-items:center;gap:8px;">
-            <span>📎 Attachment ${size ? `• ${size}` : ''}</span>
-            <span style="color:${badgeBg};font-weight:600;">Download / View</span>
-          </span>
-        </div>
-      </div>
+      <table border="0" cellpadding="0" cellspacing="0" style="margin: 16px 0; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; max-width: 440px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.06);" data-file-attachment="true">
+        <tr>
+          <td style="padding: 12px 14px 12px 14px; vertical-align: middle; width: 44px;">
+            <div style="width: 42px; height: 42px; background-color: ${badgeBg}; color: ${badgeTextColor}; border-radius: 8px; font-weight: bold; font-size: 11px; text-align: center; line-height: 42px; text-transform: uppercase; letter-spacing: 0.5px;">
+              ${fileExt.slice(0, 4)}
+            </div>
+          </td>
+          <td style="padding: 12px 16px 12px 0; vertical-align: middle;">
+            <div style="font-size: 14px; font-weight: 600; color: #0f172a; margin-bottom: 4px; line-height: 1.3;">
+              <a href="${url}" target="_blank" style="color: #0f172a; text-decoration: none;">
+                ${cleanName}
+              </a>
+            </div>
+            <div style="font-size: 12px; color: #64748b; line-height: 1.3;">
+              <span>📎 Attachment ${size ? `• ${size}` : ''}</span>
+              <span style="display: inline-block; margin-left: 14px;">
+                <a href="${url}" target="_blank" style="color: ${badgeBg}; font-weight: 600; text-decoration: none;">
+                  Download / View &rarr;
+                </a>
+              </span>
+            </div>
+          </td>
+        </tr>
+      </table>
       <p><br></p>
     `;
     execCmd("insertHTML", html);
