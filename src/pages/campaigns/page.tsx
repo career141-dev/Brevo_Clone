@@ -28,6 +28,7 @@ import {
   FlaskConical,
   CheckCircle2,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -664,16 +665,39 @@ export default function CampaignsPage() {
     }
   };
 
-  const handleSimpleEditorSave = async (savedName: string, savedHtml: string) => {
-    const payload = {
-      name: savedName.trim() || "Campaign Template",
-      subject: null,
-      previewText: null,
-      contentHtml: savedHtml.trim(),
-    };
+  const handleOpenEditorForCurrent = () => {
+    setWizardOpen(false);
+    setEditorMode("simple");
+  };
 
-    // Create the template
-    createCampaignTemplateMutation.mutate(payload);
+  const handleSimpleEditorSave = async (savedName: string, savedHtml: string) => {
+    const cleanHtml = savedHtml.trim();
+    setSelectedTemplateHtml(cleanHtml);
+
+    // 1. Update existing campaign draft if created
+    if (campaignId) {
+      updateCampaignMutation.mutate({
+        id: campaignId,
+        data: { templateHtml: cleanHtml },
+      });
+    }
+
+    // 2. Update selected base template if linked
+    if (selectedTemplateId) {
+      try {
+        await api.templates.update(selectedTemplateId, {
+          name: savedName.trim() || "Campaign Template",
+          contentHtml: cleanHtml,
+        });
+        queryClient.invalidateQueries({ queryKey: ["templates-for-campaign"] });
+      } catch (err) {
+        console.warn("Failed to update base template record:", err);
+      }
+    }
+
+    setEditorMode("none");
+    setWizardOpen(true);
+    toast.success("Email design updated successfully!");
   };
 
   const createCampaignTemplateMutation = useMutation({
@@ -1638,16 +1662,37 @@ export default function CampaignsPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-lg font-semibold">Design</h3>
-                    <p className="text-xs text-muted-foreground">Create your email content.</p>
+                    <p className="text-xs text-muted-foreground">Create and customize your email content.</p>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPickerOpen(true)}
-                  >
-                    <Plus className="size-4 mr-2" />
-                    Add Template
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {selectedTemplateHtml && (
+                      <Button
+                        size="sm"
+                        onClick={handleOpenEditorForCurrent}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm"
+                      >
+                        <Edit className="size-4 mr-1.5" />
+                        Edit Design
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPickerOpen(true)}
+                    >
+                      {selectedTemplateHtml ? (
+                        <>
+                          <RefreshCw className="size-4 mr-2" />
+                          Change Template
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="size-4 mr-2" />
+                          Choose Template
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="mt-4">
@@ -1663,13 +1708,39 @@ export default function CampaignsPage() {
                           </div>
                           <div className="flex items-center justify-between mt-4">
                             <span className="text-[10px] text-muted-foreground">Updated {format(new Date(t.createdAt), "MMM d")}</span>
-                            <span className="size-5 rounded-full bg-emerald-500 flex items-center justify-center text-white">
-                              <Check className="size-3" />
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={handleOpenEditorForCurrent}
+                                className="h-7 text-xs bg-white border-emerald-300 text-emerald-800 hover:bg-emerald-50"
+                              >
+                                <Edit className="size-3 mr-1" />
+                                Edit Content
+                              </Button>
+                              <span className="size-5 rounded-full bg-emerald-500 flex items-center justify-center text-white">
+                                <Check className="size-3" />
+                              </span>
+                            </div>
                           </div>
                         </Card>
                       );
                     })()
+                  ) : selectedTemplateHtml ? (
+                    <Card className="p-4 border-emerald-600 bg-emerald-50/10 shadow-sm flex items-center justify-between">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-sm">Custom Campaign Design</div>
+                        <div className="text-xs text-muted-foreground">Custom HTML design attached to campaign</div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={handleOpenEditorForCurrent}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs h-8"
+                      >
+                        <Edit className="size-3.5 mr-1.5" />
+                        Edit Design
+                      </Button>
+                    </Card>
                   ) : (
                     <div className="text-center py-8 px-4 border rounded-lg border-dashed">
                       <FileText className="size-8 mx-auto text-muted-foreground mb-3" />
@@ -1682,9 +1753,20 @@ export default function CampaignsPage() {
 
                 {selectedTemplateHtml && (
                   <div className="border border-border rounded-lg overflow-hidden mt-2 bg-muted/10">
-                    <div className="px-3 py-2 bg-muted/30 border-b border-border flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-                      <Eye className="size-3.5 text-emerald-600" />
-                      Template Preview
+                    <div className="px-3 py-2 bg-muted/30 border-b border-border flex items-center justify-between text-xs font-semibold text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <Eye className="size-3.5 text-emerald-600" />
+                        Template Preview
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleOpenEditorForCurrent}
+                        className="h-6 text-xs text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 font-semibold px-2"
+                      >
+                        <Edit className="size-3 mr-1" />
+                        Edit Content
+                      </Button>
                     </div>
                     <iframe
                       srcDoc={selectedTemplateHtml}
@@ -2144,6 +2226,12 @@ export default function CampaignsPage() {
 
       {editorMode === "simple" && (
         <SimpleEditor
+          initialName={
+            selectedTemplateId
+              ? templates?.find((tpl: any) => tpl.id === selectedTemplateId)?.name || name || "Campaign Email Content"
+              : name || "Campaign Email Content"
+          }
+          initialHtml={selectedTemplateHtml}
           onSave={handleSimpleEditorSave}
           onCancel={() => {
             setEditorMode("none");
