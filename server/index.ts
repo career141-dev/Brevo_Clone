@@ -1049,85 +1049,10 @@ function normalizeEmailHtml(html: string): string {
 }
 
 async function extractAttachmentsFromHtml(html: string): Promise<{ filename: string; content: Buffer; contentType: string }[]> {
-  const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
-  if (!html) return attachments;
-
-  const regex = /\/uploads\/([a-zA-Z0-9_\-.]+)/g;
-  let match;
-  const seenFiles = new Set<string>();
-
-  while ((match = regex.exec(html)) !== null) {
-    const rawFilename = match[1];
-    const cleanDiskName = rawFilename.split('?')[0].split('"')[0].split("'")[0].split('>')[0];
-    if (seenFiles.has(cleanDiskName)) continue;
-    seenFiles.add(cleanDiskName);
-
-    let targetPath = path.join(uploadsDir, cleanDiskName);
-    if (!fs.existsSync(targetPath)) {
-      const cleanBase = cleanDiskName.replace(/^\d+_/, "").toLowerCase();
-      try {
-        const diskFiles = fs.readdirSync(uploadsDir);
-        const matched = diskFiles.find(f => {
-          const lower = f.toLowerCase();
-          return lower.endsWith(cleanBase) || lower.includes(cleanBase);
-        });
-        if (matched) {
-          targetPath = path.join(uploadsDir, matched);
-          console.log(`[ATTACHMENT MATCH] Found matching disk file for ${cleanDiskName} -> ${matched}`);
-        }
-      } catch (e) {
-        console.warn("Fuzzy lookup error:", e);
-      }
-    }
-
-    // Auto-download missing file from Railway production server if not found locally
-    if (!fs.existsSync(targetPath)) {
-      try {
-        const prodUrl = `https://brevoclone-production.up.railway.app/uploads/${cleanDiskName}`;
-        console.log(`[ATTACHMENT SYNC] File not found locally, fetching from production: ${prodUrl}`);
-        const resp = await fetch(prodUrl);
-        if (resp.ok) {
-          const arrayBuffer = await resp.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
-          fs.writeFileSync(targetPath, buffer);
-          console.log(`[ATTACHMENT SYNC] Successfully synced file from production to local: ${cleanDiskName}`);
-        }
-      } catch (err) {
-        console.warn("[ATTACHMENT SYNC] Failed to fetch missing file from production:", err);
-      }
-    }
-
-    if (fs.existsSync(targetPath)) {
-      try {
-        const content = fs.readFileSync(targetPath);
-        const cleanFilename = path.basename(targetPath).replace(/^\d+_/, "");
-        const ext = path.extname(cleanFilename).toLowerCase();
-
-        let contentType = "application/octet-stream";
-        if (ext === ".pdf") contentType = "application/pdf";
-        else if (ext === ".docx" || ext === ".doc") contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        else if (ext === ".xlsx" || ext === ".xls") contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-        else if (ext === ".pptx" || ext === ".ppt") contentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-        else if (ext === ".zip") contentType = "application/zip";
-        else if (ext === ".png") contentType = "image/png";
-        else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
-        else if (ext === ".txt") contentType = "text/plain";
-        else if (ext === ".csv") contentType = "text/csv";
-
-        attachments.push({
-          filename: cleanFilename,
-          content,
-          contentType,
-        });
-      } catch (err) {
-        console.error("Failed to read attachment file:", targetPath, err);
-      }
-    } else {
-      console.warn("[ATTACHMENT] File not found on disk:", targetPath);
-    }
-  }
-
-  return attachments;
+  // With Cloudflare R2 & Custom Developed Attachment Cards, documents are hosted on CDN
+  // and delivered via the interactive viewer card in the email body.
+  // We skip raw MIME physical attachments to eliminate 700GB+ data transfer costs and bypass corporate 10MB spam filters.
+  return [];
 }
 
 function createRawMimeEmail({

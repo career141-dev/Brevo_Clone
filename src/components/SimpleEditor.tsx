@@ -697,10 +697,6 @@ export default function SimpleEditor({
     // Clean old attachment tags from html to prevent stale duplicates
     html = html.replace(/<(span|a)[^>]*data-attachment-file[^>]*>.*?<\/\1>/gi, "");
 
-    if (attachments.length > 0) {
-      const attHtml = attachments.map(a => `<a href="${a.url}" data-attachment-file="${a.url}" data-attachment-name="${a.name}" style="display:none;">Attachment: ${a.name}</a>`).join("");
-      html += attHtml;
-    }
     onSave(name, html);
   };
 
