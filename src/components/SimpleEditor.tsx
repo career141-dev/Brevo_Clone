@@ -124,6 +124,29 @@ export default function SimpleEditor({
     if (editorRef.current && initialHtml && !editorRef.current.innerHTML) {
       editorRef.current.innerHTML = initialHtml;
     }
+    if (initialHtml) {
+      const found: { id: string; name: string; size: string; url: string; ext: string }[] = [];
+      const regex = /\/uploads\/([a-zA-Z0-9_\-.]+)/g;
+      let m;
+      const seen = new Set<string>();
+      while ((m = regex.exec(initialHtml)) !== null) {
+        const fullUrl = `/uploads/${m[1]}`;
+        if (seen.has(fullUrl)) continue;
+        seen.add(fullUrl);
+        const cleanName = m[1].replace(/^\d+_/, "");
+        const ext = cleanName.split('.').pop()?.toUpperCase() || 'FILE';
+        found.push({
+          id: String(Date.now() + Math.random()),
+          name: cleanName,
+          size: "Attached Document",
+          url: fullUrl,
+          ext,
+        });
+      }
+      if (found.length > 0) {
+        setAttachments(found);
+      }
+    }
     updateCounts();
   }, [initialHtml]);
 
@@ -607,11 +630,12 @@ export default function SimpleEditor({
       ? sourceRef.current?.value || ""
       : editorRef.current?.innerHTML || "";
 
+    // Clean old attachment tags from html to prevent stale duplicates
+    html = html.replace(/<(span|a)[^>]*data-attachment-file[^>]*>.*?<\/\1>/gi, "");
+
     if (attachments.length > 0) {
-      const attHtml = attachments.map(a => `<span data-attachment-file="${a.url}" data-attachment-name="${a.name}" style="display:none;"></span>`).join("");
-      if (!html.includes('data-attachment-file')) {
-        html += attHtml;
-      }
+      const attHtml = attachments.map(a => `<a href="${a.url}" data-attachment-file="${a.url}" data-attachment-name="${a.name}" style="display:none;">Attachment: ${a.name}</a>`).join("");
+      html += attHtml;
     }
     onSave(name, html);
   };
