@@ -1277,6 +1277,187 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
   }
 });
 
+// POST /api/campaigns/:id/send-test
+app.post("/api/campaigns/:id/send-test", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const {
+      testEmail,
+      subject: reqSubject,
+      fromName: reqFromName,
+      fromEmail: reqFromEmail,
+      replyToEmail: reqReplyToEmail,
+      replyToListId: reqReplyToListId,
+      templateHtml: reqTemplateHtml,
+    } = req.body || {};
+
+    if (!testEmail || !testEmail.trim() || !testEmail.includes("@")) {
+      return res.status(400).json({ error: "Please provide a valid test email address." });
+    }
+
+    const cleanTestEmail = testEmail.trim().toLowerCase();
+
+    // Fetch campaign if campaignId is valid
+    let campaign: any = null;
+    if (campaignId && campaignId > 0) {
+      campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+      });
+    }
+
+    const subject = (reqSubject && String(reqSubject).trim()) || (campaign?.subject && String(campaign.subject).trim()) || "(No subject)";
+    let fromName = (reqFromName && String(reqFromName).trim()) || (campaign?.fromName && String(campaign.fromName).trim()) || "";
+    let fromEmail = (reqFromEmail && String(reqFromEmail).trim()) || (campaign?.fromEmail && String(campaign.fromEmail).trim()) || "";
+    const templateHtml = (reqTemplateHtml && String(reqTemplateHtml).trim()) || (campaign?.templateHtml && String(campaign.templateHtml).trim()) || "";
+    const replyToEmail = reqReplyToEmail !== undefined ? reqReplyToEmail : (campaign?.replyToEmail ?? null);
+    const replyToListId = reqReplyToListId !== undefined ? reqReplyToListId : (campaign?.replyToListId ?? null);
+
+    // If fromEmail is missing or invalid, lookup configured senders in database
+    if (!fromEmail || !fromEmail.includes("@")) {
+      const dbSender = await prisma.sender.findFirst({
+        where: { verificationStatus: "verified" },
+      }) || await prisma.sender.findFirst();
+
+      if (dbSender && dbSender.email && dbSender.email.includes("@")) {
+        fromEmail = dbSender.email.trim();
+        if (!fromName) fromName = dbSender.name?.trim() || "Default Sender";
+      }
+    }
+
+    // Ultimate fallback if no sender in DB either
+    if (!fromEmail || !fromEmail.includes("@")) {
+      fromEmail = "events@premiumroles.com";
+    }
+    if (!fromName) {
+      fromName = "Talent Suite 2026";
+    }
+    if (!templateHtml || !templateHtml.trim()) {
+      return res.status(400).json({ error: "No email template selected to test." });
+    }
+
+    // Check if testEmail matches a contact in the database
+    const dbContact = await prisma.contact.findFirst({
+      where: { email: cleanTestEmail },
+    });
+
+    const emailPrefix = cleanTestEmail.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const firstName = (dbContact?.firstName || "").trim() || (dbContact?.fullName || "").trim().split(" ")[0] || emailPrefix || "Test";
+    const lastName = (dbContact?.lastName || "").trim() || ((dbContact?.fullName || "").trim().includes(" ") ? (dbContact?.fullName || "").trim().split(" ").slice(1).join(" ") : "");
+    const fullName = (dbContact?.fullName || "").trim() || `${firstName} ${lastName}`.trim() || "Test User";
+    const company = (dbContact?.company || "").trim() || "Test Company";
+    const designation = (dbContact?.designation || "").trim() || "Tester";
+
+    // Prepare template HTML with placeholders & fallback unsubscribe URL
+    let template = templateHtml;
+    if (!template.includes("{{unsubscribe_url}}")) {
+      const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>This is a test email. <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">Unsubscribe link test</a></p></div>`;
+      if (/<\/body>/i.test(template)) {
+        template = template.replace(/<\/body>/i, `${fallbackUnsubHtml}</body>`);
+      } else {
+        template += fallbackUnsubHtml;
+      }
+    }
+
+    const unsubUrl = makeUnsubscribeUrl(cleanTestEmail, campaignId || null);
+
+    let html = template
+      .replace(/{{first_name}}/g, firstName)
+      .replace(/{{last_name}}/g, lastName)
+      .replace(/{{full_name}}/g, fullName)
+      .replace(/{{company}}/g, company)
+      .replace(/{{designation}}/g, designation)
+      .replace(/{{email}}/g, cleanTestEmail)
+      .replace(/{{unsubscribe_url}}/g, unsubUrl);
+
+    // Inject tracking pixel & link rewrite
+    html = injectTracking(html, cleanTestEmail, campaignId || null);
+
+    // Resolve Reply-To addresses
+    const replyToEmailsSet = new Set<string>();
+    if (replyToEmail) {
+      String(replyToEmail)
+        .split(",")
+        .map((e: string) => e.trim())
+        .filter((e: string) => e.includes("@"))
+        .forEach((e) => replyToEmailsSet.add(e.toLowerCase()));
+    }
+    if (replyToListId) {
+      try {
+        const listContacts = await prisma.contact.findMany({
+          where: {
+            status: "subscribed",
+            contactLists: { some: { listId: Number(replyToListId) } },
+          },
+          select: { email: true },
+        });
+        listContacts.forEach((c) => {
+          if (c.email && c.email.includes("@")) replyToEmailsSet.add(c.email.trim().toLowerCase());
+        });
+      } catch (err) {
+        console.error("Failed to fetch replyToListId contacts for test email:", err);
+      }
+    }
+    const replyToAddresses = Array.from(replyToEmailsSet);
+    const replyToHeader = replyToAddresses.join(", ");
+    const fromHeader = formatEmailWithDisplayName(fromName, fromEmail);
+    const campaignAttachments = extractAttachmentsFromHtml(html);
+
+    const testSubject = `[TEST] ${subject}`;
+
+    if (campaignAttachments.length > 0) {
+      const rawMimeBuffer = createRawMimeEmail({
+        from: fromHeader,
+        to: cleanTestEmail,
+        replyTo: replyToHeader,
+        subject: testSubject,
+        html,
+        unsubscribeUrl: unsubUrl,
+        attachments: campaignAttachments,
+      });
+
+      await sesv2Client.send(new SendEmailV2Command({
+        FromEmailAddress: fromHeader,
+        Destination: { ToAddresses: [cleanTestEmail] },
+        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
+        Content: { Raw: { Data: rawMimeBuffer } },
+        EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
+      }));
+    } else {
+      const sesParams: any = {
+        FromEmailAddress: fromHeader,
+        Destination: { ToAddresses: [cleanTestEmail] },
+        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
+        ConfigurationSetName: "career141-tracking",
+        Content: {
+          Simple: {
+            Subject: { Data: testSubject, Charset: "UTF-8" },
+            Body: { Html: { Data: html, Charset: "UTF-8" } },
+            Headers: [
+              { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+              { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+            ],
+          },
+        },
+        EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
+      };
+
+      await sesv2Client.send(new SendEmailV2Command(sesParams));
+    }
+
+    return res.json({
+      success: true,
+      message: `Test email successfully sent to ${cleanTestEmail}`,
+      testEmail: cleanTestEmail,
+    });
+  } catch (err: any) {
+    console.error("Send test campaign error:", err);
+    return res.status(500).json({
+      error: "Failed to send test email",
+      details: err.message || "An unexpected error occurred while sending test email via SES.",
+    });
+  }
+});
+
 // ── Analytics ───────────────────────────────────────────────────────
 
 app.get('/api/analytics/campaigns', async (req, res) => {

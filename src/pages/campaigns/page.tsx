@@ -25,6 +25,8 @@ import {
   DollarSign,
   UserCheck,
   X,
+  FlaskConical,
+  CheckCircle2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -156,6 +158,10 @@ export default function CampaignsPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [selectedTemplateHtml, setSelectedTemplateHtml] = useState<string>("");
 
+  // Step 5: Test Email State
+  const [testEmail, setTestEmail] = useState<string>("");
+  const [lastTestSentTo, setLastTestSentTo] = useState<{ email: string; time: string } | null>(null);
+
   // Template Picker / Editor State
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"none" | "simple">("none");
@@ -268,6 +274,44 @@ export default function CampaignsPage() {
     },
   });
 
+  const sendTestEmailMutation = useMutation({
+    mutationFn: (vars: { testEmail: string }) => {
+      const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
+      const draftData = {
+        subject,
+        fromName: fromName || senders?.[0]?.name || "Talent Suite 2026",
+        fromEmail: fromEmail || senders?.[0]?.email || "events@premiumroles.com",
+        replyToEmail: resolvedReplyToEmail,
+        replyToListId,
+        templateHtml: selectedTemplateHtml,
+      };
+      return api.campaigns.sendTest(campaignId || 0, vars.testEmail, draftData);
+    },
+    onSuccess: (_, vars) => {
+      const sentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setLastTestSentTo({ email: vars.testEmail, time: sentTime });
+      toast.success(`Test email sent to ${vars.testEmail}! Please check your inbox.`);
+    },
+    onError: (err: any) => {
+      const serverDetails = err?.response?.data?.details;
+      const serverError = err?.response?.data?.error;
+      const msg = serverDetails ? `${serverError || "Failed to send test email"}: ${serverDetails}` : (serverError || err?.message || "Failed to send test email.");
+      toast.error(msg, { duration: 6000 });
+    },
+  });
+
+  const handleSendTestEmail = () => {
+    if (!testEmail || !testEmail.trim() || !testEmail.includes("@")) {
+      toast.error("Please enter a valid test email address.");
+      return;
+    }
+    if (!selectedTemplateHtml) {
+      toast.error("Please select or design an email template before sending a test email.");
+      return;
+    }
+    sendTestEmailMutation.mutate({ testEmail: testEmail.trim() });
+  };
+
   const deleteCampaignMutation = useMutation({
     mutationFn: (id: number) => api.campaigns.delete(id),
     onSuccess: () => {
@@ -344,6 +388,8 @@ export default function CampaignsPage() {
     setExcludeListPopoverOpen(false);
     setSelectedTemplateId(null);
     setSelectedTemplateHtml("");
+    setTestEmail("");
+    setLastTestSentTo(null);
   };
 
   const handleOpenCreate = () => {
@@ -406,6 +452,9 @@ export default function CampaignsPage() {
     if (!fromName || !fromEmail) {
       toast.error("Please provide a sender name and email.");
       return;
+    }
+    if (!testEmail) {
+      setTestEmail(fromEmail);
     }
     const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
 
@@ -1581,6 +1630,81 @@ export default function CampaignsPage() {
                 <div>
                   <h3 className="text-lg font-semibold">Review & Send</h3>
                   <p className="text-xs text-muted-foreground">Double check everything before sending.</p>
+                </div>
+
+                {/* Send Test Email Card */}
+                <div className="bg-amber-50/70 border border-amber-200/90 dark:bg-amber-950/20 dark:border-amber-800/40 rounded-xl p-4 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="size-9 rounded-lg bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 flex items-center justify-center shrink-0">
+                      <FlaskConical className="size-5" />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                          Send a Test Email First
+                        </h4>
+                        <Badge variant="outline" className="bg-amber-100/80 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border-amber-300 dark:border-amber-700 text-[10px] font-semibold uppercase tracking-wide">
+                          Recommended
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                        Send a test email to yourself or a colleague to check design formatting, subject line, reply-to header, and links before sending to your full audience.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+                    <div className="relative flex-1">
+                      <Input
+                        type="email"
+                        placeholder="Enter recipient test email (e.g. name@company.com)"
+                        value={testEmail}
+                        onChange={(e) => setTestEmail(e.target.value)}
+                        className="bg-white dark:bg-slate-900 border-amber-300/80 dark:border-amber-800/80 text-xs focus-visible:ring-amber-500 pr-8"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleSendTestEmail();
+                          }
+                        }}
+                      />
+                      {testEmail && (
+                        <button
+                          type="button"
+                          onClick={() => setTestEmail("")}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    <Button
+                      onClick={handleSendTestEmail}
+                      disabled={sendTestEmailMutation.isPending || !testEmail.trim()}
+                      className="bg-amber-600 hover:bg-amber-700 text-white shadow-sm font-medium text-xs h-9 px-4 shrink-0"
+                    >
+                      {sendTestEmailMutation.isPending ? (
+                        <>
+                          <Loader2 className="size-3.5 animate-spin mr-1.5" />
+                          Sending Test...
+                        </>
+                      ) : (
+                        <>
+                          <Send className="size-3.5 mr-1.5" />
+                          Send Test Email
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {lastTestSentTo && (
+                    <div className="flex items-center gap-2 text-xs text-emerald-800 dark:text-emerald-300 bg-emerald-100/80 dark:bg-emerald-950/40 border border-emerald-300/70 dark:border-emerald-800/50 rounded-lg px-3 py-1.5">
+                      <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+                      <span>
+                        Test email sent to <strong className="font-semibold">{lastTestSentTo.email}</strong> at {lastTestSentTo.time}. Check your inbox!
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-3 bg-muted/10 border border-border/80 rounded-xl p-4">

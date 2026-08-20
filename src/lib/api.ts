@@ -117,6 +117,11 @@ export const api = {
       request<any>(`/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     send: (id: number) =>
       request<any>(`/campaigns/${id}/send`, { method: "POST" }),
+    sendTest: (id: number, testEmail: string, draftData?: any) =>
+      request<any>(`/campaigns/${id}/send-test`, {
+        method: "POST",
+        body: JSON.stringify({ testEmail, ...draftData }),
+      }),
     delete: (id: number) =>
       request<any>(`/campaigns/${id}`, { method: "DELETE" }),
     deleteBulk: (campaignIds: number[]) =>
