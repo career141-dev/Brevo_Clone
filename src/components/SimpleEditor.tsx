@@ -225,6 +225,45 @@ export default function SimpleEditor({
     updateCounts();
   };
 
+  // Inline CSS Font Size Application (Guarantees font-size persistence across editors & emails)
+  const applyCustomFontSize = (pixelSize: string) => {
+    if (!editorRef.current) return;
+    editorRef.current.focus();
+    restoreSelection();
+
+    // Use standard fontSize 7 as temporary marker tag
+    document.execCommand("fontSize", false, "7");
+
+    const fontElements = editorRef.current.querySelectorAll('font[size="7"]');
+    if (fontElements && fontElements.length > 0) {
+      fontElements.forEach((fontEl) => {
+        const span = document.createElement("span");
+        span.style.fontSize = `${pixelSize}px`;
+        span.innerHTML = fontEl.innerHTML;
+        fontEl.parentNode?.replaceChild(span, fontEl);
+      });
+    }
+    updateCounts();
+    saveSelection();
+  };
+
+  const convertFontTagsToInlineStyle = (html: string): string => {
+    if (!html) return "";
+    const sizeMap: Record<string, string> = {
+      "1": "10px",
+      "2": "13px",
+      "3": "16px",
+      "4": "18px",
+      "5": "24px",
+      "6": "32px",
+      "7": "48px",
+    };
+    return html.replace(/<font[^>]*size=["']?(\d+)["']?[^>]*>(.*?)<\/font>/gi, (_m, size, content) => {
+      const px = sizeMap[size] || "16px";
+      return `<span style="font-size: ${px};">${content}</span>`;
+    });
+  };
+
   // ── Bulletproof Clear Highlight Function (Removes background only) ─────────
   const clearHighlight = () => {
     if (!editorRef.current) return;
@@ -630,6 +669,9 @@ export default function SimpleEditor({
       ? sourceRef.current?.value || ""
       : editorRef.current?.innerHTML || "";
 
+    // Convert any legacy <font size="X"> to <span style="font-size: Xpx;">
+    html = convertFontTagsToInlineStyle(html);
+
     // Clean old attachment tags from html to prevent stale duplicates
     html = html.replace(/<(span|a)[^>]*data-attachment-file[^>]*>.*?<\/\1>/gi, "");
 
@@ -689,13 +731,15 @@ export default function SimpleEditor({
           </Select>
 
           {/* Font size */}
-          <Select defaultValue="3" onValueChange={(v) => execCmd("fontSize", v)}>
-            <SelectTrigger className="w-16 h-8 border-transparent hover:border-input text-sm">
-              <SelectValue />
+          <Select onValueChange={(v) => applyCustomFontSize(v)}>
+            <SelectTrigger className="w-20 h-8 border-transparent hover:border-input text-xs font-medium" onMouseDown={saveSelection}>
+              <SelectValue placeholder="Size" />
             </SelectTrigger>
             <SelectContent>
-              {[["1","10"],["2","13"],["3","16"],["4","18"],["5","24"],["6","32"],["7","48"]].map(([v, l]) => (
-                <SelectItem key={v} value={v}>{l}</SelectItem>
+              {["10", "12", "14", "16", "18", "20", "24", "28", "32", "36", "48"].map((sz) => (
+                <SelectItem key={sz} value={sz} onMouseDown={saveSelection}>
+                  {sz}px
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
