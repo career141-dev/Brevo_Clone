@@ -27,6 +27,7 @@ import {
   X,
   FlaskConical,
   CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -158,9 +159,10 @@ export default function CampaignsPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [selectedTemplateHtml, setSelectedTemplateHtml] = useState<string>("");
 
-  // Step 5: Test Email State
+  // Step 5: Test Email State & Quota Modal State
   const [testEmail, setTestEmail] = useState<string>("");
   const [lastTestSentTo, setLastTestSentTo] = useState<{ email: string; time: string } | null>(null);
+  const [planExceededModalOpen, setPlanExceededModalOpen] = useState(false);
 
   // Template Picker / Editor State
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -217,7 +219,7 @@ export default function CampaignsPage() {
   const { data: quotaData, isLoading: isLoadingQuota } = useQuery({
     queryKey: ["ses-quota"],
     queryFn: () => api.senders.quota(),
-    enabled: wizardOpen && step === 2,
+    enabled: wizardOpen,
   });
 
   const lists = listsData?.data ?? [];
@@ -648,6 +650,15 @@ export default function CampaignsPage() {
 
   const handleSendCampaign = () => {
     if (!campaignId) return;
+
+    const recipientCount = audienceStats?.subscribed ?? 0;
+    const remainingEmails = quotaData?.remaining;
+
+    if (remainingEmails !== undefined && remainingEmails !== null && recipientCount > remainingEmails) {
+      setPlanExceededModalOpen(true);
+      return;
+    }
+
     sendCampaignMutation.mutate(campaignId);
   };
 
@@ -1801,6 +1812,46 @@ export default function CampaignsPage() {
                     </div>
                   );
                 })()}
+
+                {/* Plan Limit Exceeded Alert Banner */}
+                {!isLoadingAudienceStats && !isLoadingQuota && quotaData?.remaining !== undefined && (audienceStats?.subscribed ?? 0) > quotaData.remaining && (
+                  <div className="bg-red-50 border border-red-300 dark:bg-red-950/40 dark:border-red-800/60 rounded-xl p-4 flex items-start gap-3 shadow-sm">
+                    <AlertTriangle className="size-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                    <div className="space-y-2 flex-1">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-bold text-red-900 dark:text-red-200">
+                          Plan Sending Limit Exceeded
+                        </p>
+                        <Badge variant="destructive" className="text-[10px] uppercase font-bold tracking-wider">
+                          Limit Exceeded
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-red-800 dark:text-red-300 leading-relaxed">
+                        Your campaign target has <strong className="font-extrabold text-red-950 dark:text-red-100">{(audienceStats?.subscribed ?? 0).toLocaleString()}</strong> recipients, but you only have <strong className="font-extrabold text-red-950 dark:text-red-100">{(quotaData.remaining).toLocaleString()}</strong> remaining emails in your plan limit.
+                      </p>
+                      <p className="text-[11px] text-red-700 dark:text-red-400 font-medium">
+                        Exceeds limit by <strong className="font-bold text-red-900 dark:text-red-200">{((audienceStats?.subscribed ?? 0) - quotaData.remaining).toLocaleString()}</strong> contacts.
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setStep(2)}
+                          className="h-7 text-xs bg-white text-red-700 border-red-300 hover:bg-red-50 hover:text-red-800"
+                        >
+                          Adjust Recipients (Step 2)
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => setPlanExceededModalOpen(true)}
+                          className="h-7 text-xs bg-red-600 hover:bg-red-700 text-white"
+                        >
+                          View Limit Warning Popup
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -2034,6 +2085,66 @@ export default function CampaignsPage() {
           }}
         />
       )}
+      {/* Plan Limit Exceeded Modal */}
+      <Dialog open={planExceededModalOpen} onOpenChange={setPlanExceededModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader className="space-y-3 text-center sm:text-left">
+            <div className="size-12 rounded-full bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto sm:mx-0 border border-red-200 dark:border-red-900">
+              <AlertTriangle className="size-6" />
+            </div>
+            <div>
+              <DialogTitle className="text-lg font-bold text-red-900 dark:text-red-200">
+                Plan Limit Exceeded
+              </DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground mt-1">
+                Send to as many recipients as you wish, within your plan limits. You cannot send this campaign because the selected target audience exceeds your remaining plan limit.
+              </DialogDescription>
+            </div>
+          </DialogHeader>
+
+          <div className="bg-muted/30 border border-border rounded-xl p-4 space-y-2.5 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b border-border">
+              <span className="text-muted-foreground">Target Recipients:</span>
+              <span className="font-bold text-foreground text-sm">{(audienceStats?.subscribed ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center pb-2 border-b border-border">
+              <span className="text-muted-foreground">Remaining Plan Emails:</span>
+              <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm">{(quotaData?.remaining ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center text-red-600 dark:text-red-400 font-semibold">
+              <span>Excess Recipients:</span>
+              <span className="font-bold text-sm">
+                {Math.max(0, (audienceStats?.subscribed ?? 0) - (quotaData?.remaining ?? 0)).toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Please adjust your audience selection in Step 2 to fit within your remaining <strong>{(quotaData?.remaining ?? 0).toLocaleString()}</strong> emails, or upgrade your plan limit.
+          </p>
+
+          <DialogFooter className="gap-2 sm:gap-0 flex-col-reverse sm:flex-row">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPlanExceededModalOpen(false);
+                setStep(2);
+              }}
+            >
+              Adjust Recipients (Step 2)
+            </Button>
+            <Button
+              onClick={() => {
+                setPlanExceededModalOpen(false);
+                navigate("/settings");
+              }}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              Upgrade Plan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

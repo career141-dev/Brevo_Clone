@@ -1100,6 +1100,28 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       });
     }
 
+    // Check plan quota limit safety guard
+    try {
+      const quota = await sesClient.send(new GetSendQuotaCommand({}));
+      const max24h = quota.Max24HourSend ?? 0;
+      const sent24h = quota.SentLast24Hours ?? 0;
+      const remainingQuota = Math.max(0, max24h - sent24h);
+
+      if (contacts.length > remainingQuota) {
+        // Revert status back to draft
+        await prisma.campaign.update({
+          where: { id: campaignId },
+          data: { status: "draft" },
+        });
+        return res.status(400).json({
+          error: "Plan Sending Limit Exceeded",
+          details: `Your campaign has ${contacts.length.toLocaleString()} recipients, but you only have ${remainingQuota.toLocaleString()} remaining emails in your plan limit. Please upgrade your plan or select fewer contacts.`
+        });
+      }
+    } catch (quotaErr) {
+      console.warn("Could not check SES quota during send:", quotaErr);
+    }
+
     let sent = 0;
     const errors: string[] = [];
 
