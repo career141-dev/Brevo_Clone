@@ -979,20 +979,23 @@ function normalizeEmailHtml(html: string): string {
 
 function extractAttachmentsFromHtml(html: string): { filename: string; content: Buffer; contentType: string }[] {
   const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
-  const regex = /\/uploads\/([^"'\s>?#]+)/g;
+  if (!html) return attachments;
+
+  const regex = /\/uploads\/([a-zA-Z0-9_\-.]+)/g;
   let match;
   const seenFiles = new Set<string>();
 
   while ((match = regex.exec(html)) !== null) {
-    const filenameOnDisk = match[1];
-    if (seenFiles.has(filenameOnDisk)) continue;
-    seenFiles.add(filenameOnDisk);
+    const rawFilename = match[1];
+    const cleanDiskName = rawFilename.split('?')[0].split('"')[0].split("'")[0].split('>')[0];
+    if (seenFiles.has(cleanDiskName)) continue;
+    seenFiles.add(cleanDiskName);
 
-    const filePath = path.join(uploadsDir, filenameOnDisk);
+    const filePath = path.join(uploadsDir, cleanDiskName);
     if (fs.existsSync(filePath)) {
       try {
         const content = fs.readFileSync(filePath);
-        const cleanFilename = filenameOnDisk.replace(/^\d+_/, "");
+        const cleanFilename = cleanDiskName.replace(/^\d+_/, "");
         const ext = path.extname(cleanFilename).toLowerCase();
 
         let contentType = "application/octet-stream";
@@ -1014,6 +1017,8 @@ function extractAttachmentsFromHtml(html: string): { filename: string; content: 
       } catch (err) {
         console.error("Failed to read attachment file:", filePath, err);
       }
+    } else {
+      console.warn("[ATTACHMENT] File not found on disk:", filePath);
     }
   }
 

@@ -692,6 +692,19 @@ export default function CampaignsPage() {
         id: campaignId,
         data: { templateHtml: cleanHtml },
       });
+    } else if (name && name.trim()) {
+      try {
+        const newCamp = await api.campaigns.create({
+          name: name.trim(),
+          subject: subject.trim() || name.trim(),
+          fromName: fromName || "Talent Suite 2026",
+          fromEmail: fromEmail || "events@premiumroles.com",
+          templateHtml: cleanHtml,
+        });
+        setCampaignId(newCamp.id);
+      } catch (err) {
+        console.warn("Failed to auto-create draft for template save:", err);
+      }
     }
 
     // 2. Update selected base template if linked
@@ -709,7 +722,7 @@ export default function CampaignsPage() {
 
     setEditorMode("none");
     setWizardOpen(true);
-    toast.success("Email design updated successfully!");
+    toast.success("Email design & attachments updated successfully!");
   };
 
   const createCampaignTemplateMutation = useMutation({

@@ -468,6 +468,7 @@ export default function SimpleEditor({
       }
       
       const ext = result.fileName.split('.').pop()?.toUpperCase() || 'FILE';
+      insertDocumentCard(result.fileName, fileSizeStr, result.url);
       setAttachments((prev) => [
         ...prev.filter(a => a.url !== result.url),
         { id: String(Date.now()), name: result.fileName, size: fileSizeStr, url: result.url, ext }
