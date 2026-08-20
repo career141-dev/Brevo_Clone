@@ -234,7 +234,7 @@ export function CampaignContactEvents({ campaignId }: CampaignContactEventsProps
                 </div>
               </div>
 
-              {data.totalPages > 1 && (
+              {data.totalPages > 0 && (
                 <div className="flex items-center space-x-1">
                   <Button
                     variant="outline"
