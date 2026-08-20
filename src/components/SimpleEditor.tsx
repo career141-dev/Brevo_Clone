@@ -495,7 +495,7 @@ export default function SimpleEditor({
     else if (['TXT', 'MD', 'RTF'].includes(fileExt)) badgeBg = '#64748b';
 
     const html = `
-      <table border="0" cellpadding="0" cellspacing="0" style="margin: 16px 0; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; max-width: 440px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.06);" data-file-attachment="true">
+      <table border="0" cellpadding="0" cellspacing="0" style="margin: 16px 0; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; max-width: 480px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.06);" data-file-attachment="true">
         <tr>
           <td style="padding: 12px 14px 12px 14px; vertical-align: middle; width: 44px;">
             <div style="width: 42px; height: 42px; background-color: ${badgeBg}; color: ${badgeTextColor}; border-radius: 8px; font-weight: bold; font-size: 11px; text-align: center; line-height: 42px; text-transform: uppercase; letter-spacing: 0.5px;">
@@ -510,9 +510,13 @@ export default function SimpleEditor({
             </div>
             <div style="font-size: 12px; color: #64748b; line-height: 1.3;">
               <span>📎 Attachment ${size ? `• ${size}` : ''}</span>
-              <span style="display: inline-block; margin-left: 14px;">
-                <a href="${url}" target="_blank" style="color: ${badgeBg}; font-weight: 600; text-decoration: none;">
-                  Download / View &rarr;
+              <span style="display: inline-block; margin-left: 12px;">
+                <a href="${url}" target="_blank" style="color: #0284c7; font-weight: 600; text-decoration: none;">
+                  👁️ View
+                </a>
+                <span style="color: #cbd5e1; margin: 0 6px;">|</span>
+                <a href="${url}" download="${cleanName}" target="_blank" style="color: #ef4444; font-weight: 600; text-decoration: none;">
+                  ⬇️ Download
                 </a>
               </span>
             </div>
