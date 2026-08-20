@@ -213,9 +213,9 @@ export default function TemplatesPage() {
 
   const handleSimpleEditorSave = (savedName: string, savedHtml: string) => {
     const payload = {
-      name: savedName.trim() || "Untitled Template",
-      subject: null,
-      previewText: null,
+      name: savedName.trim() || name.trim() || "Untitled Template",
+      subject: subject.trim() || editingTemplate?.subject || null,
+      previewText: previewText.trim() || editingTemplate?.previewText || null,
       contentHtml: savedHtml.trim(),
     };
 

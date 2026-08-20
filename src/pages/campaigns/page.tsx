@@ -25,6 +25,10 @@ import {
   DollarSign,
   UserCheck,
   X,
+  FlaskConical,
+  CheckCircle2,
+  AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -156,6 +160,11 @@ export default function CampaignsPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [selectedTemplateHtml, setSelectedTemplateHtml] = useState<string>("");
 
+  // Step 5: Test Email State & Quota Modal State
+  const [testEmail, setTestEmail] = useState<string>("");
+  const [lastTestSentTo, setLastTestSentTo] = useState<{ email: string; time: string } | null>(null);
+  const [planExceededModalOpen, setPlanExceededModalOpen] = useState(false);
+
   // Template Picker / Editor State
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"none" | "simple">("none");
@@ -211,7 +220,7 @@ export default function CampaignsPage() {
   const { data: quotaData, isLoading: isLoadingQuota } = useQuery({
     queryKey: ["ses-quota"],
     queryFn: () => api.senders.quota(),
-    enabled: wizardOpen && step === 2,
+    enabled: wizardOpen,
   });
 
   const lists = listsData?.data ?? [];
@@ -234,8 +243,11 @@ export default function CampaignsPage() {
       setStep(2);
       toast.success("Campaign details saved!");
     },
-    onError: () => {
-      toast.error("Failed to save campaign details.");
+    onError: (err: any) => {
+      const serverDetails = err?.response?.data?.details;
+      const serverError = err?.response?.data?.error;
+      const msg = serverDetails ? `${serverError || "Save failed"}: ${serverDetails}` : (serverError || err?.message || "Failed to save campaign details.");
+      toast.error(msg, { duration: 6000 });
     },
   });
 
@@ -246,8 +258,11 @@ export default function CampaignsPage() {
       queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
       toast.success("Campaign updated successfully!");
     },
-    onError: () => {
-      toast.error("Failed to update campaign.");
+    onError: (err: any) => {
+      const serverDetails = err?.response?.data?.details;
+      const serverError = err?.response?.data?.error;
+      const msg = serverDetails ? `${serverError || "Update failed"}: ${serverDetails}` : (serverError || err?.message || "Failed to update campaign.");
+      toast.error(msg, { duration: 6000 });
     },
   });
 
@@ -267,6 +282,44 @@ export default function CampaignsPage() {
       toast.error(msg, { duration: 6000 });
     },
   });
+
+  const sendTestEmailMutation = useMutation({
+    mutationFn: (vars: { testEmail: string }) => {
+      const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
+      const draftData = {
+        subject,
+        fromName: fromName || senders?.[0]?.name || "Talent Suite 2026",
+        fromEmail: fromEmail || senders?.[0]?.email || "events@premiumroles.com",
+        replyToEmail: resolvedReplyToEmail,
+        replyToListId,
+        templateHtml: selectedTemplateHtml,
+      };
+      return api.campaigns.sendTest(campaignId || 0, vars.testEmail, draftData);
+    },
+    onSuccess: (_, vars) => {
+      const sentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setLastTestSentTo({ email: vars.testEmail, time: sentTime });
+      toast.success(`Test email sent to ${vars.testEmail}! Please check your inbox.`);
+    },
+    onError: (err: any) => {
+      const serverDetails = err?.response?.data?.details;
+      const serverError = err?.response?.data?.error;
+      const msg = serverDetails ? `${serverError || "Failed to send test email"}: ${serverDetails}` : (serverError || err?.message || "Failed to send test email.");
+      toast.error(msg, { duration: 6000 });
+    },
+  });
+
+  const handleSendTestEmail = () => {
+    if (!testEmail || !testEmail.trim() || !testEmail.includes("@")) {
+      toast.error("Please enter a valid test email address.");
+      return;
+    }
+    if (!selectedTemplateHtml) {
+      toast.error("Please select or design an email template before sending a test email.");
+      return;
+    }
+    sendTestEmailMutation.mutate({ testEmail: testEmail.trim() });
+  };
 
   const deleteCampaignMutation = useMutation({
     mutationFn: (id: number) => api.campaigns.delete(id),
@@ -307,6 +360,18 @@ export default function CampaignsPage() {
     },
   });
 
+  const resetCampaignMutation = useMutation({
+    mutationFn: (id: number) => api.campaigns.reset(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
+      toast.success("Campaign status updated!");
+    },
+    onError: () => {
+      toast.error("Failed to reset campaign status.");
+    },
+  });
+
   const createSenderMutation = useMutation({
     mutationFn: (data: { name: string; email: string }) => api.senders.create(data),
     onSuccess: () => {
@@ -344,6 +409,8 @@ export default function CampaignsPage() {
     setExcludeListPopoverOpen(false);
     setSelectedTemplateId(null);
     setSelectedTemplateHtml("");
+    setTestEmail("");
+    setLastTestSentTo(null);
   };
 
   const handleOpenCreate = () => {
@@ -351,61 +418,120 @@ export default function CampaignsPage() {
     setWizardOpen(true);
   };
 
-  const handleOpenEdit = (campaign: any) => {
+  const handleOpenEdit = async (campaign: any) => {
     resetWizard();
     setCampaignId(campaign.id);
-    setName(campaign.name || "");
-    setSubject(campaign.subject || "");
-    setPreviewText(campaign.previewText || "");
-    setFromName(campaign.fromName || "");
-    setFromEmail(campaign.fromEmail || "");
-    setReplyToName(campaign.replyToName || "");
-    setReplyToEmail(campaign.replyToEmail || "");
+    setWizardOpen(true);
 
-    if (campaign.replyToEmail) {
-      const emails = String(campaign.replyToEmail).split(",").map(e => e.trim()).filter(Boolean);
+    let fullCampaign = campaign;
+    try {
+      fullCampaign = await api.campaigns.get(campaign.id);
+    } catch (err) {
+      console.warn("Failed to fetch fresh campaign details, using list item fallback:", err);
+    }
+
+    setName(fullCampaign.name || "");
+    setSubject(fullCampaign.subject || "");
+    setPreviewText(fullCampaign.previewText || "");
+    setFromName(fullCampaign.fromName || "");
+    setFromEmail(fullCampaign.fromEmail || "");
+    setReplyToName(fullCampaign.replyToName || "");
+    setReplyToEmail(fullCampaign.replyToEmail || "");
+
+    if (fullCampaign.replyToEmail) {
+      const emails = String(fullCampaign.replyToEmail).split(",").map(e => e.trim()).filter(Boolean);
       setReplyToEmails(emails);
     } else {
       setReplyToEmails([]);
     }
 
-    setReplyToListId(campaign.replyToListId ? Number(campaign.replyToListId) : null);
-    setSkipUnengaged(Boolean(campaign.skipUnengaged));
+    setReplyToListId(fullCampaign.replyToListId ? Number(fullCampaign.replyToListId) : null);
+    setSkipUnengaged(Boolean(fullCampaign.skipUnengaged));
 
-    if (campaign.audienceType === "individual" || campaign.individualEmails) {
+    if (fullCampaign.audienceType === "individual" || fullCampaign.individualEmails) {
       setRecipientTab("individual");
-      const emails = String(campaign.individualEmails || "").split(",").map(e => e.trim()).filter(Boolean);
+      const emails = String(fullCampaign.individualEmails || "").split(",").map(e => e.trim()).filter(Boolean);
       setIndividualEmails(emails);
     } else {
       setRecipientTab("lists");
     }
 
-    if (campaign.audienceListIds) {
-      const ids = String(campaign.audienceListIds).split(',').map(Number).filter(Boolean);
-      setSelectedListIds(ids);
-    } else if (campaign.audienceId) {
-      setSelectedListIds([Number(campaign.audienceId)]);
-    } else {
-      setSelectedListIds([]);
+    let listIds: number[] = [];
+    if (fullCampaign.audienceListIds) {
+      listIds = String(fullCampaign.audienceListIds)
+        .split(",")
+        .map(id => Number(id.trim()))
+        .filter(n => !isNaN(n) && n > 0);
+    } else if (fullCampaign.audienceId && Number(fullCampaign.audienceId) > 0) {
+      listIds = [Number(fullCampaign.audienceId)];
     }
+    setSelectedListIds(listIds);
 
-    if (campaign.excludeListIds) {
-      const exc = String(campaign.excludeListIds).split(',').map(Number).filter(Boolean);
+    if (fullCampaign.excludeListIds) {
+      const exc = String(fullCampaign.excludeListIds)
+        .split(",")
+        .map(id => Number(id.trim()))
+        .filter(n => !isNaN(n) && n > 0);
       setExcludedListIds(exc);
       if (exc.length > 0) setShowAdvanced(true);
     } else {
       setExcludedListIds([]);
     }
 
-    setSelectedTemplateHtml(campaign.templateHtml || "");
+    setSelectedTemplateHtml(fullCampaign.templateHtml || "");
     setStep(1);
-    setWizardOpen(true);
+  };
+
+  const handleSaveDraft = () => {
+    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
+    const payload = {
+      name: name || "Untitled Campaign Draft",
+      subject: subject || "",
+      previewText: previewText || null,
+      fromName: fromName || "Default Sender",
+      fromEmail: fromEmail || "",
+      replyToName: replyToName.trim() || null,
+      replyToEmail: resolvedReplyToEmail,
+      replyToListId,
+      audienceType: recipientTab === "individual" ? "individual" : "list",
+      audienceId: selectedListIds[0] || 0,
+      audienceListIds: recipientTab === "individual" ? null : (selectedListIds.length > 0 ? selectedListIds.join(",") : null),
+      individualEmails: recipientTab === "individual" ? (individualEmails.length > 0 ? individualEmails.join(",") : null) : null,
+      excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
+      skipUnengaged,
+      templateHtml: selectedTemplateHtml || "",
+      status: "draft",
+    };
+
+    if (campaignId) {
+      updateCampaignMutation.mutate(
+        { id: campaignId, data: payload },
+        {
+          onSuccess: () => {
+            toast.success("Draft saved successfully!");
+            setWizardOpen(false);
+            resetWizard();
+          },
+        }
+      );
+    } else {
+      createCampaignMutation.mutate(payload, {
+        onSuccess: () => {
+          toast.success("Draft created and saved!");
+          setWizardOpen(false);
+          resetWizard();
+        },
+      });
+    }
   };
 
   const handleNextStep1 = () => {
     if (!fromName || !fromEmail) {
       toast.error("Please provide a sender name and email.");
       return;
+    }
+    if (!testEmail) {
+      setTestEmail(fromEmail);
     }
     const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
 
@@ -551,16 +677,52 @@ export default function CampaignsPage() {
     }
   };
 
-  const handleSimpleEditorSave = async (savedName: string, savedHtml: string) => {
-    const payload = {
-      name: savedName.trim() || "Campaign Template",
-      subject: null,
-      previewText: null,
-      contentHtml: savedHtml.trim(),
-    };
+  const handleOpenEditorForCurrent = () => {
+    setWizardOpen(false);
+    setEditorMode("simple");
+  };
 
-    // Create the template
-    createCampaignTemplateMutation.mutate(payload);
+  const handleSimpleEditorSave = async (savedName: string, savedHtml: string) => {
+    const cleanHtml = savedHtml.trim();
+    setSelectedTemplateHtml(cleanHtml);
+
+    // 1. Update existing campaign draft if created
+    if (campaignId) {
+      updateCampaignMutation.mutate({
+        id: campaignId,
+        data: { templateHtml: cleanHtml },
+      });
+    } else if (name && name.trim()) {
+      try {
+        const newCamp = await api.campaigns.create({
+          name: name.trim(),
+          subject: subject.trim() || name.trim(),
+          fromName: fromName || "Talent Suite 2026",
+          fromEmail: fromEmail || "events@premiumroles.com",
+          templateHtml: cleanHtml,
+        });
+        setCampaignId(newCamp.id);
+      } catch (err) {
+        console.warn("Failed to auto-create draft for template save:", err);
+      }
+    }
+
+    // 2. Update selected base template if linked
+    if (selectedTemplateId) {
+      try {
+        await api.templates.update(selectedTemplateId, {
+          name: savedName.trim() || "Campaign Template",
+          contentHtml: cleanHtml,
+        });
+        queryClient.invalidateQueries({ queryKey: ["templates-for-campaign"] });
+      } catch (err) {
+        console.warn("Failed to update base template record:", err);
+      }
+    }
+
+    setEditorMode("none");
+    setWizardOpen(true);
+    toast.success("Email design & attachments updated successfully!");
   };
 
   const createCampaignTemplateMutation = useMutation({
@@ -581,7 +743,19 @@ export default function CampaignsPage() {
       toast.error("Please select an email template.");
       return;
     }
-    setStep(5);
+    if (campaignId) {
+      updateCampaignMutation.mutate(
+        {
+          id: campaignId,
+          data: {
+            templateHtml: selectedTemplateHtml,
+          },
+        },
+        { onSuccess: () => setStep(5) }
+      );
+    } else {
+      setStep(5);
+    }
   };
 
   const handleNext = () => {
@@ -593,6 +767,15 @@ export default function CampaignsPage() {
 
   const handleSendCampaign = () => {
     if (!campaignId) return;
+
+    const recipientCount = audienceStats?.subscribed ?? 0;
+    const remainingEmails = quotaData?.remaining;
+
+    if (remainingEmails !== undefined && remainingEmails !== null && recipientCount > remainingEmails) {
+      setPlanExceededModalOpen(true);
+      return;
+    }
+
     sendCampaignMutation.mutate(campaignId);
   };
 
@@ -755,6 +938,15 @@ export default function CampaignsPage() {
                             <DropdownMenuItem className="cursor-pointer" onClick={() => handleOpenEdit(campaign)}>
                               <Edit className="size-4 mr-2" />
                               Edit Draft
+                            </DropdownMenuItem>
+                          )}
+                          {campaign.status === "sending" && (
+                            <DropdownMenuItem
+                              className="cursor-pointer text-amber-600 focus:text-amber-700 font-medium"
+                              onClick={() => resetCampaignMutation.mutate(campaign.id)}
+                            >
+                              <RefreshCw className="size-4 mr-2" />
+                              Reset Status
                             </DropdownMenuItem>
                           )}
                           <DropdownMenuItem
@@ -1516,16 +1708,37 @@ export default function CampaignsPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-lg font-semibold">Design</h3>
-                    <p className="text-xs text-muted-foreground">Create your email content.</p>
+                    <p className="text-xs text-muted-foreground">Create and customize your email content.</p>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPickerOpen(true)}
-                  >
-                    <Plus className="size-4 mr-2" />
-                    Add Template
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {selectedTemplateHtml && (
+                      <Button
+                        size="sm"
+                        onClick={handleOpenEditorForCurrent}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm"
+                      >
+                        <Edit className="size-4 mr-1.5" />
+                        Edit Design
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPickerOpen(true)}
+                    >
+                      {selectedTemplateHtml ? (
+                        <>
+                          <RefreshCw className="size-4 mr-2" />
+                          Change Template
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="size-4 mr-2" />
+                          Choose Template
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="mt-4">
@@ -1541,13 +1754,39 @@ export default function CampaignsPage() {
                           </div>
                           <div className="flex items-center justify-between mt-4">
                             <span className="text-[10px] text-muted-foreground">Updated {format(new Date(t.createdAt), "MMM d")}</span>
-                            <span className="size-5 rounded-full bg-emerald-500 flex items-center justify-center text-white">
-                              <Check className="size-3" />
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={handleOpenEditorForCurrent}
+                                className="h-7 text-xs bg-white border-emerald-300 text-emerald-800 hover:bg-emerald-50"
+                              >
+                                <Edit className="size-3 mr-1" />
+                                Edit Content
+                              </Button>
+                              <span className="size-5 rounded-full bg-emerald-500 flex items-center justify-center text-white">
+                                <Check className="size-3" />
+                              </span>
+                            </div>
                           </div>
                         </Card>
                       );
                     })()
+                  ) : selectedTemplateHtml ? (
+                    <Card className="p-4 border-emerald-600 bg-emerald-50/10 shadow-sm flex items-center justify-between">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-sm">Custom Campaign Design</div>
+                        <div className="text-xs text-muted-foreground">Custom HTML design attached to campaign</div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={handleOpenEditorForCurrent}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs h-8"
+                      >
+                        <Edit className="size-3.5 mr-1.5" />
+                        Edit Design
+                      </Button>
+                    </Card>
                   ) : (
                     <div className="text-center py-8 px-4 border rounded-lg border-dashed">
                       <FileText className="size-8 mx-auto text-muted-foreground mb-3" />
@@ -1560,9 +1799,20 @@ export default function CampaignsPage() {
 
                 {selectedTemplateHtml && (
                   <div className="border border-border rounded-lg overflow-hidden mt-2 bg-muted/10">
-                    <div className="px-3 py-2 bg-muted/30 border-b border-border flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-                      <Eye className="size-3.5 text-emerald-600" />
-                      Template Preview
+                    <div className="px-3 py-2 bg-muted/30 border-b border-border flex items-center justify-between text-xs font-semibold text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <Eye className="size-3.5 text-emerald-600" />
+                        Template Preview
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleOpenEditorForCurrent}
+                        className="h-6 text-xs text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 font-semibold px-2"
+                      >
+                        <Edit className="size-3 mr-1" />
+                        Edit Content
+                      </Button>
                     </div>
                     <iframe
                       srcDoc={selectedTemplateHtml}
@@ -1581,6 +1831,81 @@ export default function CampaignsPage() {
                 <div>
                   <h3 className="text-lg font-semibold">Review & Send</h3>
                   <p className="text-xs text-muted-foreground">Double check everything before sending.</p>
+                </div>
+
+                {/* Send Test Email Card */}
+                <div className="bg-amber-50/70 border border-amber-200/90 dark:bg-amber-950/20 dark:border-amber-800/40 rounded-xl p-4 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="size-9 rounded-lg bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 flex items-center justify-center shrink-0">
+                      <FlaskConical className="size-5" />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                          Send a Test Email First
+                        </h4>
+                        <Badge variant="outline" className="bg-amber-100/80 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border-amber-300 dark:border-amber-700 text-[10px] font-semibold uppercase tracking-wide">
+                          Recommended
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                        Send a test email to yourself or a colleague to check design formatting, subject line, reply-to header, and links before sending to your full audience.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+                    <div className="relative flex-1">
+                      <Input
+                        type="email"
+                        placeholder="Enter recipient test email (e.g. name@company.com)"
+                        value={testEmail}
+                        onChange={(e) => setTestEmail(e.target.value)}
+                        className="bg-white dark:bg-slate-900 border-amber-300/80 dark:border-amber-800/80 text-xs focus-visible:ring-amber-500 pr-8"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleSendTestEmail();
+                          }
+                        }}
+                      />
+                      {testEmail && (
+                        <button
+                          type="button"
+                          onClick={() => setTestEmail("")}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    <Button
+                      onClick={handleSendTestEmail}
+                      disabled={sendTestEmailMutation.isPending || !testEmail.trim()}
+                      className="bg-amber-600 hover:bg-amber-700 text-white shadow-sm font-medium text-xs h-9 px-4 shrink-0"
+                    >
+                      {sendTestEmailMutation.isPending ? (
+                        <>
+                          <Loader2 className="size-3.5 animate-spin mr-1.5" />
+                          Sending Test...
+                        </>
+                      ) : (
+                        <>
+                          <Send className="size-3.5 mr-1.5" />
+                          Send Test Email
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {lastTestSentTo && (
+                    <div className="flex items-center gap-2 text-xs text-emerald-800 dark:text-emerald-300 bg-emerald-100/80 dark:bg-emerald-950/40 border border-emerald-300/70 dark:border-emerald-800/50 rounded-lg px-3 py-1.5">
+                      <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+                      <span>
+                        Test email sent to <strong className="font-semibold">{lastTestSentTo.email}</strong> at {lastTestSentTo.time}. Check your inbox!
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-3 bg-muted/10 border border-border/80 rounded-xl p-4">
@@ -1671,24 +1996,74 @@ export default function CampaignsPage() {
                     </div>
                   );
                 })()}
+
+                {/* Plan Limit Exceeded Alert Banner */}
+                {!isLoadingAudienceStats && !isLoadingQuota && quotaData?.remaining !== undefined && (audienceStats?.subscribed ?? 0) > quotaData.remaining && (
+                  <div className="bg-red-50 border border-red-300 dark:bg-red-950/40 dark:border-red-800/60 rounded-xl p-4 flex items-start gap-3 shadow-sm">
+                    <AlertTriangle className="size-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                    <div className="space-y-2 flex-1">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-bold text-red-900 dark:text-red-200">
+                          Plan Sending Limit Exceeded
+                        </p>
+                        <Badge variant="destructive" className="text-[10px] uppercase font-bold tracking-wider">
+                          Limit Exceeded
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-red-800 dark:text-red-300 leading-relaxed">
+                        Your campaign target has <strong className="font-extrabold text-red-950 dark:text-red-100">{(audienceStats?.subscribed ?? 0).toLocaleString()}</strong> recipients, but you only have <strong className="font-extrabold text-red-950 dark:text-red-100">{(quotaData.remaining).toLocaleString()}</strong> remaining emails in your plan limit.
+                      </p>
+                      <p className="text-[11px] text-red-700 dark:text-red-400 font-medium">
+                        Exceeds limit by <strong className="font-bold text-red-900 dark:text-red-200">{((audienceStats?.subscribed ?? 0) - quotaData.remaining).toLocaleString()}</strong> contacts.
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setStep(2)}
+                          className="h-7 text-xs bg-white text-red-700 border-red-300 hover:bg-red-50 hover:text-red-800"
+                        >
+                          Adjust Recipients (Step 2)
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => setPlanExceededModalOpen(true)}
+                          className="h-7 text-xs bg-red-600 hover:bg-red-700 text-white"
+                        >
+                          View Limit Warning Popup
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
           </div>
 
           {/* Footer Navigation */}
-          <div className="p-6 border-t border-border bg-muted/20 flex items-center justify-between">
-            {step > 1 ? (
-              <Button variant="outline" onClick={() => setStep(step - 1)} className="shadow-sm">
-                <ArrowLeft className="size-4 mr-2" />
-                Back
+          <div className="p-6 border-t border-border bg-muted/20 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              {step > 1 ? (
+                <Button variant="outline" onClick={() => setStep(step - 1)} className="shadow-sm">
+                  <ArrowLeft className="size-4 mr-2" />
+                  Back
+                </Button>
+              ) : null}
+
+              <Button
+                variant="outline"
+                onClick={handleSaveDraft}
+                disabled={createCampaignMutation.isPending || updateCampaignMutation.isPending}
+                className="shadow-sm text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700"
+              >
+                <FileText className="size-4 mr-2 text-slate-500" />
+                Save as Draft
               </Button>
-            ) : (
-              <div />
-            )}
+            </div>
 
             {step < 5 ? (
-              <Button onClick={handleNext} className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm">
+              <Button onClick={handleNext} className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm font-semibold">
                 {createCampaignMutation.isPending || updateCampaignMutation.isPending ? (
                   <>
                     <Loader2 className="size-4 animate-spin mr-2" />
@@ -1897,6 +2272,12 @@ export default function CampaignsPage() {
 
       {editorMode === "simple" && (
         <SimpleEditor
+          initialName={
+            selectedTemplateId
+              ? templates?.find((tpl: any) => tpl.id === selectedTemplateId)?.name || name || "Campaign Email Content"
+              : name || "Campaign Email Content"
+          }
+          initialHtml={selectedTemplateHtml}
           onSave={handleSimpleEditorSave}
           onCancel={() => {
             setEditorMode("none");
@@ -1904,6 +2285,66 @@ export default function CampaignsPage() {
           }}
         />
       )}
+      {/* Plan Limit Exceeded Modal */}
+      <Dialog open={planExceededModalOpen} onOpenChange={setPlanExceededModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader className="space-y-3 text-center sm:text-left">
+            <div className="size-12 rounded-full bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto sm:mx-0 border border-red-200 dark:border-red-900">
+              <AlertTriangle className="size-6" />
+            </div>
+            <div>
+              <DialogTitle className="text-lg font-bold text-red-900 dark:text-red-200">
+                Plan Limit Exceeded
+              </DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground mt-1">
+                Send to as many recipients as you wish, within your plan limits. You cannot send this campaign because the selected target audience exceeds your remaining plan limit.
+              </DialogDescription>
+            </div>
+          </DialogHeader>
+
+          <div className="bg-muted/30 border border-border rounded-xl p-4 space-y-2.5 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b border-border">
+              <span className="text-muted-foreground">Target Recipients:</span>
+              <span className="font-bold text-foreground text-sm">{(audienceStats?.subscribed ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center pb-2 border-b border-border">
+              <span className="text-muted-foreground">Remaining Plan Emails:</span>
+              <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm">{(quotaData?.remaining ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center text-red-600 dark:text-red-400 font-semibold">
+              <span>Excess Recipients:</span>
+              <span className="font-bold text-sm">
+                {Math.max(0, (audienceStats?.subscribed ?? 0) - (quotaData?.remaining ?? 0)).toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Please adjust your audience selection in Step 2 to fit within your remaining <strong>{(quotaData?.remaining ?? 0).toLocaleString()}</strong> emails, or upgrade your plan limit.
+          </p>
+
+          <DialogFooter className="gap-2 sm:gap-0 flex-col-reverse sm:flex-row">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPlanExceededModalOpen(false);
+                setStep(2);
+              }}
+            >
+              Adjust Recipients (Step 2)
+            </Button>
+            <Button
+              onClick={() => {
+                setPlanExceededModalOpen(false);
+                navigate("/settings");
+              }}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              Upgrade Plan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

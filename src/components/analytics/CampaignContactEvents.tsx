@@ -33,7 +33,7 @@ const badgeColors: Record<string, string> = {
 
 export function CampaignContactEvents({ campaignId }: CampaignContactEventsProps) {
   const [page, setPage] = useState(1);
-  const [pageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedContact, setSelectedContact] = useState<any>(null);
@@ -52,6 +52,22 @@ export function CampaignContactEvents({ campaignId }: CampaignContactEventsProps
     queryFn: () => api.analytics.contactEvents(campaignId, { page, pageSize, q: debouncedSearch }),
     enabled: !!campaignId,
   });
+
+  const getPageNumbers = (current: number, totalPages: number) => {
+    const pages: (number | string)[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (current > 3) pages.push("...");
+      const start = Math.max(2, current - 1);
+      const end = Math.min(totalPages - 1, current + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (current < totalPages - 2) pages.push("...");
+      pages.push(totalPages);
+    }
+    return pages;
+  };
 
   const getHighestState = (events: any[]) => {
     const types = events.map(e => e.eventType);
@@ -190,33 +206,79 @@ export function CampaignContactEvents({ campaignId }: CampaignContactEventsProps
             </div>
           )}
           
-          {/* Pagination */}
-          {data && data.totalPages > 1 && (
-            <div className="flex items-center justify-between px-6 py-4 border-t bg-muted/20">
-              <span className="text-sm text-muted-foreground">
-                Showing <span className="font-medium text-foreground">{(page - 1) * pageSize + 1}</span> to <span className="font-medium text-foreground">{Math.min(page * pageSize, data.total)}</span> of <span className="font-medium text-foreground">{data.total}</span> entries
-              </span>
-              <div className="flex items-center space-x-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                >
-                  <ChevronLeft className="h-4 w-4 mr-1" />
-                  Prev
-                </Button>
-                <div className="text-sm font-medium px-2">Page {page} of {data.totalPages}</div>
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => setPage(p => Math.min(data.totalPages, p + 1))}
-                  disabled={page === data.totalPages}
-                >
-                  Next
-                  <ChevronRight className="h-4 w-4 ml-1" />
-                </Button>
+          {/* Pagination Bar */}
+          {data && data.total > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between px-6 py-4 border-t bg-muted/20 gap-4">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                <span>
+                  Showing <span className="font-semibold text-foreground">{(page - 1) * pageSize + 1}</span> to{" "}
+                  <span className="font-semibold text-foreground">{Math.min(page * pageSize, data.total)}</span> of{" "}
+                  <span className="font-semibold text-foreground">{data.total.toLocaleString()}</span> contacts
+                </span>
+
+                <div className="flex items-center gap-1.5 ml-2 border-l pl-3">
+                  <span>Rows:</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setPage(1);
+                    }}
+                    className="h-8 text-xs bg-background border border-input rounded px-2 font-medium cursor-pointer focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value={10}>10 per page</option>
+                    <option value={20}>20 per page</option>
+                    <option value={50}>50 per page</option>
+                    <option value={100}>100 per page</option>
+                  </select>
+                </div>
               </div>
+
+              {data.totalPages > 0 && (
+                <div className="flex items-center space-x-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="h-8 text-xs px-2"
+                  >
+                    <ChevronLeft className="h-4 w-4 mr-1" />
+                    Prev
+                  </Button>
+
+                  <div className="flex items-center space-x-1">
+                    {getPageNumbers(page, data.totalPages).map((p, idx) =>
+                      typeof p === "number" ? (
+                        <Button
+                          key={idx}
+                          variant={page === p ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setPage(p)}
+                          className={cn("h-8 w-8 p-0 text-xs font-semibold", page === p && "bg-primary text-primary-foreground")}
+                        >
+                          {p}
+                        </Button>
+                      ) : (
+                        <span key={idx} className="px-1 text-xs text-muted-foreground">
+                          ...
+                        </span>
+                      )
+                    )}
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.min(data.totalPages, p + 1))}
+                    disabled={page >= data.totalPages}
+                    className="h-8 text-xs px-2"
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4 ml-1" />
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
