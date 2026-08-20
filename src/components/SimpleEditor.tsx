@@ -482,7 +482,8 @@ export default function SimpleEditor({
 
   // ── Document / File attachment logic ───────────────────────────────────────
   const insertDocumentCard = (name: string, size: string, url: string) => {
-    const fileExt = name.split('.').pop()?.toUpperCase() || 'FILE';
+    const cleanName = name.replace(/^\d+_/, "");
+    const fileExt = cleanName.split('.').pop()?.toUpperCase() || 'FILE';
     let badgeBg = '#3b82f6';
     let badgeTextColor = '#ffffff';
     if (['PDF'].includes(fileExt)) badgeBg = '#ef4444';
@@ -498,8 +499,8 @@ export default function SimpleEditor({
           ${fileExt.slice(0, 4)}
         </div>
         <div style="display:flex;flex-direction:column;gap:2px;overflow:hidden;">
-          <a href="${url}" download="${name}" target="_blank" style="font-weight:600;font-size:14px;color:#0f172a;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">
-            ${name}
+          <a href="${url}" download="${cleanName}" target="_blank" style="font-weight:600;font-size:14px;color:#0f172a;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">
+            ${cleanName}
           </a>
           <span style="font-size:12px;color:#64748b;display:flex;align-items:center;gap:8px;">
             <span>📎 Attachment ${size ? `• ${size}` : ''}</span>
