@@ -743,7 +743,19 @@ export default function CampaignsPage() {
       toast.error("Please select an email template.");
       return;
     }
-    setStep(5);
+    if (campaignId) {
+      updateCampaignMutation.mutate(
+        {
+          id: campaignId,
+          data: {
+            templateHtml: selectedTemplateHtml,
+          },
+        },
+        { onSuccess: () => setStep(5) }
+      );
+    } else {
+      setStep(5);
+    }
   };
 
   const handleNext = () => {

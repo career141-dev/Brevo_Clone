@@ -35,7 +35,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const uploadsDir = path.resolve(__dirname, "../../public/uploads");
+const uploadsDir = path.resolve(process.cwd(), "public/uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -971,8 +971,8 @@ function normalizeEmailHtml(html: string): string {
     return `${p1}=${p2}${baseUrl}/uploads/${p3}${p2}`;
   });
 
-  // Rewrite any localhost URLs to production domain
-  normalized = normalized.replace(/http:\/\/localhost:\d+\/uploads\//g, `${baseUrl}/uploads/`);
+  // Rewrite any localhost / 127.0.0.1 upload URLs to production domain
+  normalized = normalized.replace(/https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/uploads\//g, `${baseUrl}/uploads/`);
 
   return normalized;
 }
@@ -2442,11 +2442,11 @@ function injectTracking(
   email: string,
   campaignId: number | null,
 ): string {
-  // Rewrite links — skip mailto:, tel:, unsubscribe links, and already-tracked links
+  // Rewrite links — skip mailto:, tel:, unsubscribe links, document attachments (/uploads/), and already-tracked links
   const tracked = html.replace(
     /href="(https?:\/\/[^"]+)"/gi,
     (_match, url: string) => {
-      if (url.includes("/api/track/") || url.includes("/api/unsubscribe")) {
+      if (url.includes("/api/track/") || url.includes("/api/unsubscribe") || url.includes("/uploads/")) {
         return `href="${url}"`;
       }
       return `href="${makeClickUrl(email, campaignId, url)}"`;
