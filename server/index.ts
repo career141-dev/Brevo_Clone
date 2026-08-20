@@ -44,8 +44,14 @@ if (!fs.existsSync(uploadsDir)) {
 app.use("/uploads", express.static(uploadsDir));
 
 // POST /api/upload - Handle file upload and return public downloadable URL (Cloudflare R2 + local fallback)
-app.post("/api/upload", async (req, res) => {
+// 🔒 Auth guard: only authenticated Clerk users can upload files
+app.post("/api/upload", async (req: any, res: any) => {
   try {
+    const auth = getAuth(req);
+    if (!auth?.userId) {
+      return res.status(401).json({ error: "Unauthorized: Please log in to upload files." });
+    }
+
     const { fileName, fileData } = req.body;
     if (!fileName || !fileData) {
       return res.status(400).json({ error: "fileName and fileData required" });
@@ -102,7 +108,16 @@ app.post("/api/upload", async (req, res) => {
   }
 });
 
+// Allowed origins for /api/download — prevents open proxy abuse
+const R2_PUBLIC_DOMAIN = (process.env.R2_PUBLIC_URL || "").replace(/^https?:\/\//, "").split("/")[0];
+const ALLOWED_DOWNLOAD_HOSTS = [
+  R2_PUBLIC_DOMAIN,
+  "r2.dev",
+  "r2.cloudflarestorage.com",
+];
+
 // GET /api/download - Force-download files with Content-Disposition: attachment
+// 🔒 Whitelist guard: only serves files from R2 or local uploads — prevents open proxy abuse
 app.get("/api/download", async (req, res) => {
   try {
     const fileUrl = req.query.url as string;
@@ -113,10 +128,20 @@ app.get("/api/download", async (req, res) => {
       return res.status(400).send("Missing file URL");
     }
 
-    res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
-
-    // 1. If remote R2 / HTTP URL, fetch and stream to client
+    // 🔒 Reject any URL that is not from our R2 bucket or local uploads
     if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) {
+      try {
+        const parsedHost = new URL(fileUrl).hostname;
+        const isAllowed = ALLOWED_DOWNLOAD_HOSTS.some(h => h && parsedHost.endsWith(h));
+        if (!isAllowed) {
+          console.warn(`[DOWNLOAD BLOCKED] Rejected proxy request for external URL: ${fileUrl}`);
+          return res.status(403).send("Forbidden: Only Career141 R2 hosted files can be downloaded via this endpoint.");
+        }
+      } catch {
+        return res.status(400).send("Invalid file URL.");
+      }
+
+      res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
       const response = await fetch(fileUrl);
       if (!response.ok) {
         return res.status(response.status).send("File not found on storage");
@@ -131,6 +156,7 @@ app.get("/api/download", async (req, res) => {
     const localDiskName = fileUrl.replace(/^\/uploads\//, "");
     const localPath = path.join(uploadsDir, localDiskName);
     if (fs.existsSync(localPath)) {
+      res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
       return res.download(localPath, cleanName);
     }
 
@@ -150,9 +176,11 @@ const apiLimiter = rateLimit({
 });
 
 app.use("/api/", apiLimiter);
-app.use("/api/", (req: any, res: any, next: any) => {
-  const userId = "user_3Epvu1kcUczQTmQSvidHS9K4Wak"; // Temporary hardcoded for import script
-  authStorage.run({ userId }, next);
+// Auth storage middleware — reads Clerk userId and stores it in async context for DB queries
+app.use("/api/", clerkMiddleware(), (req: any, res: any, next: any) => {
+  const { userId } = getAuth(req) || {};
+  const effectiveUserId = userId || "user_3Epvu1kcUczQTmQSvidHS9K4Wak"; // fallback for unauthenticated public routes (tracking, webhooks)
+  authStorage.run({ userId: effectiveUserId }, next);
 });
 
 // ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
@@ -2441,19 +2469,20 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
 
 function makeUnsubscribeUrl(email: string, campaignId: number | null): string {
-  const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
+  // No expiry on unsubscribe links — recipients must always be able to unsubscribe (CAN-SPAM / GDPR compliance)
+  const token = jwt.sign({ email, campaignId }, JWT_SECRET);
   return `${APP_URL()}/api/unsubscribe?token=${token}`;
 }
 
 /** Returns a URL that logs an open event then serves a 1×1 transparent pixel */
 function makeOpenPixelUrl(email: string, campaignId: number | null): string {
-  const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
+  const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "2y" });
   return `${APP_URL()}/api/track/open?t=${token}`;
 }
 
 /** Rewrites a destination URL into a tracked click-redirect URL */
 function makeClickUrl(email: string, campaignId: number | null, destinationUrl: string): string {
-  const token = jwt.sign({ email, campaignId, url: destinationUrl }, JWT_SECRET, { expiresIn: "90d" });
+  const token = jwt.sign({ email, campaignId, url: destinationUrl }, JWT_SECRET, { expiresIn: "2y" });
   return `${APP_URL()}/api/track/click?t=${token}`;
 }
 
@@ -2472,11 +2501,18 @@ function injectTracking(
   email: string,
   campaignId: number | null,
 ): string {
-  // Rewrite links — skip mailto:, tel:, unsubscribe links, document attachments (/uploads/), and already-tracked links
+  // Rewrite links — skip unsubscribe, tracking, uploads, R2 CDN, and /api/download links
   const tracked = html.replace(
     /href="(https?:\/\/[^"]+)"/gi,
     (_match, url: string) => {
-      if (url.includes("/api/track/") || url.includes("/api/unsubscribe") || url.includes("/uploads/")) {
+      if (
+        url.includes("/api/track/") ||
+        url.includes("/api/unsubscribe") ||
+        url.includes("/api/download") ||
+        url.includes("/uploads/") ||
+        url.includes("r2.dev") ||
+        url.includes("r2.cloudflarestorage.com")
+      ) {
         return `href="${url}"`;
       }
       return `href="${makeClickUrl(email, campaignId, url)}"`;
@@ -3421,8 +3457,32 @@ app.get(/^(?!\/api).*/, (_req, res) => {
 
 // ── Start ───────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Server running on http://localhost:${PORT}`);
-});
 
-// Trigger restart
+  // 🔄 Startup recovery: reset any campaigns stuck in "sending" from a previous crashed/restarted process
+  try {
+    const stuckCampaigns = await prisma.campaign.findMany({
+      where: { status: "sending" },
+      select: { id: true },
+    });
+
+    for (const c of stuckCampaigns) {
+      const sentCount = await prisma.emailEvent.count({
+        where: { campaignId: c.id, eventType: "sent" },
+      });
+      const recoveredStatus = sentCount > 0 ? "sent" : "draft";
+      await prisma.campaign.update({
+        where: { id: c.id },
+        data: { status: recoveredStatus, ...(sentCount > 0 ? { totalRecipients: sentCount } : {}) },
+      });
+      console.log(`[STARTUP RECOVERY] Campaign ${c.id} was stuck in "sending" → reset to "${recoveredStatus}" (${sentCount} emails confirmed sent)`);
+    }
+
+    if (stuckCampaigns.length > 0) {
+      console.log(`[STARTUP RECOVERY] Recovered ${stuckCampaigns.length} stuck campaign(s).`);
+    }
+  } catch (err) {
+    console.warn("[STARTUP RECOVERY] Could not check for stuck campaigns:", err);
+  }
+});
