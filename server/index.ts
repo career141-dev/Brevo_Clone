@@ -1167,6 +1167,39 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       return res.status(400).json({ error: "No template selected" });
     }
 
+    // Resolve both database internal id and brevoId for complete audience coverage
+    const matchingTargetLists = await prisma.list.findMany({
+      where: {
+        OR: [
+          { id: { in: targetListIds } },
+          { brevoId: { in: targetListIds } }
+        ]
+      },
+      select: { id: true, brevoId: true }
+    });
+    const resolvedTargetListIds = Array.from(new Set([
+      ...targetListIds,
+      ...matchingTargetLists.map(l => l.id),
+      ...matchingTargetLists.map(l => l.brevoId).filter(Boolean) as number[]
+    ]));
+
+    const matchingExcludeLists = excludeListIds.length > 0
+      ? await prisma.list.findMany({
+          where: {
+            OR: [
+              { id: { in: excludeListIds } },
+              { brevoId: { in: excludeListIds } }
+            ]
+          },
+          select: { id: true, brevoId: true }
+        })
+      : [];
+    const resolvedExcludeListIds = Array.from(new Set([
+      ...excludeListIds,
+      ...matchingExcludeLists.map(l => l.id),
+      ...matchingExcludeLists.map(l => l.brevoId).filter(Boolean) as number[]
+    ]));
+
     // 2. Mark as sending atomically to prevent race condition
     const updateResult = await prisma.campaign.updateMany({
       where: { id: campaignId, status: { in: ["draft", "scheduled", "paused", "sending"] } },
@@ -1176,6 +1209,10 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
     if (updateResult.count === 0) {
       return res.status(400).json({ error: "Campaign is already sending or sent" });
     }
+
+    // Invalidate caches so UI immediately shows sending status
+    invalidateAnalyticsCache(campaignId);
+    analyticsCache.delete('campaigns:stats:global');
 
     // 3. Fetch subscribed contacts from selected list(s) or individual emails
     let contacts: any[] = [];
@@ -1217,8 +1254,8 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         where: {
           status: "subscribed",
           contactLists: {
-            some: { listId: { in: targetListIds } },
-            ...(excludeListIds.length > 0 ? { none: { listId: { in: excludeListIds } } } : {}),
+            some: { listId: { in: resolvedTargetListIds } },
+            ...(resolvedExcludeListIds.length > 0 ? { none: { listId: { in: resolvedExcludeListIds } } } : {}),
           },
         },
       });
@@ -1236,23 +1273,16 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       });
     }
 
-    // Check plan quota limit safety guard
+    // Check plan quota limit safety guard — cap to available quota rather than failing
     try {
       const quota = await sesClient.send(new GetSendQuotaCommand({}));
       const max24h = quota.Max24HourSend ?? 0;
       const sent24h = quota.SentLast24Hours ?? 0;
       const remainingQuota = Math.max(0, max24h - sent24h);
 
-      if (contacts.length > remainingQuota) {
-        // Revert status back to draft
-        await prisma.campaign.update({
-          where: { id: campaignId },
-          data: { status: "draft" },
-        });
-        return res.status(400).json({
-          error: "Plan Sending Limit Exceeded",
-          details: `Your campaign has ${contacts.length.toLocaleString()} recipients, but you only have ${remainingQuota.toLocaleString()} remaining emails in your plan limit. Please upgrade your plan or select fewer contacts.`
-        });
+      if (remainingQuota > 0 && contacts.length > remainingQuota) {
+        console.log(`[QUOTA CAP] Capping campaign contacts from ${contacts.length} to ${remainingQuota} to stay within daily quota.`);
+        contacts = contacts.slice(0, remainingQuota);
       }
     } catch (quotaErr) {
       console.warn("Could not check SES quota during send:", quotaErr);
