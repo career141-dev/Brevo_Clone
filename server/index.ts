@@ -944,9 +944,30 @@ app.post("/api/campaigns/:id/duplicate", async (req, res) => {
   }
 });
 
+const getAppBaseUrl = () => {
+  if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, "");
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+  return "https://brevoclone-production.up.railway.app";
+};
+
+function normalizeEmailHtml(html: string): string {
+  if (!html) return "";
+  const baseUrl = getAppBaseUrl();
+
+  // Rewrite relative /uploads/ links and src attributes to absolute public URLs
+  let normalized = html.replace(/(src|href)=(["'])\/uploads\/([^"'\s>?#]+)\2/g, (match, p1, p2, p3) => {
+    return `${p1}=${p2}${baseUrl}/uploads/${p3}${p2}`;
+  });
+
+  // Rewrite any localhost URLs to production domain
+  normalized = normalized.replace(/http:\/\/localhost:\d+\/uploads\//g, `${baseUrl}/uploads/`);
+
+  return normalized;
+}
+
 function extractAttachmentsFromHtml(html: string): { filename: string; content: Buffer; contentType: string }[] {
   const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
-  const regex = /\/uploads\/([^"'\s>]+)/g;
+  const regex = /\/uploads\/([^"'\s>?#]+)/g;
   let match;
   const seenFiles = new Set<string>();
 
@@ -1184,8 +1205,8 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       let sent = 0;
       const errors: string[] = [];
 
-      // Safety fallback: Ensure unsubscribe URL tag is present in campaign template
-      let template = campaign.templateHtml;
+      // Safety fallback: Ensure unsubscribe URL tag is present in campaign template & normalize relative document/image URLs
+      let template = normalizeEmailHtml(campaign.templateHtml);
       if (!template.includes("{{unsubscribe_url}}")) {
         const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>If you wish to unsubscribe, you can <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">unsubscribe here</a>.</p></div>`;
         if (/<\/body>/i.test(template)) {
@@ -1441,8 +1462,8 @@ app.post("/api/campaigns/:id/send-test", async (req, res) => {
     const company = (dbContact?.company || "").trim() || "Test Company";
     const designation = (dbContact?.designation || "").trim() || "Tester";
 
-    // Prepare template HTML with placeholders & fallback unsubscribe URL
-    let template = templateHtml;
+    // Prepare template HTML with placeholders, normalize relative document/image URLs & fallback unsubscribe URL
+    let template = normalizeEmailHtml(templateHtml);
     if (!template.includes("{{unsubscribe_url}}")) {
       const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>This is a test email. <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">Unsubscribe link test</a></p></div>`;
       if (/<\/body>/i.test(template)) {
