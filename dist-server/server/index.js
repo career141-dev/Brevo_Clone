@@ -1099,6 +1099,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                     await sesv2Client.send(new SendEmailV2Command({
                         FromEmailAddress: fromHeader,
                         Destination: { ToAddresses: [contact.email] },
+                        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
                         ConfigurationSetName: "career141-tracking",
                         Content: {
                             Raw: {
@@ -1116,6 +1117,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                     const sesParams = {
                         FromEmailAddress: fromHeader,
                         Destination: { ToAddresses: [contact.email] },
+                        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
                         ConfigurationSetName: "career141-tracking",
                         Content: {
                             Simple: {
@@ -1126,10 +1128,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
                         },
                         EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
                     };
-                    if (replyToAddresses.length > 0) {
-                        sesParams.ReplyToEmailAddresses = replyToAddresses;
-                    }
-                    console.log(`[SEND][Campaign ${campaignId}] Sending to ${contact.email} | ReplyToEmailAddresses:`, sesParams.ReplyToEmailAddresses ?? "NOT SET");
+                    console.log(`[SEND][Campaign ${campaignId}] Sending to ${contact.email} | ReplyToAddresses:`, sesParams.ReplyToAddresses ?? "NOT SET");
                     await sesv2Client.send(new SendEmailV2Command(sesParams));
                 }
                 // Log "sent" event with campaignId
