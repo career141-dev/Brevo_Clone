@@ -913,22 +913,10 @@ export default function CampaignsPage() {
                     </td>
                     <td
                       className="p-4 cursor-pointer select-none"
-                      onClick={() => {
-                        if (campaign.status === "draft") {
-                          handleOpenEdit(campaign);
-                        } else if (campaign.status === "sent") {
-                          setReportCampaign(campaign);
-                          setReportOpen(true);
-                        }
-                      }}
+                      onClick={() => handleOpenEdit(campaign)}
                     >
-                      <div className="font-semibold text-gray-900 dark:text-gray-100 hover:text-emerald-600 transition-colors flex items-center gap-2">
+                      <div className="font-semibold text-gray-900 dark:text-gray-100 hover:text-emerald-600 transition-colors">
                         {campaign.name}
-                        {campaign.status === "draft" && (
-                          <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100">
-                            Click to Edit / Send ➔
-                          </span>
-                        )}
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{campaign.subject}</div>
                     </td>
@@ -950,11 +938,21 @@ export default function CampaignsPage() {
                             <MoreHorizontal className="size-4" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-40">
-                          {campaign.status === "draft" && (
-                            <DropdownMenuItem className="cursor-pointer" onClick={() => handleOpenEdit(campaign)}>
-                              <Edit className="size-4 mr-2" />
-                              Edit Draft
+                        <DropdownMenuContent align="end" className="w-44">
+                          <DropdownMenuItem className="cursor-pointer font-medium" onClick={() => handleOpenEdit(campaign)}>
+                            <Edit className="size-4 mr-2" />
+                            {campaign.status === "draft" ? "Edit Draft" : "Edit / Resend"}
+                          </DropdownMenuItem>
+                          {campaign.status === "sent" && (
+                            <DropdownMenuItem
+                              className="cursor-pointer font-medium text-emerald-600 focus:text-emerald-700"
+                              onClick={() => {
+                                setReportCampaign(campaign);
+                                setReportOpen(true);
+                              }}
+                            >
+                              <Eye className="size-4 mr-2" />
+                              View Report
                             </DropdownMenuItem>
                           )}
                           {campaign.status === "sending" && (
@@ -966,6 +964,10 @@ export default function CampaignsPage() {
                               Reset Status
                             </DropdownMenuItem>
                           )}
+                          <DropdownMenuItem className="cursor-pointer" onClick={() => duplicateCampaignMutation.mutate(campaign.id)}>
+                            <Copy className="size-4 mr-2" />
+                            Duplicate
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             className="cursor-pointer text-destructive focus:text-destructive"
                             onClick={() => {
@@ -976,22 +978,6 @@ export default function CampaignsPage() {
                             <Trash2 className="size-4 mr-2" />
                             Delete
                           </DropdownMenuItem>
-                          <DropdownMenuItem className="cursor-pointer" onClick={() => duplicateCampaignMutation.mutate(campaign.id)}>
-                            <Copy className="size-4 mr-2" />
-                            Duplicate
-                          </DropdownMenuItem>
-                          {campaign.status === "sent" && (
-                            <DropdownMenuItem
-                              className="cursor-pointer font-semibold text-emerald-600 focus:text-emerald-700"
-                              onClick={() => {
-                                setReportCampaign(campaign);
-                                setReportOpen(true);
-                              }}
-                            >
-                              <Eye className="size-4 mr-2" />
-                              View Report
-                            </DropdownMenuItem>
-                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </td>
