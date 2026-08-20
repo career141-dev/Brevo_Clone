@@ -1228,6 +1228,20 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
 
       for (const contact of contacts) {
+        // Automatic deduplication guard: Skip sending if contact already received an email in the last 24h
+        const recentlySent = await prisma.emailEvent.findFirst({
+          where: {
+            email: contact.email.toLowerCase(),
+            eventType: "sent",
+            timestamp: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+          },
+        });
+
+        if (recentlySent) {
+          console.log(`[DEDUPLICATION] Skipping ${contact.email} — already received email in the last 24h.`);
+          continue;
+        }
+
         const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
 
         const rawFirstName = (contact.firstName || "").trim();
