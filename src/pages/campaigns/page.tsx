@@ -911,8 +911,25 @@ export default function CampaignsPage() {
                         }}
                       />
                     </td>
-                    <td className="p-4">
-                      <div className="font-semibold text-gray-900 dark:text-gray-100">{campaign.name}</div>
+                    <td
+                      className="p-4 cursor-pointer select-none"
+                      onClick={() => {
+                        if (campaign.status === "draft") {
+                          handleOpenEdit(campaign);
+                        } else if (campaign.status === "sent") {
+                          setReportCampaign(campaign);
+                          setReportOpen(true);
+                        }
+                      }}
+                    >
+                      <div className="font-semibold text-gray-900 dark:text-gray-100 hover:text-emerald-600 transition-colors flex items-center gap-2">
+                        {campaign.name}
+                        {campaign.status === "draft" && (
+                          <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100">
+                            Click to Edit / Send ➔
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{campaign.subject}</div>
                     </td>
                     <td className="p-4">{getStatusBadge(campaign.status)}</td>
