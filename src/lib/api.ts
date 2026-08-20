@@ -110,6 +110,7 @@ export const api = {
   },
   campaigns: {
     list: () => request<any[]>("/campaigns"),
+    get: (id: number) => request<any>(`/campaigns/${id}`),
     stats: () => request<{ total: number; sent: number; draft: number; scheduled: number; sending: number }>("/campaigns/stats"),
     create: (data: { name: string; subject: string; fromName: string; fromEmail: string; templateHtml?: string; audienceType?: string; audienceId?: number }) =>
       request<any>("/campaigns", { method: "POST", body: JSON.stringify(data) }),

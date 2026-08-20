@@ -405,55 +405,111 @@ export default function CampaignsPage() {
     setWizardOpen(true);
   };
 
-  const handleOpenEdit = (campaign: any) => {
+  const handleOpenEdit = async (campaign: any) => {
     resetWizard();
     setCampaignId(campaign.id);
-    setName(campaign.name || "");
-    setSubject(campaign.subject || "");
-    setPreviewText(campaign.previewText || "");
-    setFromName(campaign.fromName || "");
-    setFromEmail(campaign.fromEmail || "");
-    setReplyToName(campaign.replyToName || "");
-    setReplyToEmail(campaign.replyToEmail || "");
+    setWizardOpen(true);
 
-    if (campaign.replyToEmail) {
-      const emails = String(campaign.replyToEmail).split(",").map(e => e.trim()).filter(Boolean);
+    let fullCampaign = campaign;
+    try {
+      fullCampaign = await api.campaigns.get(campaign.id);
+    } catch (err) {
+      console.warn("Failed to fetch fresh campaign details, using list item fallback:", err);
+    }
+
+    setName(fullCampaign.name || "");
+    setSubject(fullCampaign.subject || "");
+    setPreviewText(fullCampaign.previewText || "");
+    setFromName(fullCampaign.fromName || "");
+    setFromEmail(fullCampaign.fromEmail || "");
+    setReplyToName(fullCampaign.replyToName || "");
+    setReplyToEmail(fullCampaign.replyToEmail || "");
+
+    if (fullCampaign.replyToEmail) {
+      const emails = String(fullCampaign.replyToEmail).split(",").map(e => e.trim()).filter(Boolean);
       setReplyToEmails(emails);
     } else {
       setReplyToEmails([]);
     }
 
-    setReplyToListId(campaign.replyToListId ? Number(campaign.replyToListId) : null);
-    setSkipUnengaged(Boolean(campaign.skipUnengaged));
+    setReplyToListId(fullCampaign.replyToListId ? Number(fullCampaign.replyToListId) : null);
+    setSkipUnengaged(Boolean(fullCampaign.skipUnengaged));
 
-    if (campaign.audienceType === "individual" || campaign.individualEmails) {
+    if (fullCampaign.audienceType === "individual" || fullCampaign.individualEmails) {
       setRecipientTab("individual");
-      const emails = String(campaign.individualEmails || "").split(",").map(e => e.trim()).filter(Boolean);
+      const emails = String(fullCampaign.individualEmails || "").split(",").map(e => e.trim()).filter(Boolean);
       setIndividualEmails(emails);
     } else {
       setRecipientTab("lists");
     }
 
-    if (campaign.audienceListIds) {
-      const ids = String(campaign.audienceListIds).split(',').map(Number).filter(Boolean);
-      setSelectedListIds(ids);
-    } else if (campaign.audienceId) {
-      setSelectedListIds([Number(campaign.audienceId)]);
-    } else {
-      setSelectedListIds([]);
+    let listIds: number[] = [];
+    if (fullCampaign.audienceListIds) {
+      listIds = String(fullCampaign.audienceListIds)
+        .split(",")
+        .map(id => Number(id.trim()))
+        .filter(n => !isNaN(n) && n > 0);
+    } else if (fullCampaign.audienceId && Number(fullCampaign.audienceId) > 0) {
+      listIds = [Number(fullCampaign.audienceId)];
     }
+    setSelectedListIds(listIds);
 
-    if (campaign.excludeListIds) {
-      const exc = String(campaign.excludeListIds).split(',').map(Number).filter(Boolean);
+    if (fullCampaign.excludeListIds) {
+      const exc = String(fullCampaign.excludeListIds)
+        .split(",")
+        .map(id => Number(id.trim()))
+        .filter(n => !isNaN(n) && n > 0);
       setExcludedListIds(exc);
       if (exc.length > 0) setShowAdvanced(true);
     } else {
       setExcludedListIds([]);
     }
 
-    setSelectedTemplateHtml(campaign.templateHtml || "");
+    setSelectedTemplateHtml(fullCampaign.templateHtml || "");
     setStep(1);
-    setWizardOpen(true);
+  };
+
+  const handleSaveDraft = () => {
+    const resolvedReplyToEmail = replyToEmails.length > 0 ? replyToEmails.join(",") : null;
+    const payload = {
+      name: name || "Untitled Campaign Draft",
+      subject: subject || "",
+      previewText: previewText || null,
+      fromName: fromName || "Default Sender",
+      fromEmail: fromEmail || "",
+      replyToName: replyToName.trim() || null,
+      replyToEmail: resolvedReplyToEmail,
+      replyToListId,
+      audienceType: recipientTab === "individual" ? "individual" : "list",
+      audienceId: selectedListIds[0] || 0,
+      audienceListIds: recipientTab === "individual" ? null : (selectedListIds.length > 0 ? selectedListIds.join(",") : null),
+      individualEmails: recipientTab === "individual" ? (individualEmails.length > 0 ? individualEmails.join(",") : null) : null,
+      excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
+      skipUnengaged,
+      templateHtml: selectedTemplateHtml || "",
+      status: "draft",
+    };
+
+    if (campaignId) {
+      updateCampaignMutation.mutate(
+        { id: campaignId, data: payload },
+        {
+          onSuccess: () => {
+            toast.success("Draft saved successfully!");
+            setWizardOpen(false);
+            resetWizard();
+          },
+        }
+      );
+    } else {
+      createCampaignMutation.mutate(payload, {
+        onSuccess: () => {
+          toast.success("Draft created and saved!");
+          setWizardOpen(false);
+          resetWizard();
+        },
+      });
+    }
   };
 
   const handleNextStep1 = () => {
@@ -1858,18 +1914,28 @@ export default function CampaignsPage() {
           </div>
 
           {/* Footer Navigation */}
-          <div className="p-6 border-t border-border bg-muted/20 flex items-center justify-between">
-            {step > 1 ? (
-              <Button variant="outline" onClick={() => setStep(step - 1)} className="shadow-sm">
-                <ArrowLeft className="size-4 mr-2" />
-                Back
+          <div className="p-6 border-t border-border bg-muted/20 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              {step > 1 ? (
+                <Button variant="outline" onClick={() => setStep(step - 1)} className="shadow-sm">
+                  <ArrowLeft className="size-4 mr-2" />
+                  Back
+                </Button>
+              ) : null}
+
+              <Button
+                variant="outline"
+                onClick={handleSaveDraft}
+                disabled={createCampaignMutation.isPending || updateCampaignMutation.isPending}
+                className="shadow-sm text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700"
+              >
+                <FileText className="size-4 mr-2 text-slate-500" />
+                Save as Draft
               </Button>
-            ) : (
-              <div />
-            )}
+            </div>
 
             {step < 5 ? (
-              <Button onClick={handleNext} className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm">
+              <Button onClick={handleNext} className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm font-semibold">
                 {createCampaignMutation.isPending || updateCampaignMutation.isPending ? (
                   <>
                     <Loader2 className="size-4 animate-spin mr-2" />

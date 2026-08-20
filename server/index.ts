@@ -693,6 +693,23 @@ app.get("/api/campaigns", async (req, res) => {
   }
 });
 
+// GET single campaign by ID
+app.get("/api/campaigns/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid campaign ID" });
+
+    const campaign = await prisma.campaign.findUnique({
+      where: { id },
+    });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+
+    res.json(campaign);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch campaign", details: err.message });
+  }
+});
+
 // GET campaign stats
 app.get("/api/campaigns/stats", async (req, res) => {
   try {
