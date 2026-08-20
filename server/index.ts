@@ -977,7 +977,7 @@ function normalizeEmailHtml(html: string): string {
   return normalized;
 }
 
-function extractAttachmentsFromHtml(html: string): { filename: string; content: Buffer; contentType: string }[] {
+async function extractAttachmentsFromHtml(html: string): Promise<{ filename: string; content: Buffer; contentType: string }[]> {
   const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
   if (!html) return attachments;
 
@@ -1006,6 +1006,23 @@ function extractAttachmentsFromHtml(html: string): { filename: string; content: 
         }
       } catch (e) {
         console.warn("Fuzzy lookup error:", e);
+      }
+    }
+
+    // Auto-download missing file from Railway production server if not found locally
+    if (!fs.existsSync(targetPath)) {
+      try {
+        const prodUrl = `https://brevoclone-production.up.railway.app/uploads/${cleanDiskName}`;
+        console.log(`[ATTACHMENT SYNC] File not found locally, fetching from production: ${prodUrl}`);
+        const resp = await fetch(prodUrl);
+        if (resp.ok) {
+          const arrayBuffer = await resp.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          fs.writeFileSync(targetPath, buffer);
+          console.log(`[ATTACHMENT SYNC] Successfully synced file from production to local: ${cleanDiskName}`);
+        }
+      } catch (err) {
+        console.warn("[ATTACHMENT SYNC] Failed to fetch missing file from production:", err);
       }
     }
 
@@ -1250,7 +1267,7 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
         }
       }
 
-      const campaignAttachments = extractAttachmentsFromHtml(template);
+      const campaignAttachments = await extractAttachmentsFromHtml(template);
 
       // Resolve all Reply-To emails (manual comma-separated + reply-to contact list)
       const replyToEmailsSet = new Set<string>();
@@ -1549,7 +1566,7 @@ app.post("/api/campaigns/:id/send-test", async (req, res) => {
     const replyToAddresses = Array.from(replyToEmailsSet);
     const replyToHeader = replyToAddresses.join(", ");
     const fromHeader = formatEmailWithDisplayName(fromName, fromEmail);
-    const campaignAttachments = extractAttachmentsFromHtml(html);
+    const campaignAttachments = await extractAttachmentsFromHtml(html);
 
     const testSubject = `[TEST] ${subject}`;
 
