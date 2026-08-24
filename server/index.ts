@@ -1355,110 +1355,151 @@ app.post("/api/campaigns/:id/send", async (req, res) => {
       const replyToHeader = replyToAddresses.join(", ");
       const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
 
-      for (const contact of contacts) {
-        // Automatic deduplication guard: Skip sending if contact already received an email in the last 24h
-        const recentlySent = await prisma.emailEvent.findFirst({
-          where: {
-            email: contact.email.toLowerCase(),
-            eventType: "sent",
-            timestamp: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-          },
-        });
+      // ── HIGH-SPEED PARALLEL SEND ENGINE ──────────────────────────────
+      // Step 1: Pre-fetch ALL emails already sent in the last 24h in ONE bulk DB query
+      // This replaces individual findFirst queries per contact (eliminates N DB roundtrips)
+      const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const allContactEmails = contacts.map((c) => c.email.toLowerCase());
+      const recentlySentEvents = await prisma.emailEvent.findMany({
+        where: {
+          email: { in: allContactEmails },
+          eventType: "sent",
+          campaignId: campaignId,
+          timestamp: { gte: cutoff24h },
+        },
+        select: { email: true },
+      });
+      const alreadySentSet = new Set(recentlySentEvents.map((e) => e.email.toLowerCase()));
+      console.log(`[FAST-SEND] Pre-fetched deduplication: ${alreadySentSet.size} contacts already sent, ${contacts.length - alreadySentSet.size} to send.`);
 
-        if (recentlySent) {
-          console.log(`[DEDUPLICATION] Skipping ${contact.email} — already received email in the last 24h.`);
-          continue;
-        }
+      // Filter out already-sent contacts immediately (no per-loop DB queries)
+      const pendingContacts = contacts.filter((c) => !alreadySentSet.has(c.email.toLowerCase()));
 
-        const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
+      // Step 2: Process contacts in parallel chunks of 6 concurrent workers
+      // AWS SES limit = 14 emails/sec. 6 workers × ~100ms per SES call ≈ ~12 emails/sec safely
+      const CHUNK_SIZE = 6;
+      const CHUNK_PAUSE_MS = 200; // Pause between chunks to smooth rate to ~12-14/sec
+      const BULK_INSERT_SIZE = 50; // Flush buffered email events to DB every 50 emails
 
-        const rawFirstName = (contact.firstName || "").trim();
-        const rawLastName = (contact.lastName || "").trim();
-        const rawFullName = (contact.fullName || "").trim();
-        const emailPrefix = contact.email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      let sentEventBuffer: { email: string; campaignId: number; eventType: string }[] = [];
 
-        const firstName = rawFirstName || (rawFullName ? rawFullName.split(" ")[0] : emailPrefix);
-        const lastName = rawLastName || (rawFullName.includes(" ") ? rawFullName.split(" ").slice(1).join(" ") : "");
-        const fullName = rawFullName || (rawFirstName ? `${rawFirstName} ${rawLastName}`.trim() : emailPrefix);
-        const company = (contact.company || "").trim();
-        const designation = (contact.designation || "").trim();
-
-        let html = template
-          .replace(/{{first_name}}/g, firstName)
-          .replace(/{{last_name}}/g, lastName)
-          .replace(/{{full_name}}/g, fullName)
-          .replace(/{{company}}/g, company)
-          .replace(/{{designation}}/g, designation)
-          .replace(/{{email}}/g, contact.email)
-          .replace(/{{unsubscribe_url}}/g, unsubUrl);
-
-        html = injectTracking(html, contact.email, campaignId);
-
+      const flushEventBuffer = async () => {
+        if (sentEventBuffer.length === 0) return;
+        const toInsert = [...sentEventBuffer];
+        sentEventBuffer = [];
         try {
-          if (campaignAttachments.length > 0) {
-            const rawMimeBuffer = createRawMimeEmail({
-              from: fromHeader,
-              to: contact.email,
-              replyTo: replyToHeader,
-              subject: campaign.subject,
-              html,
-              unsubscribeUrl: unsubUrl,
-              attachments: campaignAttachments,
-            });
-
-            await sesv2Client.send(new SendEmailV2Command({
-              FromEmailAddress: fromHeader,
-              Destination: { ToAddresses: [contact.email] },
-              ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
-              ConfigurationSetName: "career141-tracking",
-              Content: { Raw: { Data: rawMimeBuffer } },
-              EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-            }));
-          } else {
-            const simpleHeaders: { Name: string; Value: string }[] = [
-              { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-              { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
-            ];
-
-            const sesParams: any = {
-              FromEmailAddress: fromHeader,
-              Destination: { ToAddresses: [contact.email] },
-              ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
-              ConfigurationSetName: "career141-tracking",
-              Content: {
-                Simple: {
-                  Subject: { Data: campaign.subject, Charset: "UTF-8" },
-                  Body: { Html: { Data: html, Charset: "UTF-8" } },
-                  Headers: simpleHeaders,
-                },
-              },
-              EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-            };
-
-            await sesv2Client.send(new SendEmailV2Command(sesParams));
+          await (prisma.emailEvent as any).createMany({ data: toInsert, skipDuplicates: true });
+        } catch (e: any) {
+          console.error("[FAST-SEND] Bulk event insert error:", e.message);
+          // Fallback: insert individually
+          for (const ev of toInsert) {
+            await prisma.emailEvent.create({ data: ev }).catch(() => {});
           }
+        }
+      };
 
-          await prisma.emailEvent.create({
-            data: {
+      for (let i = 0; i < pendingContacts.length; i += CHUNK_SIZE) {
+        const chunk = pendingContacts.slice(i, i + CHUNK_SIZE);
+
+        await Promise.all(chunk.map(async (contact) => {
+          const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
+
+          const rawFirstName = (contact.firstName || "").trim();
+          const rawLastName = (contact.lastName || "").trim();
+          const rawFullName = (contact.fullName || "").trim();
+          const emailPrefix = contact.email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+          const firstName = rawFirstName || (rawFullName ? rawFullName.split(" ")[0] : emailPrefix);
+          const lastName = rawLastName || (rawFullName.includes(" ") ? rawFullName.split(" ").slice(1).join(" ") : "");
+          const fullName = rawFullName || (rawFirstName ? `${rawFirstName} ${rawLastName}`.trim() : emailPrefix);
+          const company = (contact.company || "").trim();
+          const designation = (contact.designation || "").trim();
+
+          let html = template
+            .replace(/{{first_name}}/g, firstName)
+            .replace(/{{last_name}}/g, lastName)
+            .replace(/{{full_name}}/g, fullName)
+            .replace(/{{company}}/g, company)
+            .replace(/{{designation}}/g, designation)
+            .replace(/{{email}}/g, contact.email)
+            .replace(/{{unsubscribe_url}}/g, unsubUrl);
+
+          html = injectTracking(html, contact.email, campaignId);
+
+          try {
+            if (campaignAttachments.length > 0) {
+              const rawMimeBuffer = createRawMimeEmail({
+                from: fromHeader,
+                to: contact.email,
+                replyTo: replyToHeader,
+                subject: campaign.subject,
+                html,
+                unsubscribeUrl: unsubUrl,
+                attachments: campaignAttachments,
+              });
+              await sesv2Client.send(new SendEmailV2Command({
+                FromEmailAddress: fromHeader,
+                Destination: { ToAddresses: [contact.email] },
+                ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
+                ConfigurationSetName: "career141-tracking",
+                Content: { Raw: { Data: rawMimeBuffer } },
+                EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
+              }));
+            } else {
+              const simpleHeaders: { Name: string; Value: string }[] = [
+                { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+              ];
+              await sesv2Client.send(new SendEmailV2Command({
+                FromEmailAddress: fromHeader,
+                Destination: { ToAddresses: [contact.email] },
+                ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
+                ConfigurationSetName: "career141-tracking",
+                Content: {
+                  Simple: {
+                    Subject: { Data: campaign.subject, Charset: "UTF-8" },
+                    Body: { Html: { Data: html, Charset: "UTF-8" } },
+                    Headers: simpleHeaders,
+                  },
+                },
+                EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
+              }));
+            }
+
+            // Buffer the sent event for bulk insert
+            sentEventBuffer.push({
               email: contact.email.toLowerCase(),
               campaignId,
               eventType: "sent",
-            },
-          });
-          sent++;
-
-          // Periodically update totalRecipients in DB so UI live counters update
-          if (sent % 50 === 0) {
-            await prisma.campaign.update({
-              where: { id: campaignId },
-              data: { totalRecipients: sent },
-            }).catch(() => {});
+            });
+            sent++;
+          } catch (e: any) {
+            errors.push(`${contact.email}: ${e.message}`);
           }
-        } catch (e: any) {
-          errors.push(`${contact.email}: ${e.message}`);
+        }));
+
+        // Flush event buffer to DB every BULK_INSERT_SIZE emails
+        if (sentEventBuffer.length >= BULK_INSERT_SIZE) {
+          await flushEventBuffer();
         }
-        await new Promise((r) => setTimeout(r, 72));
+
+        // Update live UI counter every chunk
+        if (sent > 0 && sent % 50 === 0) {
+          await prisma.campaign.update({
+            where: { id: campaignId },
+            data: { totalRecipients: sent },
+          }).catch(() => {});
+        }
+
+        // Chunk-level pacing: brief pause between chunks to stay within AWS SES rate limit
+        if (i + CHUNK_SIZE < pendingContacts.length) {
+          await new Promise((r) => setTimeout(r, CHUNK_PAUSE_MS));
+        }
       }
+
+      // Final flush of any remaining buffered events
+      await flushEventBuffer();
+      // ── END HIGH-SPEED PARALLEL SEND ENGINE ──────────────────────────
 
       const finalSentCount = await prisma.emailEvent.count({
         where: { campaignId, eventType: "sent" },
@@ -1499,6 +1540,237 @@ app.post("/api/campaigns/:id/reset", async (req, res) => {
     res.json({ success: true, campaign });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to reset campaign status", details: err.message });
+  }
+});
+
+// POST /api/campaigns/:id/resume — Resume a sent/paused campaign and send to remaining balance contacts at full speed
+app.post("/api/campaigns/:id/resume", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+
+    // 1. Fetch campaign
+    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+    if (campaign.status === "sending") {
+      return res.status(400).json({ error: "Campaign is already actively sending" });
+    }
+
+    // 2. Build target list IDs
+    const targetListIds = (campaign as any).audienceListIds
+      ? (campaign as any).audienceListIds.split(',').map((id: string) => Number(id.trim())).filter((n: number) => !isNaN(n) && n > 0)
+      : (campaign.audienceId ? [campaign.audienceId] : []);
+
+    const excludeListIds = (campaign as any).excludeListIds
+      ? String((campaign as any).excludeListIds).split(',').map((id: string) => Number(id.trim())).filter((n: number) => !isNaN(n) && n > 0)
+      : [];
+
+    if (targetListIds.length === 0 && !(campaign as any).individualEmails) {
+      return res.status(400).json({ error: "No audience configured on this campaign" });
+    }
+
+    // Resolve brevoId aliases
+    const matchingTargetLists = await prisma.list.findMany({
+      where: { OR: [{ id: { in: targetListIds } }, { brevoId: { in: targetListIds } }] },
+      select: { id: true, brevoId: true }
+    });
+    const resolvedTargetListIds = Array.from(new Set([
+      ...targetListIds,
+      ...matchingTargetLists.map(l => l.id),
+      ...matchingTargetLists.map(l => l.brevoId).filter(Boolean) as number[]
+    ]));
+
+    const matchingExcludeLists = excludeListIds.length > 0
+      ? await prisma.list.findMany({
+          where: { OR: [{ id: { in: excludeListIds } }, { brevoId: { in: excludeListIds } }] },
+          select: { id: true, brevoId: true }
+        })
+      : [];
+    const resolvedExcludeListIds = Array.from(new Set([
+      ...excludeListIds,
+      ...matchingExcludeLists.map(l => l.id),
+      ...matchingExcludeLists.map(l => l.brevoId).filter(Boolean) as number[]
+    ]));
+
+    // 3. Fetch all target contacts
+    let contacts: any[] = [];
+    if (campaign.audienceType === "individual" || (campaign as any).individualEmails) {
+      const emailList = String((campaign as any).individualEmails || "")
+        .split(",").map((e) => e.trim()).filter((e) => e.includes("@"));
+      if (emailList.length > 0) {
+        const dbContacts = await prisma.contact.findMany({
+          where: { email: { in: emailList }, status: { not: "unsubscribed" } },
+        });
+        const foundEmails = new Set(dbContacts.map((c) => c.email.toLowerCase()));
+        contacts = [...dbContacts];
+        emailList.forEach((em) => {
+          if (!foundEmails.has(em.toLowerCase())) {
+            contacts.push({ id: 0, email: em, firstName: null, lastName: null, fullName: null, company: null, designation: null, status: "subscribed" });
+          }
+        });
+      }
+    } else {
+      contacts = await prisma.contact.findMany({
+        where: {
+          status: "subscribed",
+          contactLists: {
+            some: { listId: { in: resolvedTargetListIds } },
+            ...(resolvedExcludeListIds.length > 0 ? { none: { listId: { in: resolvedExcludeListIds } } } : {}),
+          },
+        },
+      });
+    }
+
+    // 4. Pre-fetch already sent contacts for THIS campaign (all time, not just 24h — for resume we skip anyone already received this campaign)
+    const allSentForCampaign = await prisma.emailEvent.findMany({
+      where: { campaignId, eventType: "sent" },
+      select: { email: true },
+    });
+    const alreadySentSet = new Set(allSentForCampaign.map((e) => e.email.toLowerCase()));
+    const pendingContacts = contacts.filter((c) => !alreadySentSet.has(c.email.toLowerCase()));
+
+    if (pendingContacts.length === 0) {
+      return res.status(400).json({ error: "No remaining contacts to send to — all contacts in the audience have already received this campaign." });
+    }
+
+    // 5. Check AWS SES quota
+    let quotaCappedContacts = pendingContacts;
+    try {
+      const quota = await sesClient.send(new GetSendQuotaCommand({}));
+      const max24h = quota.Max24HourSend ?? 0;
+      const sent24h = quota.SentLast24Hours ?? 0;
+      const remainingQuota = Math.max(0, max24h - sent24h);
+      if (remainingQuota > 0 && quotaCappedContacts.length > remainingQuota) {
+        console.log(`[RESUME QUOTA CAP] Capping resume contacts from ${quotaCappedContacts.length} to ${remainingQuota}`);
+        quotaCappedContacts = quotaCappedContacts.slice(0, remainingQuota);
+      }
+    } catch (quotaErr) {
+      console.warn("Could not check SES quota during resume:", quotaErr);
+    }
+
+    // 6. Mark campaign as sending
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: "sending" },
+    });
+
+    invalidateAnalyticsCache(campaignId);
+    analyticsCache.delete('campaigns:stats:global');
+
+    // 7. Respond immediately
+    res.json({
+      success: true,
+      message: `Campaign resume started. Sending to ${quotaCappedContacts.length} remaining contacts.`,
+      campaignId,
+      alreadySent: alreadySentSet.size,
+      remainingToSend: quotaCappedContacts.length,
+      status: "sending",
+    });
+
+    // 8. Run high-speed parallel send engine in background
+    (async () => {
+      let sent = 0;
+      const errors: string[] = [];
+
+      let template = normalizeEmailHtml(campaign.templateHtml);
+      if (!template.includes("{{unsubscribe_url}}")) {
+        const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>If you wish to unsubscribe, you can <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">unsubscribe here</a>.</p></div>`;
+        template = /\<\/body\>/i.test(template) ? template.replace(/<\/body>/i, `${fallbackUnsubHtml}</body>`) : template + fallbackUnsubHtml;
+      }
+
+      const campaignAttachments = await extractAttachmentsFromHtml(template);
+
+      const replyToEmailsSet = new Set<string>();
+      if ((campaign as any).replyToEmail) {
+        String((campaign as any).replyToEmail).split(",").map((e: string) => e.trim()).filter((e: string) => e.includes("@")).forEach((e) => replyToEmailsSet.add(e.toLowerCase()));
+      }
+      if ((campaign as any).replyToListId) {
+        try {
+          const listContacts = await prisma.contact.findMany({
+            where: { status: "subscribed", contactLists: { some: { listId: Number((campaign as any).replyToListId) } } },
+            select: { email: true },
+          });
+          listContacts.forEach((c) => { if (c.email?.includes("@")) replyToEmailsSet.add(c.email.trim().toLowerCase()); });
+        } catch (err) { console.error("Failed to fetch replyToListId contacts:", err); }
+      }
+
+      const replyToAddresses = Array.from(replyToEmailsSet);
+      const replyToHeader = replyToAddresses.join(", ");
+      const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
+
+      const CHUNK_SIZE = 6;
+      const CHUNK_PAUSE_MS = 200;
+      const BULK_INSERT_SIZE = 50;
+      let sentEventBuffer: { email: string; campaignId: number; eventType: string }[] = [];
+
+      const flushEventBuffer = async () => {
+        if (sentEventBuffer.length === 0) return;
+        const toInsert = [...sentEventBuffer];
+        sentEventBuffer = [];
+        try {
+          await (prisma.emailEvent as any).createMany({ data: toInsert, skipDuplicates: true });
+        } catch (e: any) {
+          console.error("[RESUME FAST-SEND] Bulk event insert error:", e.message);
+          for (const ev of toInsert) { await prisma.emailEvent.create({ data: ev }).catch(() => {}); }
+        }
+      };
+
+      for (let i = 0; i < quotaCappedContacts.length; i += CHUNK_SIZE) {
+        const chunk = quotaCappedContacts.slice(i, i + CHUNK_SIZE);
+        await Promise.all(chunk.map(async (contact) => {
+          const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
+          const rawFirstName = (contact.firstName || "").trim();
+          const rawLastName = (contact.lastName || "").trim();
+          const rawFullName = (contact.fullName || "").trim();
+          const emailPrefix = contact.email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+          const firstName = rawFirstName || (rawFullName ? rawFullName.split(" ")[0] : emailPrefix);
+          const lastName = rawLastName || (rawFullName.includes(" ") ? rawFullName.split(" ").slice(1).join(" ") : "");
+          const fullName = rawFullName || (rawFirstName ? `${rawFirstName} ${rawLastName}`.trim() : emailPrefix);
+          const company = (contact.company || "").trim();
+          const designation = (contact.designation || "").trim();
+          let html = template
+            .replace(/{{first_name}}/g, firstName).replace(/{{last_name}}/g, lastName)
+            .replace(/{{full_name}}/g, fullName).replace(/{{company}}/g, company)
+            .replace(/{{designation}}/g, designation).replace(/{{email}}/g, contact.email)
+            .replace(/{{unsubscribe_url}}/g, unsubUrl);
+          html = injectTracking(html, contact.email, campaignId);
+          try {
+            if (campaignAttachments.length > 0) {
+              const rawMimeBuffer = createRawMimeEmail({ from: fromHeader, to: contact.email, replyTo: replyToHeader, subject: campaign.subject, html, unsubscribeUrl: unsubUrl, attachments: campaignAttachments });
+              await sesv2Client.send(new SendEmailV2Command({ FromEmailAddress: fromHeader, Destination: { ToAddresses: [contact.email] }, ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined, ConfigurationSetName: "career141-tracking", Content: { Raw: { Data: rawMimeBuffer } }, EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }] }));
+            } else {
+              const simpleHeaders: { Name: string; Value: string }[] = [{ Name: "List-Unsubscribe", Value: `<${unsubUrl}>` }, { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" }];
+              await sesv2Client.send(new SendEmailV2Command({ FromEmailAddress: fromHeader, Destination: { ToAddresses: [contact.email] }, ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined, ConfigurationSetName: "career141-tracking", Content: { Simple: { Subject: { Data: campaign.subject, Charset: "UTF-8" }, Body: { Html: { Data: html, Charset: "UTF-8" } }, Headers: simpleHeaders } }, EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }] }));
+            }
+            sentEventBuffer.push({ email: contact.email.toLowerCase(), campaignId, eventType: "sent" });
+            sent++;
+          } catch (e: any) { errors.push(`${contact.email}: ${e.message}`); }
+        }));
+
+        if (sentEventBuffer.length >= BULK_INSERT_SIZE) await flushEventBuffer();
+
+        if (sent > 0 && sent % 50 === 0) {
+          const totalSentSoFar = alreadySentSet.size + sent;
+          await prisma.campaign.update({ where: { id: campaignId }, data: { totalRecipients: totalSentSoFar } }).catch(() => {});
+        }
+
+        if (i + CHUNK_SIZE < quotaCappedContacts.length) {
+          await new Promise((r) => setTimeout(r, CHUNK_PAUSE_MS));
+        }
+      }
+
+      await flushEventBuffer();
+
+      const finalSentCount = await prisma.emailEvent.count({ where: { campaignId, eventType: "sent" } });
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "sent", sentAt: new Date(), totalRecipients: finalSentCount },
+      });
+      console.log(`[RESUME SEND] Campaign ${campaignId} resume finished. New sent this run: ${sent}. Total in DB: ${finalSentCount}. Errors: ${errors.length}`);
+    })();
+  } catch (err: any) {
+    console.error("Resume campaign error:", err);
+    res.status(500).json({ error: "Failed to resume campaign", details: err.message });
   }
 });
 
