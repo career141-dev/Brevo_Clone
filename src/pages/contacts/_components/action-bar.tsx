@@ -1,20 +1,24 @@
 import { forwardRef } from "react";
-import { ListPlus, Ban, ChevronDown } from "lucide-react";
+import { ListPlus, ListMinus, Ban, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 
 interface ActionBarProps {
   selectedCount: number;
   onAddToList: () => void;
+  onRemoveFromList?: () => void;
   onBlocklist: () => void;
   onMoreActions: () => void;
+  currentListName?: string;
 }
 
 const ActionBar = forwardRef<HTMLButtonElement, ActionBarProps>(function ActionBar({
   selectedCount,
   onAddToList,
+  onRemoveFromList,
   onBlocklist,
   onMoreActions,
+  currentListName,
 }, ref) {
   return (
     <div
@@ -32,6 +36,17 @@ const ActionBar = forwardRef<HTMLButtonElement, ActionBarProps>(function ActionB
           <ListPlus className="size-3.5 mr-1" />
           Add to list(s)
         </Button>
+        {onRemoveFromList && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRemoveFromList}
+            className="hover:border-amber-500/50 hover:text-amber-600 dark:hover:text-amber-400"
+          >
+            <ListMinus className="size-3.5 mr-1 text-amber-600 dark:text-amber-400" />
+            {currentListName ? "Remove from list" : "Remove from list(s)"}
+          </Button>
+        )}
         <Button variant="outline" size="sm" onClick={onBlocklist}>
           <Ban className="size-3.5 mr-1" />
           Blocklist

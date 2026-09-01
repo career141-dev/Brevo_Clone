@@ -76,7 +76,26 @@ export function useContacts() {
     onSuccess: () => {
       setSelectedIds([]);
       refreshContacts();
+      queryClient.invalidateQueries({ queryKey: ["lists"] });
       toast.success("Contacts added to list");
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
+    },
+  });
+
+  const bulkRemoveFromListQ = useMutation({
+    mutationFn: (vars: { contactIds: number[]; listIds: number[] }) =>
+      api.contacts.removeFromList(vars.contactIds, vars.listIds),
+    onSuccess: (_, vars) => {
+      setSelectedIds([]);
+      refreshContacts();
+      queryClient.invalidateQueries({ queryKey: ["lists"] });
+      toast.success(
+        vars.contactIds.length === 1
+          ? "Contact removed from list"
+          : `${vars.contactIds.length} contacts removed from list`
+      );
     },
     onError: (err: Error) => {
       toast.error(err.message);
@@ -186,6 +205,8 @@ export function useContacts() {
       bulkBlocklistQ.mutateAsync({ contactIds, blocked }),
     bulkAddToList: (contactIds: number[], listIds: number[]) =>
       bulkAddToListQ.mutateAsync({ contactIds, listIds }),
+    bulkRemoveFromList: (contactIds: number[], listIds: number[]) =>
+      bulkRemoveFromListQ.mutateAsync({ contactIds, listIds }),
     bulkAssign: (contactIds: number[], ownerId: string) =>
       bulkAssignQ.mutateAsync({ contactIds, ownerId }),
     bulkExport: (contactIds: number[], format: "csv" | "json") =>

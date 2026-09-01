@@ -57,6 +57,11 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ contactIds, listIds }),
       }),
+    removeFromList: (contactIds: number[], listIds: number[]) =>
+      request<{ success: boolean; affected: number }>("/contacts/bulk/remove-from-lists", {
+        method: "POST",
+        body: JSON.stringify({ contactIds, listIds }),
+      }),
     assignOwner: (contactIds: number[], ownerId: string) =>
       request<{ success: boolean; affected: number }>("/contacts/bulk/assign", {
         method: "POST",

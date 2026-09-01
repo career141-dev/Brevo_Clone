@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
-import { X, Pencil, UserPlus, Download, GitBranch, Trash2 } from "lucide-react";
-import { cn } from "@/lib/utils.ts";
+import { Pencil, UserPlus, Download, GitBranch, ListMinus, Trash2 } from "lucide-react";
 
 interface BulkActionsDropdownProps {
   open: boolean;
@@ -11,6 +10,7 @@ interface BulkActionsDropdownProps {
   onAssign: () => void;
   onExport: () => void;
   onAddToAutomation: () => void;
+  onRemoveFromList?: () => void;
   onDelete: () => void;
 }
 
@@ -23,6 +23,7 @@ export default function BulkActionsDropdown({
   onAssign,
   onExport,
   onAddToAutomation,
+  onRemoveFromList,
   onDelete,
 }: BulkActionsDropdownProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -88,6 +89,15 @@ export default function BulkActionsDropdown({
         <GitBranch className="size-4" />
         Add to automation
       </button>
+      {onRemoveFromList && (
+        <button
+          className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent text-amber-600 dark:text-amber-400"
+          onClick={onRemoveFromList}
+        >
+          <ListMinus className="size-4" />
+          Remove from list(s)
+        </button>
+      )}
       <hr className="my-1 border-t" />
       <button
         className="flex items-center gap-2 px-3 py-1.5 text-sm w-full hover:bg-accent text-destructive"
