@@ -7,12 +7,17 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import { clerkMiddleware, getAuth } from "@clerk/express";
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
-import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import { CostExplorerClient, GetCostAndUsageCommand } from "@aws-sdk/client-cost-explorer";
 import jwt from "jsonwebtoken";
 import { prisma, authStorage } from "./prisma.js";
-import { sesClient, sesv2Client } from "./lib/ses.js";
+import { sesClient } from "./lib/ses.js";
+import { JWT_SECRET, PIXEL_GIF } from "./lib/tracking.js";
+import { uploadsDir } from "./lib/paths.js";
+import { verifySnsMessage } from "./lib/sns.js";
+import { readUpload, saveUpload, usingObjectStorage } from "./lib/storage.js";
+import { dailyQuotaRemaining, enqueueRecipients, isRunning, resolveAudience, resumeSendingCampaigns, runCampaign } from "./lib/campaign-sender.js";
 import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
 const app = express();
@@ -29,47 +34,49 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const uploadsDir = path.resolve(__dirname, "../../public/uploads");
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
-app.use("/uploads", express.static(uploadsDir));
-// POST /api/upload - Handle file upload and return public downloadable URL
-app.post("/api/upload", async (req, res) => {
-    try {
-        const { fileName, fileData } = req.body;
-        if (!fileName || !fileData) {
-            return res.status(400).json({ error: "fileName and fileData required" });
-        }
-        const base64Data = fileData.replace(/^data:[^;]+;base64,/, "");
-        const buffer = Buffer.from(base64Data, "base64");
-        const ext = path.extname(fileName) || ".bin";
-        const safeName = path.basename(fileName, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
-        const uniqueFileName = `${Date.now()}_${safeName}${ext}`;
-        const filePath = path.join(uploadsDir, uniqueFileName);
-        await fs.promises.writeFile(filePath, buffer);
-        const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-        const host = req.headers["x-forwarded-host"] || req.headers.host;
-        const fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
-        res.json({
-            url: fileUrl,
-            fileName,
-            size: buffer.length,
-        });
-    }
-    catch (err) {
-        console.error("File upload error:", err);
-        res.status(500).json({ error: "Failed to upload file", details: err.message });
-    }
+// With UPLOADS_BUCKET set files live in S3/R2 but keep the same public /uploads/<name> URLs.
+app.get("/uploads/:name", async (req, res, next) => {
+    if (!usingObjectStorage)
+        return next();
+    const data = await readUpload(req.params.name);
+    if (!data)
+        return res.status(404).end();
+    res.type(path.extname(req.params.name)).set("Cache-Control", "public, max-age=31536000, immutable").send(data);
 });
+app.use("/uploads", express.static(uploadsDir));
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 100,
+    // Tracking pixels/links, unsubscribe and SNS webhooks come from recipients' (often shared) IPs and AWS —
+    // limiting them silently drops opens/clicks/bounces. The progress poll is also exempt.
+    skip: (req) => /^\/api\/(track|webhooks|unsubscribe)(\/|\?|$)/.test(req.originalUrl) || /^\/api\/campaigns\/\d+\/progress/.test(req.originalUrl),
     message: "Too many requests from this IP, please try again after 15 minutes"
 });
 app.use("/api/", apiLimiter);
+// Auth: set CLERK_SECRET_KEY + CLERK_PUBLISHABLE_KEY to require a signed-in Clerk user on every /api route except
+// tracking/unsubscribe/webhooks (those are public by design). Optional ALLOWED_USER_IDS=id1,id2 restricts who may use
+// the app (otherwise anyone who can sign up on your Clerk instance gets their own empty workspace and can send via SES).
+// Without the keys the legacy single hardcoded user is used, exactly as before.
+const LEGACY_USER_ID = "user_3Epvu1kcUczQTmQSvidHS9K4Wak";
+const CLERK_ENABLED = Boolean(process.env.CLERK_SECRET_KEY);
+const PUBLIC_API = /^\/api\/(track|unsubscribe|webhooks)(\/|\?|$)/;
+const ALLOWED_USER_IDS = (process.env.ALLOWED_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+if (!CLERK_ENABLED)
+    console.warn("[AUTH] CLERK_SECRET_KEY not set: API is running UNAUTHENTICATED as a single fixed user.");
+if (CLERK_ENABLED)
+    app.use("/api/", clerkMiddleware());
 app.use("/api/", (req, res, next) => {
-    const userId = "user_3Epvu1kcUczQTmQSvidHS9K4Wak"; // Temporary hardcoded for import script
+    if (!CLERK_ENABLED)
+        return authStorage.run({ userId: LEGACY_USER_ID }, next);
+    if (PUBLIC_API.test(req.originalUrl))
+        return next();
+    const userId = getAuth(req).userId;
+    if (!userId || (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId))) {
+        return res.status(401).json({ error: "Unauthorized" });
+    }
     authStorage.run({ userId }, next);
 });
 // ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
@@ -90,6 +97,33 @@ function invalidateAnalyticsCache(campaignId) {
     if (campaignId)
         analyticsCache.delete(`analytics:campaign:${campaignId}`);
 }
+// POST /api/upload - Handle file upload and return public downloadable URL
+app.post("/api/upload", async (req, res) => {
+    try {
+        const { fileName, fileData } = req.body;
+        if (!fileName || !fileData) {
+            return res.status(400).json({ error: "fileName and fileData required" });
+        }
+        const base64Data = fileData.replace(/^data:[^;]+;base64,/, "");
+        const buffer = Buffer.from(base64Data, "base64");
+        const ext = path.extname(fileName) || ".bin";
+        const safeName = path.basename(fileName, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
+        const uniqueFileName = `${Date.now()}_${safeName}${ext}`;
+        await saveUpload(uniqueFileName, buffer);
+        const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+        const host = req.headers["x-forwarded-host"] || req.headers.host;
+        const fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
+        res.json({
+            url: fileUrl,
+            fileName,
+            size: buffer.length,
+        });
+    }
+    catch (err) {
+        console.error("File upload error:", err);
+        res.status(500).json({ error: "Failed to upload file", details: err.message });
+    }
+});
 // ── Contacts ────────────────────────────────────────────────────────
 app.get("/api/contacts", async (req, res) => {
     try {
@@ -773,6 +807,7 @@ app.delete("/api/campaigns/bulk", async (req, res) => {
         await prisma.emailEvent.deleteMany({
             where: { campaignId: { in: campaignIds } },
         });
+        await prisma.campaignRecipient.deleteMany({ where: { campaignId: { in: campaignIds } } });
         // Then delete campaigns
         const result = await prisma.campaign.deleteMany({
             where: { id: { in: campaignIds } },
@@ -797,6 +832,7 @@ app.delete("/api/campaigns/:id", async (req, res) => {
         await prisma.emailEvent.deleteMany({
             where: { campaignId: campaignId },
         });
+        await prisma.campaignRecipient.deleteMany({ where: { campaignId } });
         // Then delete the campaign
         await prisma.campaign.delete({
             where: { id: campaignId },
@@ -834,343 +870,74 @@ app.post("/api/campaigns/:id/duplicate", async (req, res) => {
         res.status(500).json({ error: "Failed to duplicate campaign" });
     }
 });
-function extractAttachmentsFromHtml(html) {
-    const attachments = [];
-    const regex = /\/uploads\/([^"'\s>]+)/g;
-    let match;
-    const seenFiles = new Set();
-    while ((match = regex.exec(html)) !== null) {
-        const filenameOnDisk = match[1];
-        if (seenFiles.has(filenameOnDisk))
-            continue;
-        seenFiles.add(filenameOnDisk);
-        const filePath = path.join(uploadsDir, filenameOnDisk);
-        if (fs.existsSync(filePath)) {
-            try {
-                const content = fs.readFileSync(filePath);
-                const cleanFilename = filenameOnDisk.replace(/^\d+_/, "");
-                const ext = path.extname(cleanFilename).toLowerCase();
-                let contentType = "application/octet-stream";
-                if (ext === ".pdf")
-                    contentType = "application/pdf";
-                else if (ext === ".docx" || ext === ".doc")
-                    contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-                else if (ext === ".xlsx" || ext === ".xls")
-                    contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-                else if (ext === ".pptx" || ext === ".ppt")
-                    contentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-                else if (ext === ".zip")
-                    contentType = "application/zip";
-                else if (ext === ".png")
-                    contentType = "image/png";
-                else if (ext === ".jpg" || ext === ".jpeg")
-                    contentType = "image/jpeg";
-                else if (ext === ".txt")
-                    contentType = "text/plain";
-                else if (ext === ".csv")
-                    contentType = "text/csv";
-                attachments.push({
-                    filename: cleanFilename,
-                    content,
-                    contentType,
-                });
-            }
-            catch (err) {
-                console.error("Failed to read attachment file:", filePath, err);
-            }
-        }
-    }
-    return attachments;
-}
-function createRawMimeEmail({ from, to, replyTo, subject, html, unsubscribeUrl, attachments = [], }) {
-    const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-    let raw = "";
-    raw += `From: ${from}\r\n`;
-    raw += `To: ${to}\r\n`;
-    if (replyTo && replyTo.trim()) {
-        raw += `Reply-To: ${replyTo.trim()}\r\n`;
-    }
-    raw += `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=\r\n`;
-    raw += `MIME-Version: 1.0\r\n`;
-    if (unsubscribeUrl) {
-        raw += `List-Unsubscribe: <${unsubscribeUrl}>\r\n`;
-        raw += `List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n`;
-    }
-    if (attachments.length > 0) {
-        raw += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
-        raw += `--${boundary}\r\n`;
-        raw += `Content-Type: text/html; charset=UTF-8\r\n`;
-        raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
-        raw += Buffer.from(html).toString("base64") + "\r\n\r\n";
-        for (const att of attachments) {
-            raw += `--${boundary}\r\n`;
-            raw += `Content-Type: ${att.contentType}; name="${att.filename}"\r\n`;
-            raw += `Content-Disposition: attachment; filename="${att.filename}"\r\n`;
-            raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
-            raw += att.content.toString("base64") + "\r\n\r\n";
-        }
-        raw += `--${boundary}--\r\n`;
-    }
-    else {
-        raw += `Content-Type: text/html; charset=UTF-8\r\n`;
-        raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
-        raw += Buffer.from(html).toString("base64") + "\r\n";
-    }
-    return Buffer.from(raw);
-}
-function formatEmailWithDisplayName(name, email) {
-    const cleanEmail = email.trim();
-    if (!name || !name.trim())
-        return cleanEmail;
-    const cleanName = name.trim().replace(/"/g, '');
-    return `"${cleanName}" <${cleanEmail}>`;
-}
-// POST /api/campaigns/:id/send
+// POST /api/campaigns/:id/send — snapshots the audience into campaign_recipients and hands it to the
+// background sender (server/lib/campaign-sender.ts). Returns immediately; poll /progress for status.
 app.post("/api/campaigns/:id/send", async (req, res) => {
     try {
         const campaignId = Number(req.params.id);
-        // 1. Fetch campaign record
-        const campaign = await prisma.campaign.findUnique({
-            where: { id: campaignId },
-        });
+        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
         if (!campaign)
             return res.status(404).json({ error: "Campaign not found" });
-        if (campaign.status === "sent") {
+        if (campaign.status === "sent")
             return res.status(400).json({ error: "Campaign already sent" });
-        }
-        const targetListIds = campaign.audienceListIds
-            ? campaign.audienceListIds.split(',').map((id) => Number(id.trim())).filter((n) => !isNaN(n) && n > 0)
-            : (campaign.audienceId ? [campaign.audienceId] : []);
-        const excludeListIds = campaign.excludeListIds
-            ? String(campaign.excludeListIds).split(',').map((id) => Number(id.trim())).filter((n) => !isNaN(n) && n > 0)
-            : [];
-        if (campaign.audienceType !== "individual" && targetListIds.length === 0 && !campaign.individualEmails) {
+        if (isRunning(campaignId))
+            return res.status(202).json({ campaignId, status: "sending", alreadyRunning: true });
+        if (campaign.audienceType !== "individual" && !campaign.audienceListIds && !campaign.audienceId && !campaign.individualEmails) {
             return res.status(400).json({ error: "No audience selected" });
         }
-        if (!campaign.templateHtml) {
+        if (!campaign.templateHtml)
             return res.status(400).json({ error: "No template selected" });
+        // Snapshot before flipping to "sending" so a failure here can never leave a half-built audience being sent.
+        const recipients = await resolveAudience(campaign);
+        const total = recipients.length > 0
+            ? await enqueueRecipients(campaignId, recipients)
+            : await prisma.campaignRecipient.count({ where: { campaignId } });
+        if (total === 0) {
+            return res.status(400).json({
+                error: "No target contacts found",
+                details: "No subscribed recipient emails were found in the selected audience list or individual contacts. Please edit the campaign, add recipient emails, and try sending again.",
+            });
         }
-        // 2. Mark as sending atomically to prevent race condition
-        const updateResult = await prisma.campaign.updateMany({
+        // Fail fast instead of half-sending: SES rejects everything past the rolling 24h quota.
+        const queued = await prisma.campaignRecipient.count({ where: { campaignId, status: "queued" } });
+        const remaining = await dailyQuotaRemaining();
+        if (remaining !== null && queued > remaining) {
+            return res.status(400).json({
+                error: "SES daily sending quota would be exceeded",
+                details: `${queued} recipients are queued but only ${remaining} sends remain in your rolling 24-hour SES quota. Request a quota increase in AWS or send to a smaller audience.`,
+            });
+        }
+        const flipped = await prisma.campaign.updateMany({
             where: { id: campaignId, status: { in: ["draft", "scheduled", "paused", "sending"] } },
             data: { status: "sending" },
         });
-        if (updateResult.count === 0) {
-            return res.status(400).json({ error: "Campaign is already sending or sent" });
-        }
-        // 3. Fetch subscribed contacts from selected list(s) or individual emails
-        let contacts = [];
-        if (campaign.audienceType === "individual" || campaign.individualEmails) {
-            const emailList = String(campaign.individualEmails || "")
-                .split(",")
-                .map((e) => e.trim())
-                .filter((e) => e.includes("@"));
-            if (emailList.length > 0) {
-                const dbContacts = await prisma.contact.findMany({
-                    where: {
-                        email: { in: emailList },
-                        status: { not: "unsubscribed" },
-                    },
-                });
-                const foundEmails = new Set(dbContacts.map((c) => c.email.toLowerCase()));
-                contacts = [...dbContacts];
-                emailList.forEach((em) => {
-                    if (!foundEmails.has(em.toLowerCase())) {
-                        contacts.push({
-                            id: 0,
-                            email: em,
-                            firstName: null,
-                            lastName: null,
-                            fullName: null,
-                            company: null,
-                            designation: null,
-                            status: "subscribed",
-                        });
-                    }
-                });
-            }
-        }
-        else {
-            contacts = await prisma.contact.findMany({
-                where: {
-                    status: "subscribed",
-                    contactLists: {
-                        some: { listId: { in: targetListIds } },
-                        ...(excludeListIds.length > 0 ? { none: { listId: { in: excludeListIds } } } : {}),
-                    },
-                },
-            });
-        }
-        if (contacts.length === 0) {
-            // Revert status back to draft
-            await prisma.campaign.update({
-                where: { id: campaignId },
-                data: { status: "draft" },
-            });
-            return res.status(400).json({
-                error: "No target contacts found",
-                details: "No subscribed recipient emails were found in the selected audience list or individual contacts. Please edit the campaign, add recipient emails, and try sending again."
-            });
-        }
-        let sent = 0;
-        const errors = [];
-        // Safety fallback: Ensure unsubscribe URL tag is present in campaign template
-        let template = campaign.templateHtml;
-        if (!template.includes("{{unsubscribe_url}}")) {
-            const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>If you wish to unsubscribe, you can <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">unsubscribe here</a>.</p></div>`;
-            if (/<\/body>/i.test(template)) {
-                template = template.replace(/<\/body>/i, `${fallbackUnsubHtml}</body>`);
-            }
-            else {
-                template += fallbackUnsubHtml;
-            }
-        }
-        const campaignAttachments = extractAttachmentsFromHtml(template);
-        // Resolve all Reply-To emails (manual comma-separated + reply-to contact list)
-        const replyToEmailsSet = new Set();
-        if (campaign.replyToEmail) {
-            const manualEmails = String(campaign.replyToEmail)
-                .split(",")
-                .map((e) => e.trim())
-                .filter((e) => e.includes("@"));
-            manualEmails.forEach((e) => replyToEmailsSet.add(e.toLowerCase()));
-        }
-        if (campaign.replyToListId) {
-            try {
-                const listContacts = await prisma.contact.findMany({
-                    where: {
-                        status: "subscribed",
-                        contactLists: { some: { listId: Number(campaign.replyToListId) } },
-                    },
-                    select: { email: true },
-                });
-                listContacts.forEach((c) => {
-                    if (c.email && c.email.includes("@"))
-                        replyToEmailsSet.add(c.email.trim().toLowerCase());
-                });
-            }
-            catch (err) {
-                console.error("Failed to fetch replyToListId contacts:", err);
-            }
-        }
-        const replyToAddresses = Array.from(replyToEmailsSet);
-        const replyToHeader = replyToAddresses.join(", ");
-        const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
-        // ── DEBUG: Reply-To routing diagnostics ─────────────────────────────────
-        console.log(`[SEND][Campaign ${campaignId}] replyToEmail from DB:`, campaign.replyToEmail);
-        console.log(`[SEND][Campaign ${campaignId}] replyToListId from DB:`, campaign.replyToListId);
-        console.log(`[SEND][Campaign ${campaignId}] Resolved replyToAddresses:`, replyToAddresses);
-        console.log(`[SEND][Campaign ${campaignId}] fromHeader:`, fromHeader);
-        // ────────────────────────────────────────────────────────────────────────
-        for (const contact of contacts) {
-            const unsubUrl = makeUnsubscribeUrl(contact.email, campaign.id);
-            // Smart fallback derivation if contact details are missing in database
-            const rawFirstName = (contact.firstName || "").trim();
-            const rawLastName = (contact.lastName || "").trim();
-            const rawFullName = (contact.fullName || "").trim();
-            // Extract username from email as fallback (e.g. sanjeev@career141.com -> Sanjeev)
-            const emailPrefix = contact.email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-            const firstName = rawFirstName || (rawFullName ? rawFullName.split(" ")[0] : emailPrefix);
-            const lastName = rawLastName || (rawFullName.includes(" ") ? rawFullName.split(" ").slice(1).join(" ") : "");
-            const fullName = rawFullName || (rawFirstName ? `${rawFirstName} ${rawLastName}`.trim() : emailPrefix);
-            const company = (contact.company || "").trim();
-            const designation = (contact.designation || "").trim();
-            let html = template
-                .replace(/{{first_name}}/g, firstName)
-                .replace(/{{last_name}}/g, lastName)
-                .replace(/{{full_name}}/g, fullName)
-                .replace(/{{company}}/g, company)
-                .replace(/{{designation}}/g, designation)
-                .replace(/{{email}}/g, contact.email)
-                .replace(/{{unsubscribe_url}}/g, unsubUrl);
-            // Inject open-tracking pixel and rewrite links through click tracker
-            html = injectTracking(html, contact.email, campaignId);
-            try {
-                if (campaignAttachments.length > 0) {
-                    const rawMimeBuffer = createRawMimeEmail({
-                        from: fromHeader,
-                        to: contact.email,
-                        replyTo: replyToHeader,
-                        subject: campaign.subject,
-                        html,
-                        unsubscribeUrl: unsubUrl,
-                        attachments: campaignAttachments,
-                    });
-                    await sesv2Client.send(new SendEmailV2Command({
-                        FromEmailAddress: fromHeader,
-                        Destination: { ToAddresses: [contact.email] },
-                        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
-                        ConfigurationSetName: "career141-tracking",
-                        Content: {
-                            Raw: {
-                                Data: rawMimeBuffer,
-                            },
-                        },
-                        EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-                    }));
-                }
-                else {
-                    const simpleHeaders = [
-                        { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-                        { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
-                    ];
-                    const sesParams = {
-                        FromEmailAddress: fromHeader,
-                        Destination: { ToAddresses: [contact.email] },
-                        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
-                        ConfigurationSetName: "career141-tracking",
-                        Content: {
-                            Simple: {
-                                Subject: { Data: campaign.subject, Charset: "UTF-8" },
-                                Body: { Html: { Data: html, Charset: "UTF-8" } },
-                                Headers: simpleHeaders,
-                            },
-                        },
-                        EmailTags: [{ Name: "campaign_id", Value: campaignId.toString() }],
-                    };
-                    console.log(`[SEND][Campaign ${campaignId}] Sending to ${contact.email} | ReplyToAddresses:`, sesParams.ReplyToAddresses ?? "NOT SET");
-                    await sesv2Client.send(new SendEmailV2Command(sesParams));
-                }
-                // Log "sent" event with campaignId
-                await prisma.emailEvent.create({
-                    data: {
-                        email: contact.email.toLowerCase(),
-                        campaignId,
-                        eventType: "sent",
-                    },
-                });
-                sent++;
-            }
-            catch (e) {
-                errors.push(`${contact.email}: ${e.message}`);
-            }
-            await new Promise((r) => setTimeout(r, 72)); // 14/sec rate limit
-        }
-        // 4. Handle errors
-        if (errors.length > 0) {
-            console.error(`Failed to send to ${errors.length} contacts:`, errors.slice(0, 5));
-        }
-        if (sent === 0 && errors.length > 0) {
-            // Revert status back to draft if ALL failed
-            await prisma.campaign.update({
-                where: { id: campaignId },
-                data: { status: "draft" },
-            });
-            return res.status(500).json({
-                error: "Failed to send to any contacts. Check SES verification or configuration.",
-                details: errors[0]
-            });
-        }
-        // 5. Mark campaign as sent
-        const updatedCampaign = await prisma.campaign.update({
-            where: { id: campaignId },
-            data: { status: "sent", sentAt: new Date(), totalRecipients: sent },
-        });
-        res.json({ sent, errors: errors.length, campaignId, campaign: updatedCampaign });
+        if (flipped.count === 0)
+            return res.status(400).json({ error: "Campaign is already sent" });
+        void runCampaign(campaignId);
+        res.status(202).json({ campaignId, status: "sending", total });
     }
     catch (err) {
         console.error("Send campaign error:", err);
         res.status(500).json({ error: "Failed to send campaign", details: err.message });
+    }
+});
+// GET /api/campaigns/:id/progress — live send progress (cheap COUNT ... GROUP BY on campaign_recipients)
+app.get("/api/campaigns/:id/progress", async (req, res) => {
+    try {
+        const campaignId = Number(req.params.id);
+        const [campaign, groups] = await Promise.all([
+            prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } }),
+            prisma.campaignRecipient.groupBy({ by: ["status"], where: { campaignId }, _count: { _all: true } }),
+        ]);
+        if (!campaign)
+            return res.status(404).json({ error: "Campaign not found" });
+        const counts = { queued: 0, sent: 0, failed: 0, skipped: 0 };
+        for (const g of groups)
+            counts[g.status] = g._count._all;
+        res.json({ status: campaign.status, ...counts, total: Object.values(counts).reduce((a, b) => a + b, 0) });
+    }
+    catch (err) {
+        res.status(500).json({ error: "Failed to fetch progress" });
     }
 });
 // ── Analytics ───────────────────────────────────────────────────────
@@ -1179,35 +946,35 @@ app.get('/api/analytics/campaigns', async (req, res) => {
         const cached = getCached('analytics:campaigns');
         if (cached)
             return res.json(cached);
-        const campaigns = await prisma.campaign.findMany({
-            orderBy: { createdAt: 'desc' },
-        });
-        const result = await Promise.all(campaigns.map(async (campaign) => {
-            const events = await prisma.emailEvent.findMany({
-                where: { campaignId: campaign.id },
-                select: { eventType: true, email: true }
-            });
-            const uniqueEvents = new Set(events.map(e => `${e.eventType}:${e.email}`));
-            const c = {};
-            // Count total clicks just to show raw clicks if we wanted to, but we'll use unique for rate
-            let rawClicks = 0;
-            events.forEach(e => {
-                if (e.eventType === 'clicked')
-                    rawClicks++;
-            });
-            for (const u of uniqueEvents) {
-                const type = u.split(':')[0];
-                c[type] = (c[type] || 0) + 1;
-            }
-            // Count unsubscribes from email events (not contact status — more reliable)
-            const unsub = c['unsubscribed'] || 0;
+        // Two queries total (was 1 + one full event-history load per campaign), aggregated in SQL.
+        const [campaigns, rows] = await Promise.all([
+            prisma.campaign.findMany({
+                orderBy: { createdAt: 'desc' },
+                select: { id: true, name: true, subject: true, status: true, fromEmail: true, fromName: true, sentAt: true, createdAt: true, totalRecipients: true },
+            }),
+            prisma.$queryRaw `
+        SELECT campaignId, eventType, COUNT(DISTINCT email) AS uniq, COUNT(*) AS total
+        FROM email_events WHERE campaignId IS NOT NULL
+        GROUP BY campaignId, eventType`,
+        ]);
+        const byCampaign = new Map();
+        for (const r of rows) {
+            const m = byCampaign.get(r.campaignId) ?? {};
+            m[r.eventType] = { uniq: Number(r.uniq), total: Number(r.total) };
+            byCampaign.set(r.campaignId, m);
+        }
+        const pct = (n, d) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
+        const result = campaigns.map((campaign) => {
+            const c = byCampaign.get(campaign.id) ?? {};
+            const u = (type) => c[type]?.uniq ?? 0;
+            const rawClicks = c['clicked']?.total ?? 0;
             const recipients = campaign.totalRecipients || 0;
-            const delivered = c['delivered'] || 0;
-            const opened = c['opened'] || 0;
-            const clicked = c['clicked'] || 0;
-            const bounced = c['bounced'] || 0;
-            const complained = c['complained'] || 0;
-            const pct = (n, d) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
+            const delivered = u('delivered');
+            const opened = u('opened');
+            const clicked = u('clicked');
+            const bounced = u('bounced');
+            const unsub = u('unsubscribed');
+            const complained = u('complained');
             return {
                 id: campaign.id,
                 name: campaign.name,
@@ -1235,7 +1002,7 @@ app.get('/api/analytics/campaigns', async (req, res) => {
                     clickToOpenRate: pct(clicked, opened),
                 },
             };
-        }));
+        });
         setCache('analytics:campaigns', result, 30 * 1000);
         res.json(result);
     }
@@ -1253,65 +1020,70 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
             return res.json(cached);
         const campaign = await prisma.campaign.findUnique({
             where: { id: campaignId },
+            select: { id: true, name: true, subject: true, status: true, fromEmail: true, fromName: true, sentAt: true, createdAt: true, audienceType: true, audienceId: true, totalRecipients: true },
         });
         if (!campaign)
             return res.status(404).json({ error: 'Campaign not found' });
-        const allEvents = await prisma.emailEvent.findMany({
-            where: { campaignId },
-            select: { eventType: true, email: true, url: true, userAgent: true, timestamp: true },
-            orderBy: { timestamp: 'asc' }
-        });
-        const uniqueEvents = new Set(allEvents.map(e => `${e.eventType}:${e.email}`));
+        // Totals, domains, links and time-to-open/click are aggregated in SQL; only opens/clicks are loaded as rows
+        // (device/browser/timeline parsing needs them) instead of the campaign's entire event history.
+        const [countRows, domainRows, linkRows, engagementEvents, avgRows, timeline] = await Promise.all([
+            prisma.$queryRaw `
+        SELECT eventType, COUNT(DISTINCT email) AS uniq, COUNT(*) AS total
+        FROM email_events WHERE campaignId = ${campaignId} GROUP BY eventType`,
+            prisma.$queryRaw `
+        SELECT LOWER(SUBSTRING_INDEX(email, '@', -1)) AS domain, eventType, COUNT(DISTINCT email) AS n
+        FROM email_events
+        WHERE campaignId = ${campaignId} AND eventType IN ('sent', 'delivered', 'opened', 'clicked', 'bounced')
+        GROUP BY domain, eventType`,
+            prisma.$queryRaw `
+        SELECT url, COUNT(*) AS n FROM email_events
+        WHERE campaignId = ${campaignId} AND eventType = 'clicked' AND url IS NOT NULL
+        GROUP BY url ORDER BY n DESC LIMIT 10`,
+            prisma.emailEvent.findMany({
+                where: { campaignId, eventType: { in: ['opened', 'clicked'] } },
+                select: { eventType: true, email: true, userAgent: true, timestamp: true },
+                orderBy: { timestamp: 'asc' },
+            }),
+            prisma.$queryRaw `
+        WITH s AS (SELECT LOWER(email) AS e, MIN(timestamp) AS t FROM email_events WHERE campaignId = ${campaignId} AND eventType = 'sent' GROUP BY LOWER(email)),
+             o AS (SELECT LOWER(email) AS e, MIN(timestamp) AS t FROM email_events WHERE campaignId = ${campaignId} AND eventType = 'opened' GROUP BY LOWER(email)),
+             c AS (SELECT LOWER(email) AS e, MIN(timestamp) AS t FROM email_events WHERE campaignId = ${campaignId} AND eventType = 'clicked' GROUP BY LOWER(email))
+        SELECT
+          (SELECT AVG(TIMESTAMPDIFF(MICROSECOND, s.t, o.t)) FROM s JOIN o ON o.e = s.e) AS avgOpen,
+          (SELECT AVG(TIMESTAMPDIFF(MICROSECOND, COALESCE(o.t, s.t), c.t)) FROM c LEFT JOIN o ON o.e = c.e LEFT JOIN s ON s.e = c.e WHERE COALESCE(o.t, s.t) IS NOT NULL) AS avgClick`,
+            prisma.emailEvent.findMany({
+                where: { campaignId },
+                orderBy: { timestamp: 'desc' },
+                take: 50,
+                select: { eventType: true, email: true, timestamp: true },
+            }),
+        ]);
         const c = {};
-        let rawClicks = 0;
-        const urlCounts = {};
+        for (const r of countRows)
+            c[r.eventType] = Number(r.uniq);
+        const rawClicks = Number(countRows.find((r) => r.eventType === 'clicked')?.total ?? 0);
+        const domainStats = {};
+        for (const r of domainRows) {
+            if (!r.domain)
+                continue;
+            const d = (domainStats[r.domain] ??= { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0 });
+            d[r.eventType] = Number(r.n);
+        }
+        const topDomains = Object.entries(domainStats)
+            .sort((a, b) => b[1].sent - a[1].sent)
+            .slice(0, 5)
+            .map(([domain, stats]) => ({ domain, ...stats }));
+        const topLinks = linkRows.map((r) => ({ url: r.url, count: Number(r.n) }));
         const parser = new UAParser();
         const devices = { desktop: 0, mobile: 0, tablet: 0, other: 0 };
         const browsers = {};
         const engagementTimelineMap = {};
         const processedEngagement = new Set();
-        const domainStats = {};
-        const sentTimes = {};
-        const openTimes = {};
-        const clickTimes = {};
-        let totalTimeToOpen = 0;
-        let opensWithTime = 0;
-        let totalTimeToClick = 0;
-        let clicksWithTime = 0;
         const engagementHeatmap = Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0 }));
-        allEvents.forEach(e => {
-            const emailLower = e.email.toLowerCase();
-            const domain = emailLower.split('@')[1];
-            if (domain && !domainStats[domain]) {
-                domainStats[domain] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0 };
-            }
-            const timeMs = e.timestamp.getTime();
-            if (e.eventType === 'sent') {
-                if (!sentTimes[emailLower] || timeMs < sentTimes[emailLower]) {
-                    sentTimes[emailLower] = timeMs;
-                }
-            }
-            else if (e.eventType === 'opened') {
-                if (!openTimes[emailLower] || timeMs < openTimes[emailLower]) {
-                    openTimes[emailLower] = timeMs;
-                }
-                engagementHeatmap[e.timestamp.getHours()].count++;
-            }
-            else if (e.eventType === 'clicked') {
-                if (!clickTimes[emailLower] || timeMs < clickTimes[emailLower]) {
-                    clickTimes[emailLower] = timeMs;
-                }
-                engagementHeatmap[e.timestamp.getHours()].count++;
-            }
-            if (e.eventType === 'clicked') {
-                rawClicks++;
-                if (e.url) {
-                    urlCounts[e.url] = (urlCounts[e.url] || 0) + 1;
-                }
-            }
-            // Parse User Agent
-            if ((e.eventType === 'opened' || e.eventType === 'clicked') && e.userAgent) {
-                // Deduplicate UA parsing per user action type to avoid skewing if they click 10 times
+        for (const e of engagementEvents) {
+            engagementHeatmap[e.timestamp.getHours()].count++;
+            if (e.userAgent) {
+                // Deduplicate UA parsing per user action type so repeated clicks don't skew the split
                 const uaKey = `${e.eventType}:${e.email}:${e.userAgent}`;
                 if (!processedEngagement.has(uaKey)) {
                     processedEngagement.add(uaKey);
@@ -1331,30 +1103,21 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
                     browsers[browser] = (browsers[browser] || 0) + 1;
                 }
             }
-            // Engagement Timeline (group by day/hour)
-            if (e.eventType === 'opened' || e.eventType === 'clicked') {
-                // deduplicate timeline per user action type per hour
-                const hourString = e.timestamp.toISOString().substring(0, 13) + ':00:00.000Z';
-                const tlKey = `${e.eventType}:${e.email}:${hourString}`;
-                if (!processedEngagement.has(tlKey)) {
-                    processedEngagement.add(tlKey);
-                    if (!engagementTimelineMap[hourString]) {
-                        // Create a nice display label (e.g. "Jun 12, 10 AM")
-                        const dateObj = new Date(hourString);
-                        const timeLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true }).format(dateObj);
-                        engagementTimelineMap[hourString] = { time: timeLabel, opens: 0, clicks: 0 };
-                    }
-                    if (e.eventType === 'opened')
-                        engagementTimelineMap[hourString].opens++;
-                    if (e.eventType === 'clicked')
-                        engagementTimelineMap[hourString].clicks++;
+            // Timeline: one entry per user action type per hour
+            const hourString = e.timestamp.toISOString().substring(0, 13) + ':00:00.000Z';
+            const tlKey = `${e.eventType}:${e.email}:${hourString}`;
+            if (!processedEngagement.has(tlKey)) {
+                processedEngagement.add(tlKey);
+                if (!engagementTimelineMap[hourString]) {
+                    const timeLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true }).format(new Date(hourString));
+                    engagementTimelineMap[hourString] = { time: timeLabel, opens: 0, clicks: 0 };
                 }
+                if (e.eventType === 'opened')
+                    engagementTimelineMap[hourString].opens++;
+                if (e.eventType === 'clicked')
+                    engagementTimelineMap[hourString].clicks++;
             }
-        });
-        const topLinks = Object.entries(urlCounts)
-            .map(([url, count]) => ({ url, count }))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 10);
+        }
         const topBrowsers = Object.entries(browsers)
             .map(([name, count]) => ({ name, count }))
             .sort((a, b) => b.count - a.count)
@@ -1362,38 +1125,10 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         const engagementTimeline = Object.entries(engagementTimelineMap)
             .sort((a, b) => a[0].localeCompare(b[0]))
             .map(entry => entry[1]);
-        for (const u of uniqueEvents) {
-            const type = u.split(':')[0];
-            const email = u.split(':')[1];
-            c[type] = (c[type] || 0) + 1;
-            const domain = email.toLowerCase().split('@')[1];
-            if (domain && domainStats[domain] && (type === 'sent' || type === 'delivered' || type === 'opened' || type === 'clicked' || type === 'bounced')) {
-                domainStats[domain][type]++;
-            }
-        }
-        Object.keys(openTimes).forEach(email => {
-            if (sentTimes[email]) {
-                totalTimeToOpen += (openTimes[email] - sentTimes[email]);
-                opensWithTime++;
-            }
-        });
-        Object.keys(clickTimes).forEach(email => {
-            if (openTimes[email]) {
-                totalTimeToClick += (clickTimes[email] - openTimes[email]);
-                clicksWithTime++;
-            }
-            else if (sentTimes[email]) {
-                totalTimeToClick += (clickTimes[email] - sentTimes[email]);
-                clicksWithTime++;
-            }
-        });
-        const averageTimeToOpen = opensWithTime > 0 ? Math.round(totalTimeToOpen / opensWithTime / 1000) : null;
-        const averageTimeToClick = clicksWithTime > 0 ? Math.round(totalTimeToClick / clicksWithTime / 1000) : null;
-        const topDomains = Object.entries(domainStats)
-            .sort((a, b) => b[1].sent - a[1].sent)
-            .slice(0, 5)
-            .map(([domain, stats]) => ({ domain, ...stats }));
-        // Count unsubscribes from email events directly (more reliable than contact status)
+        const avgOpen = avgRows[0]?.avgOpen;
+        const avgClick = avgRows[0]?.avgClick;
+        const averageTimeToOpen = avgOpen != null ? Math.round(Number(avgOpen) / 1e6) : null;
+        const averageTimeToClick = avgClick != null ? Math.round(Number(avgClick) / 1e6) : null;
         const unsub = c['unsubscribed'] || 0;
         const recipients = campaign.totalRecipients || 0;
         const delivered = c['delivered'] || 0;
@@ -1405,12 +1140,6 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
         const renderingFailures = c['rendering_failure'] || 0;
         const delayed = c['delayed'] || 0;
         const pct = (n, d) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
-        const timeline = await prisma.emailEvent.findMany({
-            where: { campaignId },
-            orderBy: { timestamp: 'desc' },
-            take: 50,
-            select: { eventType: true, email: true, timestamp: true },
-        });
         const result = {
             campaign: {
                 id: campaign.id,
@@ -1944,50 +1673,32 @@ app.post("/api/brevo/link-lists", async (req, res) => {
         res.status(500).json({ error: err.message ?? "Link lists failed" });
     }
 });
-// ── Helper ───────────────────────────────────────────────────────────
-if (!process.env.JWT_SECRET) {
-    throw new Error("JWT_SECRET environment variable is required.");
-}
-const JWT_SECRET = process.env.JWT_SECRET;
-const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
-function makeUnsubscribeUrl(email, campaignId) {
-    const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
-    return `${APP_URL()}/api/unsubscribe?token=${token}`;
-}
-/** Returns a URL that logs an open event then serves a 1×1 transparent pixel */
-function makeOpenPixelUrl(email, campaignId) {
-    const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
-    return `${APP_URL()}/api/track/open?t=${token}`;
-}
-/** Rewrites a destination URL into a tracked click-redirect URL */
-function makeClickUrl(email, campaignId, destinationUrl) {
-    const token = jwt.sign({ email, campaignId, url: destinationUrl }, JWT_SECRET, { expiresIn: "90d" });
-    return `${APP_URL()}/api/track/click?t=${token}`;
-}
-// 1×1 transparent GIF (35 bytes)
-const PIXEL_GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
-/**
- * Rewrites every <a href="..."> in the HTML through the click-tracker,
- * then appends the open-tracking pixel just before </body>.
- */
-function injectTracking(html, email, campaignId) {
-    // Rewrite links — skip mailto:, tel:, unsubscribe links, and already-tracked links
-    const tracked = html.replace(/href="(https?:\/\/[^"]+)"/gi, (_match, url) => {
-        if (url.includes("/api/track/") || url.includes("/api/unsubscribe")) {
-            return `href="${url}"`;
-        }
-        return `href="${makeClickUrl(email, campaignId, url)}"`;
-    });
-    // Inject open-tracking pixel before </body>
-    const pixelTag = `<img src="${makeOpenPixelUrl(email, campaignId)}" width="1" height="1" border="0" style="display:none;width:1px;height:1px" alt="" />`;
-    if (/<\/body>/i.test(tracked)) {
-        return tracked.replace(/<\/body>/i, `${pixelTag}</body>`);
+// ── SES Webhook (SNS event handler — authenticated by SNS message signature) ──
+/** Inserts an event; returns false if an identical one-per-(type,campaign,email) event already exists. */
+async function recordEvent(email, campaignId, eventType, extra = {}, once = true) {
+    try {
+        await prisma.emailEvent.create({
+            data: { email, campaignId, eventType, ...extra, dedupKey: once && campaignId ? `${eventType}:${campaignId}:${email}` : null },
+        });
+        return true;
     }
-    return tracked + pixelTag;
+    catch (err) {
+        if (err?.code === "P2002")
+            return false;
+        throw err;
+    }
 }
-// ── SES Webhook (SNS event handler — no auth) ────────────────────────
+const SNS_SIMPLE_EVENTS = {
+    Delivery: "delivered",
+    Reject: "rejected",
+    RenderingFailure: "rendering_failure",
+    DeliveryDelay: "delayed",
+};
 app.post("/api/webhooks/ses", express.json({ type: "*/*" }), async (req, res) => {
     const body = req.body;
+    if (!(await verifySnsMessage(body))) {
+        return res.status(403).json({ error: "Invalid SNS signature" });
+    }
     if (body.Type === "SubscriptionConfirmation") {
         const url = body.SubscribeURL;
         if (typeof url === "string" && /^https:\/\/sns\.[a-z0-9-]+\.amazonaws\.com\//.test(url)) {
@@ -1999,29 +1710,19 @@ app.post("/api/webhooks/ses", express.json({ type: "*/*" }), async (req, res) =>
         const msg = JSON.parse(body.Message);
         // AWS SES uses `notificationType` for old format, `eventType` for new format
         const type = msg.notificationType || msg.eventType || "";
-        // Extract email — differs per event type
-        let email = "";
-        if (type === "Bounce")
-            email = msg.bounce?.bouncedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
-        if (type === "Complaint")
-            email = msg.complaint?.complainedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
-        if (type === "Delivery")
-            email = msg.delivery?.recipients?.[0]?.toLowerCase() || "";
-        if (type === "Send")
-            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
-        if (type === "Reject")
-            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
-        if (type === "RenderingFailure")
-            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
-        if (type === "DeliveryDelay")
-            email = msg.deliveryDelay?.delayedRecipients?.[0]?.emailAddress?.toLowerCase() || "";
-        if (type === "Subscription")
-            email = msg.mail?.destination?.[0]?.toLowerCase() || "";
+        const rawEmail = type === "Bounce" ? msg.bounce?.bouncedRecipients?.[0]?.emailAddress
+            : type === "Complaint" ? msg.complaint?.complainedRecipients?.[0]?.emailAddress
+                : type === "Delivery" ? msg.delivery?.recipients?.[0]
+                    : type === "DeliveryDelay" ? msg.deliveryDelay?.delayedRecipients?.[0]?.emailAddress
+                        : msg.mail?.destination?.[0];
+        const email = typeof rawEmail === "string" ? rawEmail.toLowerCase() : "";
+        if (!email)
+            return res.status(200).json({ ok: true });
         let campaignId = msg.mail?.tags?.campaign_id?.[0]
             ? parseInt(msg.mail.tags.campaign_id[0], 10)
             : null;
         // Fallback: find most recent 'sent' event for this email
-        if (!campaignId && email) {
+        if (!campaignId) {
             const recent = await prisma.emailEvent.findFirst({
                 where: { email, eventType: "sent" },
                 orderBy: { timestamp: "desc" },
@@ -2029,35 +1730,18 @@ app.post("/api/webhooks/ses", express.json({ type: "*/*" }), async (req, res) =>
             if (recent)
                 campaignId = recent.campaignId;
         }
-        if (type === "Bounce" && msg.bounce.bounceType === "Permanent" && email) {
-            await prisma.contact.updateMany({
-                where: { email },
-                data: { status: "bounced" },
-            });
-            await prisma.emailEvent.create({
-                data: { email, eventType: "bounced", campaignId },
-            });
+        if (type === "Bounce" && msg.bounce?.bounceType === "Permanent") {
+            await prisma.contact.updateMany({ where: { email }, data: { status: "bounced" } });
+            await recordEvent(email, campaignId, "bounced");
         }
-        if (type === "Complaint" && email) {
-            await prisma.contact.updateMany({
-                where: { email },
-                data: { status: "unsubscribed" },
-            });
-            await prisma.emailEvent.create({
-                data: { email, eventType: "complained", campaignId },
-            });
+        else if (type === "Complaint") {
+            await prisma.contact.updateMany({ where: { email }, data: { status: "unsubscribed" } });
+            await recordEvent(email, campaignId, "complained");
         }
-        if (type === "Delivery" && email) {
-            // If a delivery event for this email+campaign already exists recently, skip duplicate
-            const exists = await prisma.emailEvent.findFirst({
-                where: { email, campaignId, eventType: "delivered" }
-            });
-            if (!exists) {
-                await prisma.emailEvent.create({
-                    data: { email, eventType: "delivered", campaignId },
-                });
-            }
+        else if (SNS_SIMPLE_EVENTS[type]) {
+            await recordEvent(email, campaignId, SNS_SIMPLE_EVENTS[type]);
         }
+        invalidateAnalyticsCache(campaignId ?? undefined);
     }
     return res.status(200).json({ ok: true });
 });
@@ -2088,16 +1772,8 @@ app.get("/api/track/open", async (req, res) => {
                 !ua.includes("android") && !ua.includes("iphone")));
         if (isBotOpen)
             return;
-        // De-duplicate: only log the first open per contact per campaign
-        const already = await prisma.emailEvent.findFirst({
-            where: { email, campaignId: campaignId ?? undefined, eventType: "opened" },
-            select: { id: true },
-        });
-        if (!already) {
-            await prisma.emailEvent.create({
-                data: { email, campaignId: campaignId ?? undefined, eventType: "opened" },
-            });
-            // Invalidate cache so analytics refresh quickly
+        // Only the first open per contact per campaign is stored (unique dedupKey, race-free)
+        if (await recordEvent(email.toLowerCase(), campaignId, "opened")) {
             invalidateAnalyticsCache(campaignId ?? undefined);
         }
     }
@@ -2113,15 +1789,7 @@ app.get("/api/track/click", async (req, res) => {
     try {
         const { email, campaignId, url } = jwt.verify(t, JWT_SECRET);
         // Log the click event (allow multiple clicks)
-        await prisma.emailEvent.create({
-            data: {
-                email,
-                campaignId: campaignId ?? undefined,
-                eventType: "clicked",
-                url,
-                userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null,
-            },
-        });
+        await recordEvent(email.toLowerCase(), campaignId, "clicked", { url, userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null }, false);
         // Invalidate cache so analytics update quickly
         invalidateAnalyticsCache(campaignId ?? undefined);
         return res.redirect(302, url);
@@ -2141,13 +1809,7 @@ app.get("/api/unsubscribe", async (req, res) => {
             where: { email: decoded.email.toLowerCase() },
             data: { status: "unsubscribed" },
         });
-        await prisma.emailEvent.create({
-            data: {
-                email: decoded.email.toLowerCase(),
-                eventType: "unsubscribed",
-                campaignId: decoded.campaignId ?? undefined
-            },
-        });
+        await recordEvent(decoded.email.toLowerCase(), decoded.campaignId ?? null, "unsubscribed");
         // Invalidate analytics cache so stats update immediately
         invalidateAnalyticsCache(decoded.campaignId ?? undefined);
         return res.status(200).send(`
@@ -2195,19 +1857,7 @@ app.post("/api/unsubscribe", express.urlencoded({ extended: false }), async (req
             where: { email: decoded.email.toLowerCase() },
             data: { status: "unsubscribed" },
         });
-        // Avoid duplicate unsubscribe events
-        const existing = await prisma.emailEvent.findFirst({
-            where: { email: decoded.email.toLowerCase(), eventType: "unsubscribed", campaignId: decoded.campaignId ?? undefined }
-        });
-        if (!existing) {
-            await prisma.emailEvent.create({
-                data: {
-                    email: decoded.email.toLowerCase(),
-                    eventType: "unsubscribed",
-                    campaignId: decoded.campaignId ?? undefined
-                },
-            });
-        }
+        await recordEvent(decoded.email.toLowerCase(), decoded.campaignId ?? null, "unsubscribed");
         invalidateAnalyticsCache(decoded.campaignId ?? undefined);
         // RFC 8058 requires a 200 OK with no redirect for POST
         return res.status(200).send("OK");
@@ -2215,90 +1865,6 @@ app.post("/api/unsubscribe", express.urlencoded({ extended: false }), async (req
     catch {
         return res.status(400).send("Invalid or expired token.");
     }
-});
-// ── Email Send (bulk campaign dispatcher) ────────────────────────────
-app.post("/api/email/send", async (req, res) => {
-    const { campaignId, listId, subject, htmlTemplate, fromName, fromEmail } = req.body;
-    // SAFETY GUARD — prevents accidental blast to all contacts
-    if (!listId) {
-        return res.status(400).json({
-            error: "listId is required. You cannot send without specifying a target list.",
-        });
-    }
-    const contacts = await prisma.contact.findMany({
-        where: {
-            status: "subscribed",
-            ...(listId ? { contactLists: { some: { listId } } } : {})
-        },
-    });
-    let sent = 0;
-    const errors = [];
-    for (const contact of contacts) {
-        const unsubUrl = makeUnsubscribeUrl(contact.email, campaignId ?? null);
-        // 1. Personalise the template
-        let html = htmlTemplate;
-        // Automatically inject unsubscribe footer if no placeholder is present (like Brevo)
-        if (!html.includes("{{unsubscribe_url}}")) {
-            const defaultUnsubscribeFooter = `
-        <div style="font-family: Arial, sans-serif; font-size: 11px; color: #888888; text-align: center; padding: 20px; border-top: 1px solid #eeeeee; margin-top: 20px;">
-          You are receiving this email because you subscribed to updates. 
-          If you no longer wish to receive these emails, you can 
-          <a href="{{unsubscribe_url}}" style="color: #20a84a; font-weight: 600; text-decoration: underline;">unsubscribe here</a>.
-        </div>
-      `;
-            if (/<\/body>/i.test(html)) {
-                html = html.replace(/<\/body>/i, `${defaultUnsubscribeFooter}</body>`);
-            }
-            else {
-                html += defaultUnsubscribeFooter;
-            }
-        }
-        html = html
-            .replace(/{{first_name}}/g, contact.firstName ?? "")
-            .replace(/{{last_name}}/g, contact.lastName ?? "")
-            .replace(/{{company}}/g, contact.company ?? "")
-            .replace(/{{unsubscribe_url}}/g, unsubUrl);
-        // 2. Inject open-pixel + rewrite links for tracking
-        html = injectTracking(html, contact.email.toLowerCase(), campaignId ?? null);
-        try {
-            await sesv2Client.send(new SendEmailV2Command({
-                FromEmailAddress: `${fromName} <${fromEmail}>`,
-                Destination: { ToAddresses: [contact.email] },
-                ConfigurationSetName: "career141-tracking",
-                Content: {
-                    Simple: {
-                        Subject: { Data: subject, Charset: "UTF-8" },
-                        Body: { Html: { Data: html, Charset: "UTF-8" } },
-                        Headers: [
-                            { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-                            { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
-                        ],
-                    },
-                },
-                EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
-            }));
-            // Log "sent" event with campaignId for /api/email/send route
-            await prisma.emailEvent.create({
-                data: {
-                    email: contact.email.toLowerCase(),
-                    campaignId: campaignId ?? undefined,
-                    eventType: "sent",
-                },
-            });
-            sent++;
-        }
-        catch (e) {
-            errors.push(contact.email + ": " + e.message);
-        }
-        await new Promise((r) => setTimeout(r, 72));
-    }
-    if (campaignId) {
-        await prisma.campaign.update({
-            where: { id: campaignId },
-            data: { status: "sent", sentAt: new Date(), totalRecipients: sent },
-        });
-    }
-    return res.json({ sent, errors });
 });
 // ── Test endpoints removed for security ──────────────────────────────
 // ── Senders ─────────────────────────────────────────────────────────
@@ -2805,4 +2371,11 @@ app.get(/^(?!\/api).*/, (_req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
-// Trigger restart
+// Resume campaigns left in "sending" by a crash/redeploy. Only on deployed instances: a dev machine pointed at the
+// production DB must never start sending someone else's campaign. ponytail: assumes ONE API instance; multiple
+// instances would each pick up the same campaign (add a row-level claim before scaling out).
+if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.ENABLE_SENDER_SWEEP) {
+    const sweep = () => resumeSendingCampaigns().catch((e) => console.error("Sender sweep failed:", e));
+    void sweep();
+    setInterval(sweep, 60_000);
+}

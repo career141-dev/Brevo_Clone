@@ -17,5 +17,6 @@
     "resolveJsonModule": true,
     "esModuleInterop": true
   },
-  "include": ["server"]
+  "include": ["server"],
+  "exclude": ["server/**/*.test.ts"]
 }

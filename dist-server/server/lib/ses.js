@@ -13,4 +13,5 @@ const clientConfig = {
 // SES v1 — used for quota checks and legacy operations
 export const sesClient = new SESClient(clientConfig);
 // SES v2 — used for sending emails with proper header support (List-Unsubscribe etc.)
-export const sesv2Client = new SESv2Client(clientConfig);
+// Adaptive retry mode adds client-side rate limiting + backoff when SES returns throttling errors.
+export const sesv2Client = new SESv2Client({ ...clientConfig, maxAttempts: 5, retryMode: "adaptive" });

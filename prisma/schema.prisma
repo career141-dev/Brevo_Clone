@@ -111,6 +111,7 @@ model ContactList {
   list      List    @relation(fields: [listId], references: [id])
 
   @@id([contactId, listId])
+  @@index([listId])
   @@map("contact_lists")
 }
 
@@ -149,14 +150,36 @@ model EmailEvent {
   eventType  EventType
   url        String?   @db.VarChar(2000)
   userAgent  String?   @db.VarChar(500)
+  dedupKey   String?   @unique @db.VarChar(255)
   timestamp  DateTime  @default(now())
   contact    Contact?  @relation(fields: [email], references: [email])
 
   @@index([email])
-  @@index([campaignId])
+  @@index([campaignId, eventType])
   @@index([eventType])
   @@index([timestamp])
   @@map("email_events")
+}
+
+enum RecipientStatus {
+  queued
+  sent
+  failed
+  skipped
+}
+
+model CampaignRecipient {
+  id         Int             @id @default(autoincrement())
+  campaignId Int
+  contactId  Int?
+  email      String
+  status     RecipientStatus @default(queued)
+  error      String?         @db.VarChar(500)
+  sentAt     DateTime?
+
+  @@unique([campaignId, email])
+  @@index([campaignId, status])
+  @@map("campaign_recipients")
 }
 
 model Automation {

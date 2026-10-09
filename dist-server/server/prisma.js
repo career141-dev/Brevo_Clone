@@ -57,23 +57,9 @@ export const prisma = globalForPrisma.prisma ?? basePrisma.$extends({
                     return query(anyArgs);
                 }
                 if (['findUnique', 'findUniqueOrThrow', 'update', 'delete'].includes(operation)) {
-                    // Verify ownership first for operations that require unique where clauses
-                    if (anyArgs.where?.id) {
-                        const existing = await basePrisma[model].findFirst({
-                            where: { id: anyArgs.where.id, userId }
-                        });
-                        if (!existing) {
-                            throw new Error(`Record not found or unauthorized access to ${model}`);
-                        }
-                    }
-                    else if (anyArgs.where?.brevoId) {
-                        const existing = await basePrisma[model].findFirst({
-                            where: { brevoId: anyArgs.where.brevoId, userId }
-                        });
-                        if (!existing) {
-                            throw new Error(`Record not found or unauthorized access to ${model}`);
-                        }
-                    }
+                    // Ownership rides in the same query (Prisma allows extra filters on unique where): one round trip, not two.
+                    // A non-owned record now surfaces as findUnique -> null / update,delete -> P2025, which the routes already map to 404.
+                    anyArgs.where = { ...anyArgs.where, userId };
                     return query(anyArgs);
                 }
                 if (operation === 'upsert') {

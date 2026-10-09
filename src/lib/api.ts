@@ -1,9 +1,15 @@
 const BASE = import.meta.env.VITE_API_URL ?? "/api";
 
+// The API verifies the Clerk session token when CLERK_SECRET_KEY is configured on the server.
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await (window as any).Clerk?.session?.getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
+    headers: { "Content-Type": "application/json", ...(await authHeaders()), ...init?.headers },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -255,7 +261,7 @@ export const api = {
 export async function downloadExport(contactIds: number[], format: "csv" | "json") {
   const res = await fetch(`${BASE}/contacts/export`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({ contactIds, format }),
   });
   if (!res.ok) {
