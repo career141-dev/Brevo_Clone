@@ -7,17 +7,20 @@ export const JWT_SECRET = process.env.JWT_SECRET;
 const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
 
 export function makeUnsubscribeUrl(email: string, campaignId: number | null): string {
-  const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
+  // No expiry on unsubscribe links — recipients must always be able to unsubscribe (CAN-SPAM / GDPR compliance)
+  const token = jwt.sign({ email, campaignId }, JWT_SECRET);
   return `${APP_URL()}/api/unsubscribe?token=${token}`;
 }
 
+/** Returns a URL that logs an open event then serves a 1×1 transparent pixel */
 function makeOpenPixelUrl(email: string, campaignId: number | null): string {
-  const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "90d" });
+  const token = jwt.sign({ email, campaignId }, JWT_SECRET, { expiresIn: "2y" });
   return `${APP_URL()}/api/track/open?t=${token}`;
 }
 
+/** Rewrites a destination URL into a tracked click-redirect URL */
 function makeClickUrl(email: string, campaignId: number | null, destinationUrl: string): string {
-  const token = jwt.sign({ email, campaignId, url: destinationUrl }, JWT_SECRET, { expiresIn: "90d" });
+  const token = jwt.sign({ email, campaignId, url: destinationUrl }, JWT_SECRET, { expiresIn: "2y" });
   return `${APP_URL()}/api/track/click?t=${token}`;
 }
 
@@ -27,10 +30,21 @@ export const PIXEL_GIF = Buffer.from(
   "base64",
 );
 
-/** Rewrites every <a href="http..."> through the click tracker and appends the open pixel. */
+/**
+ * Rewrites every <a href="..."> in the HTML through the click-tracker,
+ * then appends the open-tracking pixel just before </body>.
+ */
 export function injectTracking(html: string, email: string, campaignId: number | null): string {
+  // Rewrite links — skip unsubscribe, tracking, uploads, R2 CDN, and /api/download links
   const tracked = html.replace(/href="(https?:\/\/[^"]+)"/gi, (_match, url: string) => {
-    if (url.includes("/api/track/") || url.includes("/api/unsubscribe")) {
+    if (
+      url.includes("/api/track/") ||
+      url.includes("/api/unsubscribe") ||
+      url.includes("/api/download") ||
+      url.includes("/uploads/") ||
+      url.includes("r2.dev") ||
+      url.includes("r2.cloudflarestorage.com")
+    ) {
       return `href="${url}"`;
     }
     return `href="${makeClickUrl(email, campaignId, url)}"`;

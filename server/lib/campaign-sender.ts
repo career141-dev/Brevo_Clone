@@ -1,10 +1,8 @@
-import path from "node:path";
 import { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { prisma } from "../prisma.js";
 import { sesClient, sesv2Client } from "./ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "./tracking.js";
-import { readUpload } from "./storage.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -15,76 +13,32 @@ const ACCOUNT_ERRORS = ["SendingPausedException", "AccountSuspendedException", "
 const UNENGAGED_MIN_SENDS = 3;
 const UNENGAGED_DAYS = 90;
 
-type Attachment = { filename: string; base64: string; contentType: string };
-
-const CONTENT_TYPES: Record<string, string> = {
-  ".pdf": "application/pdf",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".doc": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".xls": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  ".ppt": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  ".zip": "application/zip",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".txt": "text/plain",
-  ".csv": "text/csv",
+const getAppBaseUrl = () => {
+  if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, "");
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+  return "https://brevoclone-production.up.railway.app";
 };
 
-/** Reads uploaded files referenced in the HTML once and base64-encodes them once for the whole send. */
-async function extractAttachmentsFromHtml(html: string): Promise<Attachment[]> {
-  const attachments: Attachment[] = [];
-  const seen = new Set<string>();
-  for (const match of html.matchAll(/\/uploads\/([^"'\s>]+)/g)) {
-    const name = match[1];
-    if (seen.has(name)) continue;
-    seen.add(name);
-    try {
-      const data = await readUpload(name);
-      if (!data) continue;
-      const filename = name.replace(/^\d+_/, "");
-      attachments.push({
-        filename,
-        base64: data.toString("base64"),
-        contentType: CONTENT_TYPES[path.extname(filename).toLowerCase()] ?? "application/octet-stream",
-      });
-    } catch (err) {
-      console.error("Failed to read attachment file:", name, err);
-    }
-  }
-  return attachments;
+export function normalizeEmailHtml(html: string): string {
+  if (!html) return "";
+  const baseUrl = getAppBaseUrl();
+
+  // Rewrite relative /uploads/ links and src attributes to absolute public URLs
+  let normalized = html.replace(/(src|href)=(["'])\/uploads\/([^"'\s>?#]+)\2/g, (_match, p1, p2, p3) => {
+    return `${p1}=${p2}${baseUrl}/uploads/${p3}${p2}`;
+  });
+
+  // Rewrite any localhost / 127.0.0.1 upload URLs to production domain
+  normalized = normalized.replace(/https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/uploads\//g, `${baseUrl}/uploads/`);
+
+  // Rewrite relative or localhost /api/download URLs to production domain
+  normalized = normalized.replace(/https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/api\/download/g, `${baseUrl}/api/download`);
+  normalized = normalized.replace(/href=(["'])\/api\/download/g, `href=$1${baseUrl}/api/download`);
+
+  return normalized;
 }
 
-function createRawMimeEmail(p: {
-  from: string;
-  to: string;
-  replyTo?: string;
-  subject: string;
-  html: string;
-  unsubscribeUrl: string;
-  attachments: Attachment[];
-}): Buffer {
-  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-  let raw = `From: ${p.from}\r\nTo: ${p.to}\r\n`;
-  if (p.replyTo?.trim()) raw += `Reply-To: ${p.replyTo.trim()}\r\n`;
-  raw += `Subject: =?UTF-8?B?${Buffer.from(p.subject).toString("base64")}?=\r\n`;
-  raw += `MIME-Version: 1.0\r\n`;
-  raw += `List-Unsubscribe: <${p.unsubscribeUrl}>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n`;
-  raw += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
-  raw += `--${boundary}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n`;
-  raw += Buffer.from(p.html).toString("base64") + "\r\n\r\n";
-  for (const att of p.attachments) {
-    raw += `--${boundary}\r\nContent-Type: ${att.contentType}; name="${att.filename}"\r\n`;
-    raw += `Content-Disposition: attachment; filename="${att.filename}"\r\nContent-Transfer-Encoding: base64\r\n\r\n`;
-    raw += att.base64 + "\r\n\r\n";
-  }
-  raw += `--${boundary}--\r\n`;
-  return Buffer.from(raw);
-}
-
-function formatEmailWithDisplayName(name: string | null | undefined, email: string): string {
+export function formatEmailWithDisplayName(name: string | null | undefined, email: string): string {
   const cleanEmail = email.trim();
   if (!name?.trim()) return cleanEmail;
   return `"${name.trim().replace(/"/g, "")}" <${cleanEmail}>`;
@@ -119,13 +73,21 @@ function personalize(template: string, c: Person, unsubUrl: string): string {
   return template.replace(/{{(first_name|last_name|full_name|company|designation|email|unsubscribe_url)}}/g, (_m, k) => vars[k]);
 }
 
-/** Subscribed contacts of the selected audience, deduplicated by lowercase email. */
-export async function resolveAudience(campaign: any): Promise<{ contactId: number | null; email: string }[]> {
-  const ids = (s: string | null) =>
-    String(s ?? "").split(",").map((x) => Number(x.trim())).filter((n) => !isNaN(n) && n > 0);
-  const targetListIds = campaign.audienceListIds ? ids(campaign.audienceListIds) : campaign.audienceId ? [campaign.audienceId] : [];
-  const excludeListIds = ids(campaign.excludeListIds);
+const parseIds = (s: string | null | undefined) =>
+  String(s ?? "").split(",").map((x) => Number(x.trim())).filter((n) => !isNaN(n) && n > 0);
 
+/** List ids may be internal ids or Brevo ids; match both so imported lists resolve either way. */
+async function withListAliases(ids: number[]): Promise<number[]> {
+  if (ids.length === 0) return [];
+  const lists = await prisma.list.findMany({
+    where: { OR: [{ id: { in: ids } }, { brevoId: { in: ids } }] },
+    select: { id: true, brevoId: true },
+  });
+  return [...new Set([...ids, ...lists.map((l: any) => l.id), ...(lists.map((l: any) => l.brevoId).filter(Boolean) as number[])])];
+}
+
+/** Subscribed contacts of the selected audience, deduplicated by lowercase email. */
+async function resolveAudience(campaign: any): Promise<{ contactId: number | null; email: string }[]> {
   const out = new Map<string, { contactId: number | null; email: string }>();
 
   if (campaign.audienceType === "individual" || campaign.individualEmails) {
@@ -141,12 +103,14 @@ export async function resolveAudience(campaign: any): Promise<{ contactId: numbe
       }
     }
   } else {
+    const targetIds = await withListAliases(campaign.audienceListIds ? parseIds(campaign.audienceListIds) : campaign.audienceId ? [campaign.audienceId] : []);
+    const excludeIds = await withListAliases(parseIds(campaign.excludeListIds));
     const contacts = await prisma.contact.findMany({
       where: {
         status: "subscribed",
         contactLists: {
-          some: { listId: { in: targetListIds } },
-          ...(excludeListIds.length > 0 ? { none: { listId: { in: excludeListIds } } } : {}),
+          some: { listId: { in: targetIds } },
+          ...(excludeIds.length > 0 ? { none: { listId: { in: excludeIds } } } : {}),
         },
       },
       select: { id: true, email: true },
@@ -166,16 +130,15 @@ export async function resolveAudience(campaign: any): Promise<{ contactId: numbe
   return [...out.values()];
 }
 
-/** Snapshots the audience into campaign_recipients (idempotent) and re-queues previously failed rows. */
-export async function enqueueRecipients(campaignId: number, recipients: { contactId: number | null; email: string }[]) {
-  for (let i = 0; i < recipients.length; i += 1000) {
-    await prisma.campaignRecipient.createMany({
-      data: recipients.slice(i, i + 1000).map((r) => ({ campaignId, contactId: r.contactId, email: r.email })),
-      skipDuplicates: true,
-    });
+/** Remaining SES rolling-24h quota, or null if unlimited/unreadable (e.g. missing ses:GetSendQuota permission). */
+async function dailyQuotaRemaining(): Promise<number | null> {
+  try {
+    const q = await sesClient.send(new GetSendQuotaCommand({}));
+    if (q.Max24HourSend === undefined || q.Max24HourSend < 0) return null;
+    return Math.max(0, q.Max24HourSend - (q.SentLast24Hours ?? 0));
+  } catch {
+    return null;
   }
-  await prisma.campaignRecipient.updateMany({ where: { campaignId, status: "failed" }, data: { status: "queued", error: null } });
-  return prisma.campaignRecipient.count({ where: { campaignId } });
 }
 
 async function sendRate(): Promise<number> {
@@ -187,19 +150,75 @@ async function sendRate(): Promise<number> {
   }
 }
 
-/** Remaining SES rolling-24h quota, or null if unlimited/unreadable (e.g. missing ses:GetSendQuota permission). */
-export async function dailyQuotaRemaining(): Promise<number | null> {
-  try {
-    const q = await sesClient.send(new GetSendQuotaCommand({}));
-    if (q.Max24HourSend === undefined || q.Max24HourSend < 0) return null;
-    return Math.max(0, q.Max24HourSend - (q.SentLast24Hours ?? 0));
-  } catch {
-    return null;
+export type DispatchResult =
+  | { ok: true; total: number; queued: number; alreadySent: number; alreadyRunning?: boolean }
+  | { ok: false; status: number; error: string; details?: string };
+
+/**
+ * Snapshots the audience into campaign_recipients (skipping anyone who already got this campaign), caps it to the
+ * remaining SES daily quota, flips the campaign to "sending" and starts the background worker.
+ * mode "resume" additionally allows campaigns already marked "sent" (sends to contacts added/capped since).
+ */
+export async function dispatchCampaign(campaignId: number, mode: "send" | "resume"): Promise<DispatchResult> {
+  const fail = (status: number, error: string, details?: string): DispatchResult => ({ ok: false, status, error, details });
+
+  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+  if (!campaign) return fail(404, "Campaign not found");
+  if (mode === "send" && campaign.status === "sent") return fail(400, "Campaign already sent");
+  if (running.has(campaignId)) {
+    return mode === "resume"
+      ? fail(400, "Campaign is already actively sending")
+      : { ok: true, total: 0, queued: 0, alreadySent: 0, alreadyRunning: true };
   }
+
+  const hasListAudience = parseIds(campaign.audienceListIds).length > 0 || Boolean(campaign.audienceId);
+  if (campaign.audienceType !== "individual" && !hasListAudience && !campaign.individualEmails) return fail(400, "No audience selected");
+  if (!campaign.templateHtml) return fail(400, "No template selected");
+
+  const sentRows = await prisma.emailEvent.findMany({ where: { campaignId, eventType: "sent" }, select: { email: true } });
+  const alreadySentSet = new Set<string>(sentRows.map((e: any) => e.email.toLowerCase()));
+
+  let recipients = (await resolveAudience(campaign)).filter((r) => !alreadySentSet.has(r.email));
+
+  // Cap to the remaining daily quota rather than failing halfway; the rest can be sent later via /resume.
+  const remaining = await dailyQuotaRemaining();
+  if (remaining !== null && remaining > 0 && recipients.length > remaining) {
+    console.log(`[QUOTA CAP] Capping campaign ${campaignId} from ${recipients.length} to ${remaining} recipients.`);
+    recipients = recipients.slice(0, remaining);
+  }
+
+  // Snapshot first (idempotent) so a failure here can never leave a half-built audience being sent.
+  for (let i = 0; i < recipients.length; i += 1000) {
+    await prisma.campaignRecipient.createMany({
+      data: recipients.slice(i, i + 1000).map((r) => ({ campaignId, contactId: r.contactId, email: r.email })),
+      skipDuplicates: true,
+    });
+  }
+  await prisma.campaignRecipient.updateMany({ where: { campaignId, status: "failed" }, data: { status: "queued", error: null } });
+
+  const queued = await prisma.campaignRecipient.count({ where: { campaignId, status: "queued" } });
+  if (queued === 0) {
+    return alreadySentSet.size > 0
+      ? fail(400, "No remaining contacts to send to — all contacts in the audience have already received this campaign.")
+      : fail(
+          400,
+          "No target contacts found",
+          "No subscribed recipient emails were found in the selected audience list or individual contacts. Please edit the campaign, add recipient emails, and try sending again.",
+        );
+  }
+
+  const flipped = await prisma.campaign.updateMany({
+    where: { id: campaignId, status: { in: mode === "resume" ? ["draft", "scheduled", "paused", "sending", "sent"] : ["draft", "scheduled", "paused", "sending"] } },
+    data: { status: "sending" },
+  });
+  if (flipped.count === 0) return fail(400, "Campaign is already sending or sent");
+
+  void runCampaign(campaignId);
+  const total = await prisma.campaignRecipient.count({ where: { campaignId } });
+  return { ok: true, total, queued, alreadySent: alreadySentSet.size };
 }
 
 const running = new Set<number>();
-export const isRunning = (campaignId: number) => running.has(campaignId);
 
 export async function runCampaign(campaignId: number) {
   if (running.has(campaignId)) return;
@@ -223,11 +242,10 @@ async function processCampaign(campaignId: number) {
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
   if (!campaign || campaign.status !== "sending") return;
 
-  let template: string = campaign.templateHtml;
+  let template: string = normalizeEmailHtml(campaign.templateHtml);
   if (!template.includes("{{unsubscribe_url}}")) {
     template = /<\/body>/i.test(template) ? template.replace(/<\/body>/i, `${UNSUB_FALLBACK}</body>`) : template + UNSUB_FALLBACK;
   }
-  const attachments = await extractAttachmentsFromHtml(template);
 
   const replyTo = new Set<string>();
   String(campaign.replyToEmail ?? "").split(",").map((e) => e.trim()).filter((e) => e.includes("@")).forEach((e) => replyTo.add(e.toLowerCase()));
@@ -242,6 +260,8 @@ async function processCampaign(campaignId: number) {
   const fromHeader = formatEmailWithDisplayName(campaign.fromName, campaign.fromEmail);
 
   const rate = await sendRate();
+  const baseSent = await prisma.emailEvent.count({ where: { campaignId, eventType: "sent" } });
+  const endStatus = () => (baseSent > 0 ? "sent" : "draft");
   console.log(`[SEND][Campaign ${campaignId}] starting, ${rate} emails/sec, reply-to: ${replyToAddresses.join(", ") || "none"}`);
 
   let sentTotal = 0;
@@ -249,7 +269,7 @@ async function processCampaign(campaignId: number) {
 
   while (true) {
     const current = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
-    if (current?.status !== "sending") return; // paused or deleted
+    if (current?.status !== "sending") return; // paused, reset or deleted
 
     const batch = await prisma.campaignRecipient.findMany({
       where: { campaignId, status: "queued" },
@@ -283,19 +303,16 @@ async function processCampaign(campaignId: number) {
               Destination: { ToAddresses: [r.email] },
               ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
               ConfigurationSetName: "career141-tracking",
-              Content:
-                attachments.length > 0
-                  ? { Raw: { Data: createRawMimeEmail({ from: fromHeader, to: r.email, replyTo: replyToAddresses.join(", "), subject: campaign.subject, html, unsubscribeUrl: unsubUrl, attachments }) } }
-                  : {
-                      Simple: {
-                        Subject: { Data: campaign.subject, Charset: "UTF-8" },
-                        Body: { Html: { Data: html, Charset: "UTF-8" } },
-                        Headers: [
-                          { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-                          { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
-                        ],
-                      },
-                    },
+              Content: {
+                Simple: {
+                  Subject: { Data: campaign.subject, Charset: "UTF-8" },
+                  Body: { Html: { Data: html, Charset: "UTF-8" } },
+                  Headers: [
+                    { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                    { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+                  ],
+                },
+              },
               EmailTags: [{ Name: "campaign_id", Value: String(campaignId) }],
             }),
           );
@@ -324,6 +341,8 @@ async function processCampaign(campaignId: number) {
         skipDuplicates: true,
       });
       sentTotal += sent.length;
+      // Live counter the campaigns UI reads while a send is in progress.
+      await prisma.campaign.update({ where: { id: campaignId }, data: { totalRecipients: baseSent + sentTotal } }).catch(() => {});
     }
     const byReason = new Map<string, { status: "failed" | "skipped"; error: string; ids: number[] }>();
     for (const x of [...failed, ...skipped]) {
@@ -345,7 +364,7 @@ async function processCampaign(campaignId: number) {
     // Every recipient of the first chunk failed => configuration problem (unverified sender etc.); don't burn the whole list.
     if (sentTotal === 0 && failed.length === batch.length && batch.length >= Math.min(rate, 5)) {
       console.error(`[SEND][Campaign ${campaignId}] first chunk failed entirely, aborting: ${failed[0].error}`);
-      await prisma.campaign.update({ where: { id: campaignId }, data: { status: "draft" } });
+      await prisma.campaign.update({ where: { id: campaignId }, data: { status: endStatus() } });
       return;
     }
 
@@ -363,10 +382,12 @@ async function processCampaign(campaignId: number) {
     if (elapsed < 1000) await sleep(1000 - elapsed);
   }
 
-  const sent = await prisma.campaignRecipient.count({ where: { campaignId, status: "sent" } });
+  const finalSent = await prisma.emailEvent.count({ where: { campaignId, eventType: "sent" } });
   await prisma.campaign.update({
     where: { id: campaignId },
-    data: sent > 0 ? { status: "sent", sentAt: new Date(), totalRecipients: sent } : { status: "draft" },
+    data: finalSent > 0 ? { status: "sent", sentAt: new Date(), totalRecipients: finalSent } : { status: "draft" },
   });
-  console.log(`[SEND][Campaign ${campaignId}] finished, ${sent} sent`);
+  console.log(`[SEND][Campaign ${campaignId}] finished, ${sentTotal} sent this run, ${finalSent} total`);
 }
+
+export const isRunning = (campaignId: number) => running.has(campaignId);

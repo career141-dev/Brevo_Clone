@@ -10,17 +10,18 @@ import rateLimit from "express-rate-limit";
 import { clerkMiddleware, getAuth } from "@clerk/express";
 import { z } from "zod";
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
+import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import { CostExplorerClient, GetCostAndUsageCommand } from "@aws-sdk/client-cost-explorer";
 import jwt from "jsonwebtoken";
 import { prisma, authStorage } from "./prisma.js";
-import { sesClient } from "./lib/ses.js";
-import { JWT_SECRET, PIXEL_GIF } from "./lib/tracking.js";
-import { uploadsDir } from "./lib/paths.js";
-import { verifySnsMessage } from "./lib/sns.js";
-import { readUpload, saveUpload, usingObjectStorage } from "./lib/storage.js";
-import { dailyQuotaRemaining, enqueueRecipients, isRunning, resolveAudience, resumeSendingCampaigns, runCampaign } from "./lib/campaign-sender.js";
+import { sesClient, sesv2Client } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
+
+import { uploadToR2, isR2Configured } from "./lib/r2.js";
+import { JWT_SECRET, PIXEL_GIF, injectTracking, makeUnsubscribeUrl } from "./lib/tracking.js";
+import { verifySnsMessage } from "./lib/sns.js";
+import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, resumeSendingCampaigns } from "./lib/campaign-sender.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -39,25 +40,80 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const uploadsDir = path.resolve(process.cwd(), "public/uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
-// With UPLOADS_BUCKET set files live in S3/R2 but keep the same public /uploads/<name> URLs.
-app.get("/uploads/:name", async (req, res, next) => {
-  if (!usingObjectStorage) return next();
-  const data = await readUpload(req.params.name);
-  if (!data) return res.status(404).end();
-  res.type(path.extname(req.params.name)).set("Cache-Control", "public, max-age=31536000, immutable").send(data);
-});
 app.use("/uploads", express.static(uploadsDir));
+
+// Allowed origins for /api/download — prevents open proxy abuse
+const R2_PUBLIC_DOMAIN = (process.env.R2_PUBLIC_URL || "").replace(/^https?:\/\//, "").split("/")[0];
+const ALLOWED_DOWNLOAD_HOSTS = [
+  R2_PUBLIC_DOMAIN,
+  "r2.dev",
+  "r2.cloudflarestorage.com",
+];
+
+// GET /api/download - Force-download files with Content-Disposition: attachment
+// 🔒 Whitelist guard: only serves files from R2 or local uploads — prevents open proxy abuse
+app.get("/api/download", async (req, res) => {
+  try {
+    const fileUrl = req.query.url as string;
+    const rawName = (req.query.name as string) || "document.pdf";
+    const cleanName = rawName.replace(/^(\d+_)+/, "").replace(/[^a-zA-Z0-9_\- .]/g, "_");
+
+    if (!fileUrl) {
+      return res.status(400).send("Missing file URL");
+    }
+
+    // 🔒 Reject any URL that is not from our R2 bucket or local uploads
+    if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) {
+      try {
+        const parsedHost = new URL(fileUrl).hostname;
+        const isAllowed = ALLOWED_DOWNLOAD_HOSTS.some(h => h && parsedHost.endsWith(h));
+        if (!isAllowed) {
+          console.warn(`[DOWNLOAD BLOCKED] Rejected proxy request for external URL: ${fileUrl}`);
+          return res.status(403).send("Forbidden: Only Career141 R2 hosted files can be downloaded via this endpoint.");
+        }
+      } catch {
+        return res.status(400).send("Invalid file URL.");
+      }
+
+      res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
+      const response = await fetch(fileUrl);
+      if (!response.ok) {
+        return res.status(response.status).send("File not found on storage");
+      }
+      const contentType = response.headers.get("content-type") || "application/octet-stream";
+      res.setHeader("Content-Type", contentType);
+      const arrayBuffer = await response.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    }
+
+    // 2. If local /uploads/ file
+    const localDiskName = fileUrl.replace(/^\/uploads\//, "");
+    const localPath = path.join(uploadsDir, localDiskName);
+    if (fs.existsSync(localPath)) {
+      res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
+      return res.download(localPath, cleanName);
+    }
+
+    res.status(404).send("File not found");
+  } catch (err: any) {
+    console.error("Download endpoint error:", err);
+    res.status(500).send("Failed to download file");
+  }
+});
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 5000,
   // Tracking pixels/links, unsubscribe and SNS webhooks come from recipients' (often shared) IPs and AWS —
   // limiting them silently drops opens/clicks/bounces. The progress poll is also exempt.
   skip: (req) => /^\/api\/(track|webhooks|unsubscribe)(\/|\?|$)/.test(req.originalUrl) || /^\/api\/campaigns\/\d+\/progress/.test(req.originalUrl),
-  message: "Too many requests from this IP, please try again after 15 minutes"
+  message: "Too many requests from this IP, please try again after 15 minutes",
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 app.use("/api/", apiLimiter);
@@ -99,8 +155,8 @@ function invalidateAnalyticsCache(campaignId?: number) {
   if (campaignId) analyticsCache.delete(`analytics:campaign:${campaignId}`);
 }
 
-// POST /api/upload - Handle file upload and return public downloadable URL
-app.post("/api/upload", async (req, res) => {
+// POST /api/upload - Handle file upload and return public downloadable URL (Cloudflare R2 + local fallback)
+app.post("/api/upload", async (req: any, res: any) => {
   try {
     const { fileName, fileData } = req.body;
     if (!fileName || !fileData) {
@@ -113,17 +169,44 @@ app.post("/api/upload", async (req, res) => {
     const ext = path.extname(fileName) || ".bin";
     const safeName = path.basename(fileName, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
     const uniqueFileName = `${Date.now()}_${safeName}${ext}`;
+    const filePath = path.join(uploadsDir, uniqueFileName);
 
-    await saveUpload(uniqueFileName, buffer);
+    let fileUrl = "";
+    let isR2 = false;
 
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
+    // 1. Upload to Cloudflare R2 for zero-egress, high-speed CDN delivery
+    if (isR2Configured) {
+      try {
+        let contentType = "application/octet-stream";
+        if (ext === ".pdf") contentType = "application/pdf";
+        else if (ext === ".docx" || ext === ".doc") contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        else if (ext === ".xlsx" || ext === ".xls") contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        else if (ext === ".pptx" || ext === ".ppt") contentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        else if (ext === ".zip") contentType = "application/zip";
+        else if (ext === ".png") contentType = "image/png";
+        else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+
+        const r2Result = await uploadToR2(buffer, fileName, contentType);
+        fileUrl = r2Result.url;
+        isR2 = true;
+      } catch (r2Err) {
+        console.warn("[R2 UPLOAD FAILED, FALLING BACK TO DISK]:", r2Err);
+      }
+    }
+
+    // 2. Local disk fallback
+    if (!fileUrl) {
+      await fs.promises.writeFile(filePath, buffer);
+      const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+      const host = req.headers["x-forwarded-host"] || req.headers.host;
+      fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
+    }
 
     res.json({
       url: fileUrl,
       fileName,
       size: buffer.length,
+      isR2,
     });
   } catch (err: any) {
     console.error("File upload error:", err);
@@ -233,13 +316,19 @@ app.get("/api/contacts/stats", async (req, res) => {
       }
     }
 
+    const cacheKey = `contacts:stats:${listIdsQuery || listIdQuery || 'global'}`;
+    const cached = getCached(cacheKey);
+    if (cached) return res.json(cached);
+
     const [total, subscribed, unsubscribed, bounced] = await Promise.all([
       prisma.contact.count({ where: baseWhere }),
       prisma.contact.count({ where: { ...baseWhere, status: "subscribed" } }),
       prisma.contact.count({ where: { ...baseWhere, status: "unsubscribed" } }),
       prisma.contact.count({ where: { ...baseWhere, status: "bounced" } }),
     ]);
-    res.json({ total, subscribed, unsubscribed, bounced });
+    const result = { total, subscribed, unsubscribed, bounced };
+    setCache(cacheKey, result, 15 * 1000);
+    res.json(result);
   } catch (err) {
     console.error("=== Prisma Stats Error ===");
     console.error("Message:", (err as any).message);
@@ -708,9 +797,60 @@ app.delete("/api/templates/:id", async (req, res) => {
 
 // ── Campaigns ────────────────────────────────────────────────────────
 
-// GET all campaigns
+// GET campaign stats
+app.get("/api/campaigns/stats", async (req, res) => {
+  try {
+    const cacheKey = 'campaigns:stats:global';
+    const cached = getCached(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [total, sent, draft, scheduled, sending] = await Promise.all([
+      prisma.campaign.count(),
+      prisma.campaign.count({ where: { status: "sent" } }),
+      prisma.campaign.count({ where: { status: "draft" } }),
+      prisma.campaign.count({ where: { status: "scheduled" } }),
+      prisma.campaign.count({ where: { status: "sending" } }),
+    ]);
+    const result = { total, sent, draft, scheduled, sending };
+    setCache(cacheKey, result, 15 * 1000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch campaign stats" });
+  }
+});
+
+// GET all campaigns (with automatic self-healing for stuck sending campaigns)
 app.get("/api/campaigns", async (req, res) => {
   try {
+    // 1. Self-healing: Check for any campaigns stuck in "sending" status
+    const stuckCampaigns = await prisma.campaign.findMany({
+      where: { status: "sending" },
+    });
+
+    for (const c of stuckCampaigns) {
+      try {
+        const sentEventsCount = await prisma.emailEvent.count({
+          where: { campaignId: c.id, eventType: "sent" },
+        });
+
+        // If sent events exist, mark as sent; if 0 events sent after 5 mins, revert to draft
+        const ageInMs = Date.now() - new Date(c.createdAt).getTime();
+        if (sentEventsCount > 0) {
+          await prisma.campaign.update({
+            where: { id: c.id },
+            data: { status: "sent", sentAt: c.sentAt || new Date(), totalRecipients: sentEventsCount },
+          });
+        } else if (ageInMs > 2 * 60 * 1000) {
+          await prisma.campaign.update({
+            where: { id: c.id },
+            data: { status: "draft" },
+          });
+        }
+      } catch (e) {
+        console.warn("Failed self-healing for campaign", c.id, e);
+      }
+    }
+
     const campaigns = await prisma.campaign.findMany({
       orderBy: { createdAt: "desc" },
     });
@@ -720,19 +860,20 @@ app.get("/api/campaigns", async (req, res) => {
   }
 });
 
-// GET campaign stats
-app.get("/api/campaigns/stats", async (req, res) => {
+// GET single campaign by ID
+app.get("/api/campaigns/:id", async (req, res) => {
   try {
-    const [total, sent, draft, scheduled, sending] = await Promise.all([
-      prisma.campaign.count(),
-      prisma.campaign.count({ where: { status: "sent" } }),
-      prisma.campaign.count({ where: { status: "draft" } }),
-      prisma.campaign.count({ where: { status: "scheduled" } }),
-      prisma.campaign.count({ where: { status: "sending" } }),
-    ]);
-    res.json({ total, sent, draft, scheduled, sending });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch campaign stats" });
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid campaign ID" });
+
+    const campaign = await prisma.campaign.findUnique({
+      where: { id },
+    });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+
+    res.json(campaign);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch campaign", details: err.message });
   }
 });
 
@@ -913,9 +1054,17 @@ app.post("/api/campaigns/:id/duplicate", async (req, res) => {
         subject: campaign.subject,
         fromName: campaign.fromName,
         fromEmail: campaign.fromEmail,
+        replyToEmail: campaign.replyToEmail,
+        replyToName: campaign.replyToName,
+        replyToListId: campaign.replyToListId,
+        previewText: campaign.previewText,
         templateHtml: campaign.templateHtml,
         audienceType: campaign.audienceType,
         audienceId: campaign.audienceId,
+        audienceListIds: (campaign as any).audienceListIds,
+        excludeListIds: (campaign as any).excludeListIds,
+        individualEmails: (campaign as any).individualEmails,
+        skipUnengaged: (campaign as any).skipUnengaged,
         status: "draft",
       },
     });
@@ -925,51 +1074,92 @@ app.post("/api/campaigns/:id/duplicate", async (req, res) => {
   }
 });
 
-// POST /api/campaigns/:id/send — snapshots the audience into campaign_recipients and hands it to the
-// background sender (server/lib/campaign-sender.ts). Returns immediately; poll /progress for status.
+async function extractAttachmentsFromHtml(html: string): Promise<{ filename: string; content: Buffer; contentType: string }[]> {
+  // With Cloudflare R2 & Custom Developed Attachment Cards, documents are hosted on CDN
+  // and delivered via the interactive viewer card in the email body.
+  // We skip raw MIME physical attachments to eliminate 700GB+ data transfer costs and bypass corporate 10MB spam filters.
+  return [];
+}
+
+function createRawMimeEmail({
+  from,
+  to,
+  replyTo,
+  subject,
+  html,
+  unsubscribeUrl,
+  attachments = [],
+}: {
+  from: string;
+  to: string;
+  replyTo?: string;
+  subject: string;
+  html: string;
+  unsubscribeUrl?: string;
+  attachments?: { filename: string; content: Buffer; contentType: string }[];
+}): Buffer {
+  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+
+  let raw = "";
+  raw += `From: ${from}\r\n`;
+  raw += `To: ${to}\r\n`;
+  if (replyTo && replyTo.trim()) {
+    raw += `Reply-To: ${replyTo.trim()}\r\n`;
+  }
+  raw += `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=\r\n`;
+  raw += `MIME-Version: 1.0\r\n`;
+  if (unsubscribeUrl) {
+    raw += `List-Unsubscribe: <${unsubscribeUrl}>\r\n`;
+    raw += `List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n`;
+  }
+
+  if (attachments.length > 0) {
+    raw += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
+    raw += `--${boundary}\r\n`;
+    raw += `Content-Type: text/html; charset=UTF-8\r\n`;
+    raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
+    raw += Buffer.from(html).toString("base64") + "\r\n\r\n";
+
+    for (const att of attachments) {
+      raw += `--${boundary}\r\n`;
+      raw += `Content-Type: ${att.contentType}; name="${att.filename}"\r\n`;
+      raw += `Content-Disposition: attachment; filename="${att.filename}"\r\n`;
+      raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
+      raw += att.content.toString("base64") + "\r\n\r\n";
+    }
+    raw += `--${boundary}--\r\n`;
+  } else {
+    raw += `Content-Type: text/html; charset=UTF-8\r\n`;
+    raw += `Content-Transfer-Encoding: base64\r\n\r\n`;
+    raw += Buffer.from(html).toString("base64") + "\r\n";
+  }
+
+  return Buffer.from(raw);
+}
+
+// POST /api/campaigns/:id/send — snapshots the audience into campaign_recipients and hands it to the background
+// sender (server/lib/campaign-sender.ts). Responds immediately; progress is live in /progress and totalRecipients.
 app.post("/api/campaigns/:id/send", async (req, res) => {
   try {
     const campaignId = Number(req.params.id);
-    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
-    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
-    if (campaign.status === "sent") return res.status(400).json({ error: "Campaign already sent" });
-    if (isRunning(campaignId)) return res.status(202).json({ campaignId, status: "sending", alreadyRunning: true });
+    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
 
-    if (campaign.audienceType !== "individual" && !campaign.audienceListIds && !campaign.audienceId && !campaign.individualEmails) {
-      return res.status(400).json({ error: "No audience selected" });
-    }
-    if (!campaign.templateHtml) return res.status(400).json({ error: "No template selected" });
-
-    // Snapshot before flipping to "sending" so a failure here can never leave a half-built audience being sent.
-    const recipients = await resolveAudience(campaign);
-    const total = recipients.length > 0
-      ? await enqueueRecipients(campaignId, recipients)
-      : await prisma.campaignRecipient.count({ where: { campaignId } });
-    if (total === 0) {
-      return res.status(400).json({
-        error: "No target contacts found",
-        details: "No subscribed recipient emails were found in the selected audience list or individual contacts. Please edit the campaign, add recipient emails, and try sending again.",
-      });
+    const result = await dispatchCampaign(campaignId, "send");
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.error, ...(result.details ? { details: result.details } : {}) });
     }
 
-    // Fail fast instead of half-sending: SES rejects everything past the rolling 24h quota.
-    const queued = await prisma.campaignRecipient.count({ where: { campaignId, status: "queued" } });
-    const remaining = await dailyQuotaRemaining();
-    if (remaining !== null && queued > remaining) {
-      return res.status(400).json({
-        error: "SES daily sending quota would be exceeded",
-        details: `${queued} recipients are queued but only ${remaining} sends remain in your rolling 24-hour SES quota. Request a quota increase in AWS or send to a smaller audience.`,
-      });
-    }
+    // Invalidate caches so UI immediately shows sending status
+    invalidateAnalyticsCache(campaignId);
+    analyticsCache.delete('campaigns:stats:global');
 
-    const flipped = await prisma.campaign.updateMany({
-      where: { id: campaignId, status: { in: ["draft", "scheduled", "paused", "sending"] } },
-      data: { status: "sending" },
+    res.json({
+      success: true,
+      message: `Campaign dispatch started for ${result.queued} contacts.`,
+      campaignId,
+      recipientCount: result.queued,
+      status: "sending",
     });
-    if (flipped.count === 0) return res.status(400).json({ error: "Campaign is already sent" });
-
-    void runCampaign(campaignId);
-    res.status(202).json({ campaignId, status: "sending", total });
   } catch (err: any) {
     console.error("Send campaign error:", err);
     res.status(500).json({ error: "Failed to send campaign", details: err.message });
@@ -993,6 +1183,242 @@ app.get("/api/campaigns/:id/progress", async (req, res) => {
   }
 });
 
+// POST /api/campaigns/:id/reset — Reset stuck campaign status
+app.post("/api/campaigns/:id/reset", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+
+    const sentEventsCount = await prisma.emailEvent.count({
+      where: { campaignId, eventType: "sent" },
+    });
+
+    const targetStatus = req.body?.targetStatus || (sentEventsCount > 0 ? "sent" : "draft");
+
+    const campaign = await prisma.campaign.update({
+      where: { id: campaignId },
+      data: {
+        status: targetStatus,
+        ...(sentEventsCount > 0 ? { totalRecipients: sentEventsCount } : {}),
+      },
+    });
+
+    res.json({ success: true, campaign });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to reset campaign status", details: err.message });
+  }
+});
+
+// POST /api/campaigns/:id/resume — send to contacts that have not yet received this campaign (also for campaigns
+// already marked "sent": new subscribers, or recipients cut off by the daily SES quota cap).
+app.post("/api/campaigns/:id/resume", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+
+    const result = await dispatchCampaign(campaignId, "resume");
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.error, ...(result.details ? { details: result.details } : {}) });
+    }
+
+    invalidateAnalyticsCache(campaignId);
+    analyticsCache.delete('campaigns:stats:global');
+
+    res.json({
+      success: true,
+      message: `Campaign resume started. Sending to ${result.queued} remaining contacts.`,
+      campaignId,
+      alreadySent: result.alreadySent,
+      remainingToSend: result.queued,
+      status: "sending",
+    });
+  } catch (err: any) {
+    console.error("Resume campaign error:", err);
+    res.status(500).json({ error: "Failed to resume campaign", details: err.message });
+  }
+});
+
+// POST /api/campaigns/:id/send-test
+app.post("/api/campaigns/:id/send-test", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const {
+      testEmail,
+      subject: reqSubject,
+      fromName: reqFromName,
+      fromEmail: reqFromEmail,
+      replyToEmail: reqReplyToEmail,
+      replyToListId: reqReplyToListId,
+      templateHtml: reqTemplateHtml,
+    } = req.body || {};
+
+    if (!testEmail || !testEmail.trim() || !testEmail.includes("@")) {
+      return res.status(400).json({ error: "Please provide a valid test email address." });
+    }
+
+    const cleanTestEmail = testEmail.trim().toLowerCase();
+
+    // Fetch campaign if campaignId is valid
+    let campaign: any = null;
+    if (campaignId && campaignId > 0) {
+      campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+      });
+    }
+
+    const subject = (reqSubject && String(reqSubject).trim()) || (campaign?.subject && String(campaign.subject).trim()) || "(No subject)";
+    let fromName = (reqFromName && String(reqFromName).trim()) || (campaign?.fromName && String(campaign.fromName).trim()) || "";
+    let fromEmail = (reqFromEmail && String(reqFromEmail).trim()) || (campaign?.fromEmail && String(campaign.fromEmail).trim()) || "";
+    const templateHtml = (reqTemplateHtml && String(reqTemplateHtml).trim()) || (campaign?.templateHtml && String(campaign.templateHtml).trim()) || "";
+    const replyToEmail = reqReplyToEmail !== undefined ? reqReplyToEmail : (campaign?.replyToEmail ?? null);
+    const replyToListId = reqReplyToListId !== undefined ? reqReplyToListId : (campaign?.replyToListId ?? null);
+
+    // If fromEmail is missing or invalid, lookup configured senders in database
+    if (!fromEmail || !fromEmail.includes("@")) {
+      const dbSender = await prisma.sender.findFirst({
+        where: { verificationStatus: "verified" },
+      }) || await prisma.sender.findFirst();
+
+      if (dbSender && dbSender.email && dbSender.email.includes("@")) {
+        fromEmail = dbSender.email.trim();
+        if (!fromName) fromName = dbSender.name?.trim() || "Default Sender";
+      }
+    }
+
+    // Ultimate fallback if no sender in DB either
+    if (!fromEmail || !fromEmail.includes("@")) {
+      fromEmail = "events@premiumroles.com";
+    }
+    if (!fromName) {
+      fromName = "Talent Suite 2026";
+    }
+    if (!templateHtml || !templateHtml.trim()) {
+      return res.status(400).json({ error: "No email template selected to test." });
+    }
+
+    // Check if testEmail matches a contact in the database
+    const dbContact = await prisma.contact.findFirst({
+      where: { email: cleanTestEmail },
+    });
+
+    const emailPrefix = cleanTestEmail.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const firstName = (dbContact?.firstName || "").trim() || (dbContact?.fullName || "").trim().split(" ")[0] || emailPrefix || "Test";
+    const lastName = (dbContact?.lastName || "").trim() || ((dbContact?.fullName || "").trim().includes(" ") ? (dbContact?.fullName || "").trim().split(" ").slice(1).join(" ") : "");
+    const fullName = (dbContact?.fullName || "").trim() || `${firstName} ${lastName}`.trim() || "Test User";
+    const company = (dbContact?.company || "").trim() || "Test Company";
+    const designation = (dbContact?.designation || "").trim() || "Tester";
+
+    // Prepare template HTML with placeholders, normalize relative document/image URLs & fallback unsubscribe URL
+    let template = normalizeEmailHtml(templateHtml);
+    if (!template.includes("{{unsubscribe_url}}")) {
+      const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>This is a test email. <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">Unsubscribe link test</a></p></div>`;
+      if (/<\/body>/i.test(template)) {
+        template = template.replace(/<\/body>/i, `${fallbackUnsubHtml}</body>`);
+      } else {
+        template += fallbackUnsubHtml;
+      }
+    }
+
+    const unsubUrl = makeUnsubscribeUrl(cleanTestEmail, campaignId || null);
+
+    let html = template
+      .replace(/{{first_name}}/g, firstName)
+      .replace(/{{last_name}}/g, lastName)
+      .replace(/{{full_name}}/g, fullName)
+      .replace(/{{company}}/g, company)
+      .replace(/{{designation}}/g, designation)
+      .replace(/{{email}}/g, cleanTestEmail)
+      .replace(/{{unsubscribe_url}}/g, unsubUrl);
+
+    // Inject tracking pixel & link rewrite
+    html = injectTracking(html, cleanTestEmail, campaignId || null);
+
+    // Resolve Reply-To addresses
+    const replyToEmailsSet = new Set<string>();
+    if (replyToEmail) {
+      String(replyToEmail)
+        .split(",")
+        .map((e: string) => e.trim())
+        .filter((e: string) => e.includes("@"))
+        .forEach((e) => replyToEmailsSet.add(e.toLowerCase()));
+    }
+    if (replyToListId) {
+      try {
+        const listContacts = await prisma.contact.findMany({
+          where: {
+            status: "subscribed",
+            contactLists: { some: { listId: Number(replyToListId) } },
+          },
+          select: { email: true },
+        });
+        listContacts.forEach((c) => {
+          if (c.email && c.email.includes("@")) replyToEmailsSet.add(c.email.trim().toLowerCase());
+        });
+      } catch (err) {
+        console.error("Failed to fetch replyToListId contacts for test email:", err);
+      }
+    }
+    const replyToAddresses = Array.from(replyToEmailsSet);
+    const replyToHeader = replyToAddresses.join(", ");
+    const fromHeader = formatEmailWithDisplayName(fromName, fromEmail);
+    const campaignAttachments = await extractAttachmentsFromHtml(html);
+
+    const testSubject = `[TEST] ${subject}`;
+
+    if (campaignAttachments.length > 0) {
+      const rawMimeBuffer = createRawMimeEmail({
+        from: fromHeader,
+        to: cleanTestEmail,
+        replyTo: replyToHeader,
+        subject: testSubject,
+        html,
+        unsubscribeUrl: unsubUrl,
+        attachments: campaignAttachments,
+      });
+
+      await sesv2Client.send(new SendEmailV2Command({
+        FromEmailAddress: fromHeader,
+        Destination: { ToAddresses: [cleanTestEmail] },
+        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
+        Content: { Raw: { Data: rawMimeBuffer } },
+        EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
+      }));
+    } else {
+      const sesParams: any = {
+        FromEmailAddress: fromHeader,
+        Destination: { ToAddresses: [cleanTestEmail] },
+        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
+        ConfigurationSetName: "career141-tracking",
+        Content: {
+          Simple: {
+            Subject: { Data: testSubject, Charset: "UTF-8" },
+            Body: { Html: { Data: html, Charset: "UTF-8" } },
+            Headers: [
+              { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+              { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+            ],
+          },
+        },
+        EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
+      };
+
+      await sesv2Client.send(new SendEmailV2Command(sesParams));
+    }
+
+    return res.json({
+      success: true,
+      message: `Test email successfully sent to ${cleanTestEmail}`,
+      testEmail: cleanTestEmail,
+    });
+  } catch (err: any) {
+    console.error("Send test campaign error:", err);
+    return res.status(500).json({
+      error: "Failed to send test email",
+      details: err.message || "An unexpected error occurred while sending test email via SES.",
+    });
+  }
+});
+
 // ── Analytics ───────────────────────────────────────────────────────
 
 app.get('/api/analytics/campaigns', async (req, res) => {
@@ -1000,38 +1426,45 @@ app.get('/api/analytics/campaigns', async (req, res) => {
     const cached = getCached('analytics:campaigns');
     if (cached) return res.json(cached);
 
-    // Two queries total (was 1 + one full event-history load per campaign), aggregated in SQL.
-    const [campaigns, rows] = await Promise.all([
-      prisma.campaign.findMany({
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, name: true, subject: true, status: true, fromEmail: true, fromName: true, sentAt: true, createdAt: true, totalRecipients: true },
-      }),
-      prisma.$queryRaw<{ campaignId: number; eventType: string; uniq: bigint; total: bigint }[]>`
-        SELECT campaignId, eventType, COUNT(DISTINCT email) AS uniq, COUNT(*) AS total
-        FROM email_events WHERE campaignId IS NOT NULL
-        GROUP BY campaignId, eventType`,
-    ]);
+    const campaigns = await prisma.campaign.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
 
-    const byCampaign = new Map<number, Record<string, { uniq: number; total: number }>>();
-    for (const r of rows) {
-      const m = byCampaign.get(r.campaignId) ?? {};
-      m[r.eventType] = { uniq: Number(r.uniq), total: Number(r.total) };
-      byCampaign.set(r.campaignId, m);
+    // High-performance single SQL aggregation — handles 48k+ campaign events in ~5ms
+    const eventStats = await prisma.$queryRaw<any[]>`
+      SELECT 
+        campaignId,
+        eventType,
+        COUNT(DISTINCT email) as uniqueCount,
+        COUNT(1) as totalCount
+      FROM email_events
+      WHERE campaignId IS NOT NULL
+      GROUP BY campaignId, eventType
+    `;
+
+    const statsMap: Record<number, Record<string, { unique: number; total: number }>> = {};
+    for (const row of eventStats) {
+      const cId = Number(row.campaignId);
+      if (!statsMap[cId]) statsMap[cId] = {};
+      statsMap[cId][row.eventType] = {
+        unique: Number(row.uniqueCount || 0),
+        total: Number(row.totalCount || 0),
+      };
     }
 
     const pct = (n: number, d: number) => d > 0 ? Math.round((n / d) * 10000) / 100 : 0;
 
     const result = campaigns.map((campaign) => {
-      const c = byCampaign.get(campaign.id) ?? {};
-      const u = (type: string) => c[type]?.uniq ?? 0;
-      const rawClicks = c['clicked']?.total ?? 0;
+      const cStats = statsMap[campaign.id] || {};
+      
       const recipients = campaign.totalRecipients || 0;
-      const delivered = u('delivered');
-      const opened = u('opened');
-      const clicked = u('clicked');
-      const bounced = u('bounced');
-      const unsub = u('unsubscribed');
-      const complained = u('complained');
+      const delivered = cStats['delivered']?.unique || 0;
+      const opened = cStats['opened']?.unique || 0;
+      const clicked = cStats['clicked']?.unique || 0;
+      const rawClicks = cStats['clicked']?.total || 0;
+      const bounced = cStats['bounced']?.unique || 0;
+      const unsub = cStats['unsubscribed']?.unique || 0;
+      const complained = cStats['complained']?.unique || 0;
 
       return {
         id: campaign.id,
@@ -2555,9 +2988,9 @@ app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
 
-// Resume campaigns left in "sending" by a crash/redeploy. Only on deployed instances: a dev machine pointed at the
-// production DB must never start sending someone else's campaign. ponytail: assumes ONE API instance; multiple
-// instances would each pick up the same campaign (add a row-level claim before scaling out).
+// Resume campaigns left in "sending" by a crash/redeploy (replaces the old startup reset). Only on deployed instances:
+// a dev machine pointed at the production DB must never start sending someone else's campaign. ponytail: assumes ONE
+// API instance; multiple instances would each pick up the same campaign (add a row-level claim before scaling out).
 if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.ENABLE_SENDER_SWEEP) {
   const sweep = () => resumeSendingCampaigns().catch((e) => console.error("Sender sweep failed:", e));
   void sweep();

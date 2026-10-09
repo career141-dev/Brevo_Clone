@@ -69,8 +69,21 @@ router.post("/bulk/lists", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "listIds array is required" });
     }
 
+    // Resolve any brevoId or internal list IDs
+    const matchingLists = await prisma.list.findMany({
+      where: {
+        OR: [
+          { id: { in: listIds.map(Number) } },
+          { brevoId: { in: listIds.map(Number) } }
+        ]
+      },
+      select: { id: true }
+    });
+    const resolvedListIds = matchingLists.map(l => l.id);
+    const targetListIds = resolvedListIds.length > 0 ? resolvedListIds : listIds.map(Number);
+
     const data = contactIds.flatMap((cid: number) =>
-      listIds.map((lid: number) => ({ contactId: Number(cid), listId: Number(lid) }))
+      targetListIds.map((lid: number) => ({ contactId: Number(cid), listId: Number(lid) }))
     );
 
     const result = await prisma.contactList.createMany({ data, skipDuplicates: true });
@@ -78,6 +91,42 @@ router.post("/bulk/lists", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("Add to lists error:", err);
     res.status(500).json({ error: "Failed to add contacts to lists" });
+  }
+});
+
+// POST /api/contacts/bulk/remove-from-lists — remove contacts from list(s) without deleting contact records
+router.post("/bulk/remove-from-lists", async (req: Request, res: Response) => {
+  try {
+    const { contactIds, listIds } = req.body;
+    if (!Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({ error: "contactIds array is required" });
+    }
+    if (!Array.isArray(listIds) || listIds.length === 0) {
+      return res.status(400).json({ error: "listIds array is required" });
+    }
+
+    // Resolve any brevoId or internal list IDs
+    const matchingLists = await prisma.list.findMany({
+      where: {
+        OR: [
+          { id: { in: listIds.map(Number) } },
+          { brevoId: { in: listIds.map(Number) } }
+        ]
+      },
+      select: { id: true }
+    });
+    const resolvedListIds = matchingLists.length > 0 ? matchingLists.map(l => l.id) : listIds.map(Number);
+
+    const result = await prisma.contactList.deleteMany({
+      where: {
+        contactId: { in: contactIds.map(Number) },
+        listId: { in: resolvedListIds },
+      },
+    });
+    res.json({ success: true, affected: result.count });
+  } catch (err) {
+    console.error("Remove from lists error:", err);
+    res.status(500).json({ error: "Failed to remove contacts from lists" });
   }
 });
 

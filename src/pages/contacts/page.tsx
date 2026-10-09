@@ -8,6 +8,7 @@ import ActionBar from "./_components/action-bar.tsx";
 import BulkActionsDropdown from "./_components/bulk-actions-dropdown.tsx";
 import EditContactDrawer from "./_components/edit-contact-drawer.tsx";
 import AddToListModal from "./_components/add-to-list-modal.tsx";
+import RemoveFromListModal from "./_components/remove-from-list-modal.tsx";
 import BlocklistConfirm from "./_components/blocklist-confirm.tsx";
 import DeleteConfirm from "./_components/delete-confirm.tsx";
 import ExportModal from "./_components/export-modal.tsx";
@@ -27,7 +28,7 @@ export default function ContactsPage() {
     contacts, total, totalPages, isLoading, search, setSearch,
     page, setPage, pageSize, setPageSize,
     selectedIds, setSelectedIds, handleSelectAll, handleSelectOne,
-    bulkBlocklist, bulkAddToList, bulkAssign, bulkExport,
+    bulkBlocklist, bulkAddToList, bulkRemoveFromList, bulkAssign, bulkExport,
     bulkAddToAutomation, bulkDelete, updateContact,
   } = useContacts();
 
@@ -36,6 +37,7 @@ export default function ContactsPage() {
 
   // Bulk modals
   const [addToListOpen, setAddToListOpen] = useState(false);
+  const [removeFromListOpen, setRemoveFromListOpen] = useState(false);
   const [blocklistOpen, setBlocklistOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -53,7 +55,7 @@ export default function ContactsPage() {
 
   // Per-row actions
   const [rowAction, setRowAction] = useState<{
-    type: "edit" | "blocklist" | "addToList" | "assign" | "export" | "automation" | "delete";
+    type: "edit" | "blocklist" | "addToList" | "removeFromList" | "assign" | "export" | "automation" | "delete";
     contact: any;
   } | null>(null);
 
@@ -68,6 +70,9 @@ export default function ContactsPage() {
         if (selectedIds.length !== 1) { toast.error("Select exactly one contact to edit"); return; }
         setEditContact(contacts.find((c) => c.id === selectedIds[0]) ?? null);
         setEditOpen(true);
+        break;
+      case "removeFromList":
+        setRemoveFromListOpen(true);
         break;
       case "assign":
         setAssignOpen(true);
@@ -98,6 +103,10 @@ export default function ContactsPage() {
       case "addToList":
         setSelectedIds([action.contact.id]);
         setAddToListOpen(true);
+        break;
+      case "removeFromList":
+        setSelectedIds([action.contact.id]);
+        setRemoveFromListOpen(true);
         break;
       case "assign":
         setSelectedIds([action.contact.id]);
@@ -165,8 +174,10 @@ export default function ContactsPage() {
                 ref={moreActionsBtnRef}
                 selectedCount={selectedIds.length}
                 onAddToList={() => setAddToListOpen(true)}
+                onRemoveFromList={() => setRemoveFromListOpen(true)}
                 onBlocklist={() => setBlocklistOpen(true)}
                 onMoreActions={() => setMoreActionsOpen((v) => !v)}
+                currentListName={listNameParam || undefined}
               />
             )}
             <BulkActionsDropdown
@@ -178,6 +189,7 @@ export default function ContactsPage() {
               onAssign={() => bulkAction("assign")}
               onExport={() => bulkAction("export")}
               onAddToAutomation={() => bulkAction("automation")}
+              onRemoveFromList={() => bulkAction("removeFromList")}
               onDelete={() => bulkAction("delete")}
             />
           </div>
@@ -199,10 +211,12 @@ export default function ContactsPage() {
             onRowEdit={(c) => handleRowAction({ type: "edit", contact: c })}
             onRowBlocklist={(c) => handleRowAction({ type: "blocklist", contact: c })}
             onRowAddToList={(c) => handleRowAction({ type: "addToList", contact: c })}
+            onRowRemoveFromList={(c) => handleRowAction({ type: "removeFromList", contact: c })}
             onRowAssign={(c) => handleRowAction({ type: "assign", contact: c })}
             onRowExport={(c) => handleRowAction({ type: "export", contact: c })}
             onRowAddToAutomation={(c) => handleRowAction({ type: "automation", contact: c })}
             onRowDelete={(c) => handleRowAction({ type: "delete", contact: c })}
+            currentListName={listNameParam || undefined}
           />
         </div>
       </div>
@@ -224,6 +238,18 @@ export default function ContactsPage() {
         onConfirm={async (listIds) => {
           await bulkAddToList(selectedIds, listIds);
           setAddToListOpen(false);
+        }}
+      />
+
+      <RemoveFromListModal
+        open={removeFromListOpen}
+        onClose={() => { setRemoveFromListOpen(false); setSelectedIds([]); }}
+        count={selectedIds.length}
+        currentListId={listIdParam ? Number(listIdParam) : undefined}
+        currentListName={listNameParam || undefined}
+        onConfirm={async (listIds) => {
+          await bulkRemoveFromList(selectedIds, listIds);
+          setRemoveFromListOpen(false);
         }}
       />
 

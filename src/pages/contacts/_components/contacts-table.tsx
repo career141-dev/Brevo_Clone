@@ -65,10 +65,12 @@ type Props = {
   onRowEdit: (contact: Contact) => void;
   onRowBlocklist: (contact: Contact) => void;
   onRowAddToList: (contact: Contact) => void;
+  onRowRemoveFromList?: (contact: Contact) => void;
   onRowAssign: (contact: Contact) => void;
   onRowExport: (contact: Contact) => void;
   onRowAddToAutomation: (contact: Contact) => void;
   onRowDelete: (contact: Contact) => void;
+  currentListName?: string;
 };
 
 function RowActionsDropdown({
@@ -76,19 +78,23 @@ function RowActionsDropdown({
   onEdit,
   onBlocklist,
   onAddToList,
+  onRemoveFromList,
   onAssign,
   onExport,
   onAddToAutomation,
   onDelete,
+  currentListName,
 }: {
   contact: Contact;
   onEdit: () => void;
   onBlocklist: () => void;
   onAddToList: () => void;
+  onRemoveFromList?: () => void;
   onAssign: () => void;
   onExport: () => void;
   onAddToAutomation: () => void;
   onDelete: () => void;
+  currentListName?: string;
 }) {
   return (
     <DropdownMenu>
@@ -107,6 +113,14 @@ function RowActionsDropdown({
         <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onAddToList(); }}>
           Add to list
         </DropdownMenuItem>
+        {onRemoveFromList && (
+          <DropdownMenuItem
+            onClick={(e) => { e.stopPropagation(); onRemoveFromList(); }}
+            className="text-amber-600 focus:text-amber-600 focus:bg-amber-500/10 dark:text-amber-400"
+          >
+            {currentListName ? "Remove from this list" : "Remove from list(s)"}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onAssign(); }}>
           Assign
         </DropdownMenuItem>
@@ -197,8 +211,9 @@ export default function ContactsTable({
   search, onSearchChange,
   page, onPageChange, pageSize, onPageSizeChange,
   selectedIds, onSelectAll, onSelectOne,
-  onRowEdit, onRowBlocklist, onRowAddToList, onRowAssign,
+  onRowEdit, onRowBlocklist, onRowAddToList, onRowRemoveFromList, onRowAssign,
   onRowExport, onRowAddToAutomation, onRowDelete,
+  currentListName,
 }: Props) {
   const startRow = total ? (page - 1) * pageSize + 1 : 0;
   const endRow = Math.min(page * pageSize, total);
@@ -316,10 +331,12 @@ export default function ContactsTable({
                         onEdit={() => onRowEdit(c)}
                         onBlocklist={() => onRowBlocklist(c)}
                         onAddToList={() => onRowAddToList(c)}
+                        onRemoveFromList={onRowRemoveFromList ? () => onRowRemoveFromList(c) : undefined}
                         onAssign={() => onRowAssign(c)}
                         onExport={() => onRowExport(c)}
                         onAddToAutomation={() => onRowAddToAutomation(c)}
                         onDelete={() => onRowDelete(c)}
+                        currentListName={currentListName}
                       />
                     </div>
                   </TableCell>
