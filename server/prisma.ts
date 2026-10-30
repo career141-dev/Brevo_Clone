@@ -1,9 +1,9 @@
 import "dotenv/config";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 import { PrismaClient } from "@prisma/client";
-import { AsyncLocalStorage } from "async_hooks";
 
-export const authStorage = new AsyncLocalStorage<{ userId: string }>();
+/** The app is one shared team workspace: every row is owned by this id, and every signed-in user sees all of it. */
+export const WORKSPACE_USER_ID = "user_3Epvu1kcUczQTmQSvidHS9K4Wak";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL environment variable is required.");
@@ -33,61 +33,24 @@ const globalForPrisma = globalThis as unknown as {
 
 const basePrisma = new PrismaClient({ adapter });
 
-const tenantModels = ['Contact', 'Folder', 'List', 'Campaign', 'Automation', 'Company', 'Segment', 'Template'];
+const ownedModels = ["Contact", "Folder", "List", "Campaign", "Automation", "Company", "Segment", "Template"];
 
+// These tables still require userId, so new rows are stamped with the workspace owner. Reads need no filter.
 export const prisma = globalForPrisma.prisma ?? basePrisma.$extends({
   query: {
     $allModels: {
       async $allOperations({ model, operation, args, query }) {
-        if (!tenantModels.includes(model)) {
-          return query(args);
+        if (!ownedModels.includes(model)) return query(args);
+        const a = args as any;
+        if (operation === "create") a.data = { ...a.data, userId: WORKSPACE_USER_ID };
+        if (operation === "upsert") a.create = { ...a.create, userId: WORKSPACE_USER_ID };
+        if (operation === "createMany") {
+          a.data = Array.isArray(a.data) ? a.data.map((d: any) => ({ ...d, userId: WORKSPACE_USER_ID })) : { ...a.data, userId: WORKSPACE_USER_ID };
         }
-        
-        const store = authStorage.getStore();
-        const userId = store?.userId;
-        
-        if (!userId) {
-          return query(args);
-        }
-
-        const anyArgs = args as any;
-
-        if (['findMany', 'findFirst', 'count', 'updateMany', 'deleteMany'].includes(operation)) {
-          anyArgs.where = { ...anyArgs.where, userId };
-          return query(anyArgs);
-        }
-
-        if (['create'].includes(operation)) {
-          anyArgs.data = { ...anyArgs.data, userId };
-          return query(anyArgs);
-        }
-
-        if (['createMany'].includes(operation)) {
-          if (Array.isArray(anyArgs.data)) {
-             anyArgs.data = anyArgs.data.map((d: any) => ({ ...d, userId }));
-          } else {
-             anyArgs.data = { ...anyArgs.data, userId };
-          }
-          return query(anyArgs);
-        }
-
-        if (['findUnique', 'findUniqueOrThrow', 'update', 'delete'].includes(operation)) {
-          // Ownership rides in the same query (Prisma allows extra filters on unique where): one round trip, not two.
-          // A non-owned record now surfaces as findUnique -> null / update,delete -> P2025, which the routes already map to 404.
-          anyArgs.where = { ...anyArgs.where, userId };
-          return query(anyArgs);
-        }
-        
-        if (operation === 'upsert') {
-          anyArgs.where = { ...anyArgs.where, userId };
-          anyArgs.create = { ...anyArgs.create, userId };
-          return query(anyArgs);
-        }
-
-        return query(anyArgs);
-      }
-    }
-  }
+        return query(a);
+      },
+    },
+  },
 });
 
 if (process.env.NODE_ENV !== "production") {

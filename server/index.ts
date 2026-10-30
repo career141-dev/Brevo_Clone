@@ -13,7 +13,7 @@ import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import { CostExplorerClient, GetCostAndUsageCommand } from "@aws-sdk/client-cost-explorer";
 import jwt from "jsonwebtoken";
-import { prisma, authStorage } from "./prisma.js";
+import { prisma, WORKSPACE_USER_ID } from "./prisma.js";
 import { sesClient, sesv2Client } from "./lib/ses.js";
 import contactsRouter from "./routes/contacts.js";
 import { UAParser } from "ua-parser-js";
@@ -136,9 +136,8 @@ app.use(/^\/api\/(upload|download|campaigns\/\d+\/(send|resume|send-test))/, sen
 // Auth: set CLERK_SECRET_KEY + CLERK_PUBLISHABLE_KEY to require a signed-in Clerk user on every /api route except
 // tracking/unsubscribe/webhooks (those are public by design). Optional ALLOWED_USER_IDS=id1,id2 restricts who may use
 // the app (otherwise anyone who can sign up on your Clerk instance can see all data and send via SES).
-// Every signed-in user works in the one shared team workspace (LEGACY_USER_ID owns all existing data).
+// Every signed-in user works in the one shared team workspace.
 // Without the keys the API runs unauthenticated in that same workspace.
-const LEGACY_USER_ID = "user_3Epvu1kcUczQTmQSvidHS9K4Wak";
 // Quotes/whitespace are stripped because Railway's form editor keeps them literally when pasted from a .env line.
 const cleanEnv = (v?: string) => (v ?? "").replace(/["']/g, "").trim();
 const CLERK_SECRET_KEY = cleanEnv(process.env.CLERK_SECRET_KEY);
@@ -148,7 +147,7 @@ const PUBLIC_API = /^\/api\/(track|unsubscribe|webhooks)(\/|\?|$)/;
 // Team accounts are allowed from code so access never depends on the Railway variable being edited correctly;
 // ALLOWED_USER_IDS can still add more.
 const TEAM_USER_IDS = [
-  LEGACY_USER_ID, // sanjeevsivasuthakaran@gmail.com (owns the data)
+  WORKSPACE_USER_ID, // sanjeevsivasuthakaran@gmail.com (owns the data)
   "user_3EWBGeBqi9dxi5mlkRgX51G7LGA", // sanjaysanjeev2000@gmail.com
   "user_3EtWIDT0SkIWh03rVqpGcOzkgFn", // uzmaan@career141.com
 ];
@@ -159,7 +158,7 @@ if (!CLERK_ENABLED) console.warn("[AUTH] CLERK_SECRET_KEY not set: API is runnin
 else console.log(`[AUTH] Clerk enabled, allowed users: ${ALLOWED_USER_IDS.join(", ") || "ANY signed-in user"}`);
 if (CLERK_ENABLED) app.use("/api/", clerkMiddleware({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY }));
 app.use("/api/", async (req: any, res: any, next: any) => {
-  if (!CLERK_ENABLED) return authStorage.run({ userId: LEGACY_USER_ID }, next);
+  if (!CLERK_ENABLED) return next();
   if (PUBLIC_API.test(req.originalUrl)) return next();
   const userId = getAuth(req).userId;
   if (!userId) {
@@ -178,7 +177,7 @@ app.use("/api/", async (req: any, res: any, next: any) => {
     console.warn(`[AUTH] rejected ${userId}: not in allowed users (${ALLOWED_USER_IDS.join(", ")})`);
     return res.status(401).json({ error: "Unauthorized", reason: "this account is not allowed to use the app" });
   }
-  authStorage.run({ userId: LEGACY_USER_ID }, next);
+  next();
 });
 
 // Body parsing runs after auth so anonymous callers can't force 50MB parses. Public routes bring their own small parsers.
@@ -269,7 +268,7 @@ app.post("/api/upload", async (req: any, res: any) => {
     });
   } catch (err: any) {
     console.error("File upload error:", err);
-    res.status(500).json({ error: "Failed to upload file", details: err.message });
+    res.status(500).json({ error: "Failed to upload file" });
   }
 });
 
@@ -439,7 +438,7 @@ app.post("/api/contacts", async (req, res) => {
       return res.status(409).json({ error: "A contact with this email already exists" });
     }
     console.error("Create contact error:", err);
-    res.status(500).json({ error: "Failed to create contact", detail: err?.message });
+    res.status(500).json({ error: "Failed to create contact" });
   }
 });
 
@@ -557,7 +556,7 @@ app.post("/api/lists", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Create list error:", err);
-    res.status(500).json({ error: "Failed to create list.", detail: err?.message });
+    res.status(500).json({ error: "Failed to create list." });
   }
 });
 
@@ -606,7 +605,7 @@ app.put("/api/lists/:id", async (req, res) => {
   } catch (err: any) {
     if (err?.code === "P2025") return res.status(404).json({ error: "List not found" });
     console.error("Update list error:", err);
-    res.status(500).json({ error: "Failed to update list.", detail: err?.message });
+    res.status(500).json({ error: "Failed to update list." });
   }
 });
 
@@ -675,7 +674,7 @@ app.post("/api/folders", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Create folder error:", err);
-    res.status(500).json({ error: "Failed to create folder.", detail: err?.message });
+    res.status(500).json({ error: "Failed to create folder." });
   }
 });
 
@@ -894,7 +893,8 @@ app.get("/api/campaigns/:id", async (req, res) => {
 
     res.json(campaign);
   } catch (err: any) {
-    res.status(500).json({ error: "Failed to fetch campaign", details: err.message });
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch campaign" });
   }
 });
 
@@ -949,7 +949,7 @@ app.post("/api/campaigns", async (req, res) => {
     res.status(201).json(campaign);
   } catch (err: any) {
     console.error("Failed to create campaign draft:", err);
-    res.status(500).json({ error: "Failed to create campaign draft", details: err.message });
+    res.status(500).json({ error: "Failed to create campaign draft" });
   }
 });
 
@@ -1004,7 +1004,7 @@ app.put("/api/campaigns/:id", async (req, res) => {
     res.json(campaign);
   } catch (err: any) {
     console.error("Failed to update campaign:", err);
-    res.status(500).json({ error: "Failed to update campaign", details: err.message });
+    res.status(500).json({ error: "Failed to update campaign" });
   }
 });
 
@@ -1226,7 +1226,8 @@ app.post("/api/campaigns/:id/reset", async (req, res) => {
 
     res.json({ success: true, campaign });
   } catch (err: any) {
-    res.status(500).json({ error: "Failed to reset campaign status", details: err.message });
+    console.error(err);
+    res.status(500).json({ error: "Failed to reset campaign status" });
   }
 });
 
@@ -1504,7 +1505,7 @@ app.get('/api/analytics/campaigns', async (req, res) => {
     res.json(result);
   } catch (err: any) {
     console.error("Analytics fetch error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to load analytics" });
   }
 });
 
@@ -1696,7 +1697,7 @@ app.get('/api/analytics/campaigns/:id', async (req, res) => {
     res.json(result);
   } catch (err: any) {
     console.error("Analytics detail fetch error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to load analytics" });
   }
 });
 
@@ -1758,7 +1759,7 @@ app.get('/api/analytics/campaigns/:id/contact-events', async (req, res) => {
     });
   } catch (err: any) {
     console.error("Contact events fetch error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to load analytics" });
   }
 });
 
@@ -1801,7 +1802,7 @@ app.get('/api/analytics/campaigns/:id/export', async (req, res) => {
     res.end();
   } catch (err: any) {
     console.error("Analytics export error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to load analytics" });
   }
 });
 
