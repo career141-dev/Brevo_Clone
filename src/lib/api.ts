@@ -1,7 +1,11 @@
 const BASE = import.meta.env.VITE_API_URL ?? "/api";
 
 // The API verifies the Clerk session token when CLERK_SECRET_KEY is configured on the server.
+// Queries fire on first render, before clerk-js has restored the session; without waiting they go out with no token (401).
 async function authHeaders(): Promise<Record<string, string>> {
+  for (let waited = 0; !(window as any).Clerk?.loaded && waited < 10_000; waited += 50) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
   const token = await (window as any).Clerk?.session?.getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

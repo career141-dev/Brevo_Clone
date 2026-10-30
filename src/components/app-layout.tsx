@@ -23,7 +23,8 @@ import {
   FileText,
   Rocket,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils.ts";
 import { Show, SignInButton, SignUpButton, useUser, useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button.tsx";
@@ -392,6 +393,12 @@ function TopBar() {
 
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { isSignedIn } = useAuth();
+  const queryClient = useQueryClient();
+  // Data loaded while signed out failed with 401; refetch it once the user signs in.
+  useEffect(() => {
+    if (isSignedIn) queryClient.invalidateQueries();
+  }, [isSignedIn, queryClient]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
