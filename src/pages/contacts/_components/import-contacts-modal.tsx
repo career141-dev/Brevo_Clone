@@ -7,11 +7,14 @@ import { toast } from "sonner";
 import { X, Upload, Key, Check, AlertCircle, Loader2, List } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { api } from "@/lib/api.ts";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { readSheet, detectColumns, toCandidates, isValidEmail, type Sheet } from "@/lib/candidate-sheet.ts";
+
+type ExcelResult = { listName: string; created: number; existing: number; skipped: number };
 
 type Props = { open: boolean; onClose: () => void };
 type Step = "choose" | "brevo" | "csv" | "importing" | "done";
-type Mode = "full" | "lists";
+type Mode = "full" | "lists" | "excel";
 
 type FullResult = { imported: number; skipped: number; total: number; listsImported: number; contactsLinked: number };
 type ListsResult = { contactsLinked: number; listsFound: number };
@@ -23,8 +26,59 @@ export default function ImportContactsModal({ open, onClose }: Props) {
   const [brevoKey, setBrevoKey] = useState("");
   const [result, setResult] = useState<FullResult | ListsResult | null>(null);
   const [error, setError] = useState("");
+  const [role, setRole] = useState("");
+  const [folderId, setFolderId] = useState("");
+  const [sheet, setSheet] = useState<Sheet | null>(null);
+  const [emailCol, setEmailCol] = useState("");
+  const [nameCol, setNameCol] = useState("");
+  const [excelResult, setExcelResult] = useState<ExcelResult | null>(null);
+
+  const { data: folders = [] } = useQuery({ queryKey: ["folders"], queryFn: api.folders.list, enabled: open });
+  const candidates = sheet && emailCol ? toCandidates(sheet.rows, emailCol, nameCol) : [];
+  const validCount = candidates.filter((c) => isValidEmail(c.email)).length;
+
+  async function handleFile(file?: File) {
+    if (!file) return;
+    setError("");
+    try {
+      const s = await readSheet(file);
+      if (!s.rows.length) return setError("That file has no rows.");
+      const cols = detectColumns(s.headers);
+      setSheet(s);
+      setEmailCol(cols.email);
+      setNameCol(cols.name);
+    } catch {
+      setSheet(null);
+      setError("Could not read that file. Use .xlsx, .xls or .csv.");
+    }
+  }
+
+  async function handleExcelImport() {
+    if (!role.trim()) return setError("Enter the job role name");
+    if (!folderId) return setError("Choose a folder");
+    if (!sheet || !emailCol) return setError("Upload a file and pick the email column");
+    if (!validCount) return setError("No valid email addresses found in that column");
+    setError("");
+    setStep("importing");
+    try {
+      const res = await api.contacts.importList({ listName: role.trim(), folderId: Number(folderId), contacts: candidates });
+      setExcelResult(res);
+      setStep("done");
+      for (const k of ["contacts", "contact-stats", "lists", "segments"]) queryClient.invalidateQueries({ queryKey: [k] });
+      toast.success(`Added ${res.created + res.existing} candidates to "${res.listName}"`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+      setStep("csv");
+    }
+  }
 
   function reset() {
+    setRole("");
+    setFolderId("");
+    setSheet(null);
+    setEmailCol("");
+    setNameCol("");
+    setExcelResult(null);
     setStep("choose");
     setMode("full");
     setBrevoKey("");
@@ -134,18 +188,15 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                     </button>
                     <button
                       className="w-full flex items-start gap-4 p-4 border border-border rounded-xl hover:border-primary/50 hover:bg-muted/40 cursor-pointer text-left transition-colors"
-                      onClick={() => {
-                        toast.info("CSV import coming soon — use Brevo API import for now");
-                        setStep("csv");
-                      }}
+                      onClick={() => { setMode("excel"); setStep("csv"); }}
                     >
                       <div className="size-10 rounded-lg bg-muted flex items-center justify-center shrink-0 mt-0.5">
                         <Upload className="size-5 text-muted-foreground" />
                       </div>
                       <div>
-                        <p className="font-semibold text-sm">Upload a CSV file</p>
+                        <p className="font-semibold text-sm">Upload candidates (Excel / CSV)</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          Export a CSV from Brevo and upload it here. Supported columns: Email, First Name, Last Name, WhatsApp, Company, Designation
+                          Upload a sheet of candidates. Name and email are picked up and added to a list named after the job role.
                         </p>
                       </div>
                     </button>
@@ -202,15 +253,66 @@ export default function ImportContactsModal({ open, onClose }: Props) {
 
                 {/* STEP: csv */}
                 {step === "csv" && (
-                  <div className="text-center py-6 space-y-3">
-                    <Upload className="size-10 mx-auto text-muted-foreground/40" />
-                    <p className="text-sm font-medium">CSV Import</p>
-                    <p className="text-xs text-muted-foreground">
-                      CSV import is coming soon. Use the Brevo API import for now to pull all your contacts instantly.
-                    </p>
-                    <Button variant="secondary" size="sm" onClick={() => setStep("brevo")} className="cursor-pointer">
-                      Use Brevo API instead
-                    </Button>
+                  <div className="space-y-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Job role (list name)</Label>
+                      <Input placeholder="e.g. Sales" value={role} onChange={(e) => setRole(e.target.value)} maxLength={255} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Folder</Label>
+                      <select
+                        value={folderId}
+                        onChange={(e) => setFolderId(e.target.value)}
+                        className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="">Select a folder</option>
+                        {folders.map((f: any) => (
+                          <option key={f.id} value={f.id}>{f.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Candidates file</Label>
+                      <Input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => handleFile(e.target.files?.[0])} />
+                    </div>
+                    {sheet && (
+                      <>
+                        <div className="grid grid-cols-2 gap-3">
+                          {[
+                            { label: "Email column", value: emailCol, set: setEmailCol, none: "Select" },
+                            { label: "Name column", value: nameCol, set: setNameCol, none: "None" },
+                          ].map((c) => (
+                            <div key={c.label} className="space-y-1.5">
+                              <Label className="text-xs text-muted-foreground">{c.label}</Label>
+                              <select
+                                value={c.value}
+                                onChange={(e) => c.set(e.target.value)}
+                                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+                              >
+                                <option value="">{c.none}</option>
+                                {sheet.headers.map((h) => (
+                                  <option key={h} value={h}>{h}</option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="bg-muted/50 rounded-lg p-3 text-xs text-muted-foreground space-y-1">
+                          <p className="font-medium text-foreground">
+                            {validCount} valid of {sheet.rows.length} rows
+                          </p>
+                          {candidates.slice(0, 5).map((c, i) => (
+                            <p key={i} className="truncate">{c.name || "—"} · {c.email || "—"}</p>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {error && (
+                      <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg text-sm text-destructive">
+                        <AlertCircle className="size-4 mt-0.5 shrink-0" />
+                        <span>{error}</span>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -219,7 +321,9 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                   <div className="flex flex-col items-center py-10 gap-4">
                     <Loader2 className="size-10 animate-spin text-primary" />
                     <div className="text-center">
-                      {mode === "lists" ? (
+                      {mode === "excel" ? (
+                        <p className="font-medium text-sm">Adding candidates to "{role.trim()}"...</p>
+                      ) : mode === "lists" ? (
                         <>
                           <p className="font-medium text-sm">Linking contacts to lists & segments...</p>
                           <p className="text-xs text-muted-foreground mt-1">
@@ -237,6 +341,28 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                       <p className="text-xs text-muted-foreground mt-2 font-medium">
                         Please keep this window open until complete.
                       </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* STEP: done (Excel) */}
+                {step === "done" && excelResult && (
+                  <div className="flex flex-col items-center py-8 gap-4">
+                    <div className="size-14 rounded-full bg-emerald-100 dark:bg-emerald-500/15 flex items-center justify-center">
+                      <Check className="size-7 text-emerald-600 dark:text-emerald-400" />
+                    </div>
+                    <p className="font-semibold">List "{excelResult.listName}" is ready</p>
+                    <div className="grid grid-cols-3 gap-3 w-full">
+                      {[
+                        { label: "New candidates", value: excelResult.created, color: "text-emerald-600" },
+                        { label: "Already existed", value: excelResult.existing },
+                        { label: "Skipped", value: excelResult.skipped, color: "text-muted-foreground" },
+                      ].map((s) => (
+                        <div key={s.label} className="bg-muted rounded-lg p-3 text-center">
+                          <p className={cn("text-xl font-bold", s.color ?? "text-foreground")}>{s.value.toLocaleString()}</p>
+                          <p className="text-[11px] text-muted-foreground mt-0.5">{s.label}</p>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -313,9 +439,14 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                   </>
                 )}
                 {step === "csv" && (
-                  <Button variant="ghost" size="sm" onClick={() => setStep("choose")} className="cursor-pointer">
-                    Back
-                  </Button>
+                  <>
+                    <Button variant="ghost" size="sm" onClick={() => setStep("choose")} className="cursor-pointer">
+                      Back
+                    </Button>
+                    <Button size="sm" onClick={handleExcelImport} className="cursor-pointer">
+                      Import candidates
+                    </Button>
+                  </>
                 )}
                 {step === "done" && (
                   <Button size="sm" onClick={handleClose} className="cursor-pointer">
