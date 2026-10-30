@@ -27,6 +27,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/** Brevo imports run on the server in the background: start the job, then poll until it finishes. */
+async function runBrevoJob<T>(path: string, apiKey: string): Promise<T> {
+  const { jobId } = await request<{ jobId: string }>(path, { method: "POST", body: JSON.stringify({ apiKey }) });
+  while (true) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const job = await request<{ status: string; result?: T; error?: string }>(`/brevo/jobs/${jobId}`);
+    if (job.status === "done") return job.result as T;
+    if (job.status === "failed") throw new Error(job.error ?? "Import failed");
+  }
+}
+
 export type PaginatedResponse<T> = {
   data: T[];
   total: number;
@@ -179,15 +190,8 @@ export const api = {
   },
   brevo: {
     import: (apiKey: string) =>
-      request<{ imported: number; skipped: number; total: number; listsImported: number; contactsLinked: number }>("/brevo/import", {
-        method: "POST",
-        body: JSON.stringify({ apiKey }),
-      }),
-    linkLists: (apiKey: string) =>
-      request<{ contactsLinked: number; listsFound: number }>("/brevo/link-lists", {
-        method: "POST",
-        body: JSON.stringify({ apiKey }),
-      }),
+      runBrevoJob<{ imported: number; skipped: number; total: number; listsImported: number; contactsLinked: number }>("/brevo/import", apiKey),
+    linkLists: (apiKey: string) => runBrevoJob<{ contactsLinked: number; listsFound: number }>("/brevo/link-lists", apiKey),
   },
   analytics: {
     campaigns: () => request<any[]>("/analytics/campaigns"),

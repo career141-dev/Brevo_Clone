@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { prisma } from "../prisma.js";
 
@@ -223,168 +224,190 @@ function mapContact(c: any) {
   };
 }
 
-router.post("/api/brevo/import", async (req, res) => {
-  try {
-    const { apiKey } = req.body;
-    if (!apiKey) return res.status(400).json({ error: "API key is required" });
+// A full import takes far longer than an HTTP request should, so it runs in the background and the page polls for it.
+// ponytail: jobs live in memory, so a redeploy loses one (polling then gets 404 and the import can simply be re-run,
+// it skips what already exists). Only one runs at a time.
+type BrevoJob = { id: string; status: "running" | "done" | "failed"; result?: unknown; error?: string };
+const brevoJobs = new Map<string, BrevoJob>();
 
-    await fetchAndStoreFolders(apiKey);
-    const brevoListMap = await fetchAndStoreLists(apiKey);
-    const companiesImported = await fetchAndStoreCompanies(apiKey).catch(e => { console.error("Companies import failed", e); return 0; });
-    const segmentsImported = await fetchAndStoreSegments(apiKey).catch(e => { console.error("Segments import failed", e); return 0; });
+function startBrevoJob(work: () => Promise<unknown>): BrevoJob {
+  const active = [...brevoJobs.values()].find((j) => j.status === "running");
+  if (active) return active;
+  const job: BrevoJob = { id: randomUUID(), status: "running" };
+  brevoJobs.set(job.id, job);
+  work().then(
+    (result) => { job.status = "done"; job.result = result; },
+    (err) => { console.error("Brevo job failed:", err); job.status = "failed"; job.error = err?.message ?? "Import failed"; },
+  );
+  return job;
+}
 
-    let imported = 0;
-    let skipped = 0;
-    let total: number | null = null;
-    let offset = 0;
-    const batchSize = 500;
-    const MAX_IMPORT = 100000;
-    const seenEmails = new Set<string>();
-
-    while (true) {
-      if (imported >= MAX_IMPORT) break;
-
-      const url = `${BREVO_BASE}?limit=${BREVO_LIMIT}&offset=${offset}&sort=desc`;
-      const response = await brevoFetch(url, apiKey);
-      if (response.status === 429) {
-        await sleep(2000);
-        continue;
-      }
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`Brevo API error (${response.status}): ${body}`);
-      }
-      const data = (await response.json()) as any;
-      if (total === null) total = data.count;
-      const contacts = data.contacts ?? [];
-      if (contacts.length === 0) break;
-
-      const mapped = contacts.map(mapContact).filter((c: any) => c.email);
-
-      const existingEmails = (
-        await prisma.contact.findMany({
-          where: { email: { in: mapped.map((c: any) => c.email) } },
-          select: { email: true },
-        })
-      ).map((e) => e.email);
-
-      const existingSet = new Set([...existingEmails, ...seenEmails]);
-
-      const newContacts = mapped.filter((c: any) => !existingSet.has(c.email));
-      for (const c of newContacts) seenEmails.add(c.email);
-      skipped += mapped.length - newContacts.length;
-
-      for (let i = 0; i < newContacts.length; i += batchSize) {
-        const remaining = MAX_IMPORT - imported;
-        if (remaining <= 0) break;
-        const batch = newContacts.slice(i, i + Math.min(batchSize, remaining));
-        const { count } = await prisma.contact.createMany({ data: batch, skipDuplicates: true });
-        imported += count;
-      }
-
-      if (imported + skipped >= total!) break;
-      offset += BREVO_LIMIT;
-    }
-
-    let linked = 0;
-    for (const [brevoId, localId] of brevoListMap) {
-      let lOffset = 0;
-      while (true) {
-        const listLimit = 500;
-        const url = `${BREVO_BASE}/lists/${brevoId}/contacts?limit=${listLimit}&offset=${lOffset}&sort=desc`;
-        const res = await brevoFetch(url, apiKey);
-        if (res.status === 429) { await sleep(2000); continue; }
-        if (!res.ok) {
-          console.error(`Failed to fetch contacts for list ${brevoId} (${res.status}):`, await res.text());
-          break;
-        }
-
-        const data = (await res.json()) as any;
-        const members: any[] = data.contacts ?? [];
-        if (members.length === 0) break;
-
-        const emails = members.map((m: any) => m.email).filter(Boolean);
-        const existing = await prisma.contact.findMany({
-          where: { email: { in: emails } },
-          select: { id: true },
-        });
-
-        const links = existing.map((c) => ({ contactId: c.id, listId: localId }));
-        if (links.length > 0) {
-          const { count } = await prisma.contactList.createMany({ data: links, skipDuplicates: true });
-          linked += count;
-        }
-
-        if (members.length < listLimit) break;
-        lOffset += listLimit;
-      }
-    }
-
-    res.json({ imported, skipped, total: total ?? imported + skipped, listsImported: brevoListMap.size, companiesImported, segmentsImported, contactsLinked: linked });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message ?? "Import failed" });
-  }
+router.get("/api/brevo/jobs/:id", (req, res) => {
+  const job = brevoJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Import job not found. The server may have restarted: please run it again." });
+  res.json(job);
 });
 
-router.post("/api/brevo/link-lists", async (req, res) => {
-  try {
-    const { apiKey } = req.body;
-    if (!apiKey) return res.status(400).json({ error: "API key is required" });
+router.post("/api/brevo/import", (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey) return res.status(400).json({ error: "API key is required" });
+  res.status(202).json({ jobId: startBrevoJob(() => runBrevoImport(apiKey)).id });
+});
 
-    // Sync folders and lists first to ensure we have the latest
-    await fetchAndStoreFolders(apiKey);
-    await fetchAndStoreLists(apiKey);
+router.post("/api/brevo/link-lists", (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey) return res.status(400).json({ error: "API key is required" });
+  res.status(202).json({ jobId: startBrevoJob(() => runBrevoLinkLists(apiKey)).id });
+});
 
-    const lists = await prisma.list.findMany({ where: { brevoId: { not: null } }, select: { id: true, brevoId: true } });
-    const brevoListMap = new Map<number, number>(lists.filter((l) => l.brevoId !== null).map((l) => [l.brevoId!, l.id]));
-    if (brevoListMap.size === 0) return res.json({ contactsLinked: 0, error: "No lists found. Run a full import first." });
+async function runBrevoImport(apiKey: string) {
+  await fetchAndStoreFolders(apiKey);
+  const brevoListMap = await fetchAndStoreLists(apiKey);
+  const companiesImported = await fetchAndStoreCompanies(apiKey).catch(e => { console.error("Companies import failed", e); return 0; });
+  const segmentsImported = await fetchAndStoreSegments(apiKey).catch(e => { console.error("Segments import failed", e); return 0; });
 
-    let linked = 0;
-    let offset = 0;
+  let imported = 0;
+  let skipped = 0;
+  let total: number | null = null;
+  let offset = 0;
+  const batchSize = 500;
+  const MAX_IMPORT = 100000;
+  const seenEmails = new Set<string>();
 
+  while (true) {
+    if (imported >= MAX_IMPORT) break;
+
+    const url = `${BREVO_BASE}?limit=${BREVO_LIMIT}&offset=${offset}&sort=desc`;
+    const response = await brevoFetch(url, apiKey);
+    if (response.status === 429) {
+      await sleep(2000);
+      continue;
+    }
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Brevo API error (${response.status}): ${body}`);
+    }
+    const data = (await response.json()) as any;
+    if (total === null) total = data.count;
+    const contacts = data.contacts ?? [];
+    if (contacts.length === 0) break;
+
+    const mapped = contacts.map(mapContact).filter((c: any) => c.email);
+
+    const existingEmails = (
+      await prisma.contact.findMany({
+        where: { email: { in: mapped.map((c: any) => c.email) } },
+        select: { email: true },
+      })
+    ).map((e) => e.email);
+
+    const existingSet = new Set([...existingEmails, ...seenEmails]);
+
+    const newContacts = mapped.filter((c: any) => !existingSet.has(c.email));
+    for (const c of newContacts) seenEmails.add(c.email);
+    skipped += mapped.length - newContacts.length;
+
+    for (let i = 0; i < newContacts.length; i += batchSize) {
+      const remaining = MAX_IMPORT - imported;
+      if (remaining <= 0) break;
+      const batch = newContacts.slice(i, i + Math.min(batchSize, remaining));
+      const { count } = await prisma.contact.createMany({ data: batch, skipDuplicates: true });
+      imported += count;
+    }
+
+    if (imported + skipped >= total!) break;
+    offset += BREVO_LIMIT;
+  }
+
+  let linked = 0;
+  for (const [brevoId, localId] of brevoListMap) {
+    let lOffset = 0;
     while (true) {
-      const url = `${BREVO_BASE}?limit=${BREVO_LIMIT}&offset=${offset}&sort=desc`;
-      const response = await brevoFetch(url, apiKey);
-      if (response.status === 429) { await sleep(2000); continue; }
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`Brevo API error (${response.status}): ${body}`);
+      const listLimit = 500;
+      const url = `${BREVO_BASE}/lists/${brevoId}/contacts?limit=${listLimit}&offset=${lOffset}&sort=desc`;
+      const res = await brevoFetch(url, apiKey);
+      if (res.status === 429) { await sleep(2000); continue; }
+      if (!res.ok) {
+        console.error(`Failed to fetch contacts for list ${brevoId} (${res.status}):`, await res.text());
+        break;
       }
 
-      const data = (await response.json()) as any;
-      if (data.contacts?.length === 0) break;
+      const data = (await res.json()) as any;
+      const members: any[] = data.contacts ?? [];
+      if (members.length === 0) break;
 
-      const contacts: any[] = data.contacts ?? [];
-      if (contacts.length === 0) break;
-
-      const emails = contacts.filter((c: any) => c.email).map((c: any) => c.email);
+      const emails = members.map((m: any) => m.email).filter(Boolean);
       const existing = await prisma.contact.findMany({
         where: { email: { in: emails } },
-        select: { id: true, email: true },
+        select: { id: true },
       });
-      const emailToId = new Map<string, number>(existing.map((c: any) => [c.email, c.id]));
 
-      const links: { contactId: number; listId: number }[] = [];
-      for (const c of contacts) {
-        const contactId = emailToId.get(c.email);
-        if (contactId && c.listIds?.length) {
-          for (const brevoId of c.listIds) {
-            const localId = brevoListMap.get(brevoId);
-            if (localId) links.push({ contactId, listId: localId });
-          }
-        }
-      }
-
+      const links = existing.map((c) => ({ contactId: c.id, listId: localId }));
       if (links.length > 0) {
         const { count } = await prisma.contactList.createMany({ data: links, skipDuplicates: true });
         linked += count;
       }
 
-      offset += BREVO_LIMIT;
+      if (members.length < listLimit) break;
+      lOffset += listLimit;
+    }
+  }
+
+  return { imported, skipped, total: total ?? imported + skipped, listsImported: brevoListMap.size, companiesImported, segmentsImported, contactsLinked: linked };
+}
+
+async function runBrevoLinkLists(apiKey: string) {
+  // Sync folders and lists first to ensure we have the latest
+  await fetchAndStoreFolders(apiKey);
+  await fetchAndStoreLists(apiKey);
+
+  const lists = await prisma.list.findMany({ where: { brevoId: { not: null } }, select: { id: true, brevoId: true } });
+  const brevoListMap = new Map<number, number>(lists.filter((l) => l.brevoId !== null).map((l) => [l.brevoId!, l.id]));
+  if (brevoListMap.size === 0) return { contactsLinked: 0, error: "No lists found. Run a full import first." };
+
+  let linked = 0;
+  let offset = 0;
+
+  while (true) {
+    const url = `${BREVO_BASE}?limit=${BREVO_LIMIT}&offset=${offset}&sort=desc`;
+    const response = await brevoFetch(url, apiKey);
+    if (response.status === 429) { await sleep(2000); continue; }
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Brevo API error (${response.status}): ${body}`);
     }
 
-    res.json({ contactsLinked: linked, listsFound: brevoListMap.size });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message ?? "Link lists failed" });
+    const data = (await response.json()) as any;
+    if (data.contacts?.length === 0) break;
+
+    const contacts: any[] = data.contacts ?? [];
+    if (contacts.length === 0) break;
+
+    const emails = contacts.filter((c: any) => c.email).map((c: any) => c.email);
+    const existing = await prisma.contact.findMany({
+      where: { email: { in: emails } },
+      select: { id: true, email: true },
+    });
+    const emailToId = new Map<string, number>(existing.map((c: any) => [c.email, c.id]));
+
+    const links: { contactId: number; listId: number }[] = [];
+    for (const c of contacts) {
+      const contactId = emailToId.get(c.email);
+      if (contactId && c.listIds?.length) {
+        for (const brevoId of c.listIds) {
+          const localId = brevoListMap.get(brevoId);
+          if (localId) links.push({ contactId, listId: localId });
+        }
+      }
+    }
+
+    if (links.length > 0) {
+      const { count } = await prisma.contactList.createMany({ data: links, skipDuplicates: true });
+      linked += count;
+    }
+
+    offset += BREVO_LIMIT;
   }
-});
+
+  return { contactsLinked: linked, listsFound: brevoListMap.size };
+}
