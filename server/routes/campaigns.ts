@@ -66,6 +66,11 @@ router.get("/api/campaigns/:id", async (req, res) => {
 });
 
 // POST create campaign draft
+// The Individual Contacts tab sends "individual", but the database only stores list or segment. Individual campaigns are// identified by individualEmails, which the sender checks first.const dbAudienceType = (t?: string) => (!t || t === "individual" ? "list" : t);
+// The Individual Contacts tab sends "individual", but the database only stores list or segment. Individual campaigns are
+// identified by individualEmails, which the sender checks first.
+const dbAudienceType = (t?: string) => (!t || t === "individual" ? "list" : t);
+
 router.post("/api/campaigns", async (req, res) => {
   try {
     const {
@@ -104,7 +109,7 @@ router.post("/api/campaigns", async (req, res) => {
         replyToEmail: replyToEmail || null,
         replyToListId: replyToListId ? Number(replyToListId) : null,
         templateHtml: templateHtml || "",
-        audienceType: audienceType || "list",
+        audienceType: dbAudienceType(audienceType),
         audienceId: audienceId ? Number(audienceId) : 0,
         audienceListIds: formattedListIds,
         excludeListIds: formattedExcludeIds,
@@ -152,7 +157,7 @@ router.put("/api/campaigns/:id", async (req, res) => {
     if (replyToEmail !== undefined) updateData.replyToEmail = replyToEmail;
     if (replyToListId !== undefined) updateData.replyToListId = replyToListId ? Number(replyToListId) : null;
     if (templateHtml !== undefined) updateData.templateHtml = templateHtml;
-    if (audienceType !== undefined) updateData.audienceType = audienceType;
+    if (audienceType !== undefined) updateData.audienceType = dbAudienceType(audienceType);
     if (audienceId !== undefined) updateData.audienceId = Number(audienceId) || 0;
     if (audienceListIds !== undefined) {
       updateData.audienceListIds = Array.isArray(audienceListIds) ? audienceListIds.join(",") : audienceListIds;
