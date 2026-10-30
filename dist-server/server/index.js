@@ -111,9 +111,12 @@ app.use("/api/", apiLimiter);
 const LEGACY_USER_ID = "user_3Epvu1kcUczQTmQSvidHS9K4Wak";
 const CLERK_ENABLED = Boolean(process.env.CLERK_SECRET_KEY);
 const PUBLIC_API = /^\/api\/(track|unsubscribe|webhooks)(\/|\?|$)/;
-const ALLOWED_USER_IDS = (process.env.ALLOWED_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+// Quotes are stripped because Railway's form editor keeps them literally when pasted from a .env line.
+const ALLOWED_USER_IDS = (process.env.ALLOWED_USER_IDS ?? "").split(",").map((s) => s.replace(/["']/g, "").trim()).filter(Boolean);
 if (!CLERK_ENABLED)
     console.warn("[AUTH] CLERK_SECRET_KEY not set: API is running UNAUTHENTICATED as a single fixed user.");
+else
+    console.log(`[AUTH] Clerk enabled, allowed users: ${ALLOWED_USER_IDS.join(", ") || "ANY signed-in user"}`);
 if (CLERK_ENABLED)
     app.use("/api/", clerkMiddleware());
 app.use("/api/", (req, res, next) => {
@@ -122,8 +125,11 @@ app.use("/api/", (req, res, next) => {
     if (PUBLIC_API.test(req.originalUrl))
         return next();
     const userId = getAuth(req).userId;
-    if (!userId || (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId))) {
-        return res.status(401).json({ error: "Unauthorized" });
+    if (!userId)
+        return res.status(401).json({ error: "Unauthorized", reason: "not signed in (no valid Clerk token)" });
+    if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
+        console.warn(`[AUTH] rejected ${userId}: not in ALLOWED_USER_IDS`);
+        return res.status(401).json({ error: "Unauthorized", reason: `account ${userId} is not in ALLOWED_USER_IDS` });
     }
     authStorage.run({ userId: LEGACY_USER_ID }, next);
 });
