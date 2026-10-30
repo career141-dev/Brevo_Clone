@@ -140,7 +140,13 @@ app.use("/api/", async (req, res, next) => {
     }
     if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
         console.warn(`[AUTH] rejected ${userId}: not in ALLOWED_USER_IDS`);
-        return res.status(401).json({ error: "Unauthorized", reason: `account ${userId} is not in ALLOWED_USER_IDS` });
+        // User IDs are not secret; echoing what the server actually parsed makes Railway variable mistakes visible.
+        return res.status(401).json({
+            error: "Unauthorized",
+            reason: `account ${userId} is not in ALLOWED_USER_IDS`,
+            allowedSeenByServer: ALLOWED_USER_IDS,
+            rawLength: (process.env.ALLOWED_USER_IDS ?? "").length,
+        });
     }
     authStorage.run({ userId: LEGACY_USER_ID }, next);
 });
