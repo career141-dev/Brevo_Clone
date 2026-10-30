@@ -95,8 +95,8 @@ async function resolveAudience(campaign: any): Promise<{ contactId: number | nul
     const wanted = String(campaign.individualEmails || "").split(",").map((e) => e.trim().toLowerCase()).filter((e) => e.includes("@"));
     if (wanted.length > 0) {
       // Look up contacts of ANY status so unsubscribed/bounced addresses stay suppressed instead of being treated as "unknown".
-      const known = await prisma.contact.findMany({ where: { email: { in: wanted } }, select: { id: true, email: true, status: true } });
-      const byEmail = new Map<string, { id: number; status: string }>(known.map((c: any) => [c.email.toLowerCase(), c]));
+      const known = await prisma.contact.findMany({ where: { email: { in: wanted } }, select: { id: true, email: true, status: true, blocked: true } });
+      const byEmail = new Map<string, { id: number; status: string; blocked: boolean }>(known.map((c: any) => [c.email.toLowerCase(), c]));
       // Addresses with no contact row have no status, so past bounces/complaints are the only way to keep them suppressed.
       const suppressedRows = await prisma.emailEvent.findMany({
         where: { email: { in: wanted }, eventType: { in: ["bounced", "complained", "unsubscribed"] } },
@@ -105,7 +105,7 @@ async function resolveAudience(campaign: any): Promise<{ contactId: number | nul
       const suppressed = new Set(suppressedRows.map((e: any) => e.email.toLowerCase()));
       for (const email of wanted) {
         const c = byEmail.get(email);
-        if ((c && c.status !== "subscribed") || suppressed.has(email)) continue;
+        if ((c && (c.status !== "subscribed" || c.blocked)) || suppressed.has(email)) continue;
         out.set(email, { contactId: c?.id ?? null, email });
       }
     }
@@ -117,6 +117,7 @@ async function resolveAudience(campaign: any): Promise<{ contactId: number | nul
     const contacts = await prisma.contact.findMany({
       where: {
         status: "subscribed",
+        blocked: false,
         contactLists: {
           some: { listId: { in: targetIds } },
           ...(excludeIds.length > 0 ? { none: { listId: { in: excludeIds } } } : {}),
@@ -340,7 +341,7 @@ async function processCampaign(campaignId: number) {
     const contacts = contactIds.length
       ? await prisma.contact.findMany({
           where: { id: { in: contactIds } },
-          select: { id: true, firstName: true, lastName: true, fullName: true, company: true, designation: true, status: true },
+          select: { id: true, firstName: true, lastName: true, fullName: true, company: true, designation: true, status: true, blocked: true },
         })
       : [];
     const contactById = new Map<number, any>(contacts.map((c: any) => [c.id, c]));
@@ -349,7 +350,8 @@ async function processCampaign(campaignId: number) {
       const batch = page.slice(i, i + rate);
       const sends = batch.map(async (r: any) => {
         const contact = r.contactId ? contactById.get(r.contactId) : null;
-        // Suppression is re-checked close to send time (at most PAGE_SECONDS old): the contact may have unsubscribed since the snapshot.
+        // Suppression is re-checked close to send time (at most PAGE_SECONDS old): the contact may have unsubscribed or been blocked since the snapshot.
+        if (contact?.blocked) return { r, outcome: "skipped" as const, error: "contact is blocked" };
         if (contact && contact.status !== "subscribed") return { r, outcome: "skipped" as const, error: `contact is ${contact.status}` };
 
         const unsubUrl = makeUnsubscribeUrl(r.email, campaignId);

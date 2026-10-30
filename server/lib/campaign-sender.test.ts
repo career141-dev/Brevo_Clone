@@ -6,7 +6,7 @@ process.env.JWT_SECRET = "test-secret";
 process.env.SEND_QUOTA_WAIT_MS = "50";
 
 type Rec = { id: number; campaignId: number; contactId: number | null; email: string; status: string; error: string | null };
-type Opts = { failEmails?: string[]; unsubscribed?: string[]; failAll?: boolean; audience?: string[]; sentBefore?: string[]; quotaRemaining?: number; suppressed?: string[] };
+type Opts = { failEmails?: string[]; unsubscribed?: string[]; blocked?: string[]; failAll?: boolean; audience?: string[]; sentBefore?: string[]; quotaRemaining?: number; suppressed?: string[] };
 
 function setup(emails: string[], opts: Opts = {}) {
   const campaign: any = {
@@ -18,7 +18,7 @@ function setup(emails: string[], opts: Opts = {}) {
   let nextId = 1;
   const addRecs = (list: string[]) => list.forEach((email, i) => recs.push({ id: nextId++, campaignId: 1, contactId: i + 1, email, status: "queued", error: null }));
   addRecs(emails);
-  const contacts = (opts.audience ?? emails).map((email, i) => ({ id: i + 1, email, firstName: "N" + i, status: opts.unsubscribed?.includes(email) ? "unsubscribed" : "subscribed" }));
+  const contacts = (opts.audience ?? emails).map((email, i) => ({ id: i + 1, email, firstName: "N" + i, status: opts.unsubscribed?.includes(email) ? "unsubscribed" : "subscribed", blocked: !!opts.blocked?.includes(email) }));
   const events: any[] = (opts.sentBefore ?? []).map((email) => ({ email, campaignId: 1, eventType: "sent" }));
   const sendTimes: number[] = [];
   const sentTo: string[] = [];
@@ -39,7 +39,11 @@ function setup(emails: string[], opts: Opts = {}) {
     },
     list: { findMany: async () => [] },
     contact: {
-      findMany: async ({ where }: any) => (where.id?.in ? contacts.filter((c) => where.id.in.includes(c.id)) : contacts.filter((c) => c.status === "subscribed")),
+      findMany: async ({ where }: any) => contacts.filter((c) => {
+        if (where.id?.in) return where.id.in.includes(c.id);
+        if (where.email?.in) return where.email.in.includes(c.email);
+        return c.status === "subscribed" && (where.blocked === undefined || c.blocked === where.blocked);
+      }),
     },
     campaignRecipient: {
       findMany: async ({ where, take }: any) => recs.filter((r) => match(r, where)).slice(0, take),
@@ -195,4 +199,29 @@ test("individual emails skip addresses that bounced or complained before, even w
   assert.equal(r.ok && r.queued, 1);
   await idle();
   assert.deepEqual(s.sentTo, ["good@x.com"]);
+});
+
+test("blocked contacts are left out of list and individual audiences", async () => {
+  for (const individual of [false, true]) {
+    const s = setup([], { audience: ["ok@x.com", "blocked@x.com"], blocked: ["blocked@x.com"] });
+    s.campaign.status = "draft";
+    if (individual) {
+      s.campaign.audienceType = "individual";
+      s.campaign.individualEmails = "ok@x.com, blocked@x.com";
+    }
+    cur = s;
+    const r = await dispatchCampaign(1, "send");
+    assert.equal(r.ok && r.queued, 1);
+    await idle();
+    assert.deepEqual(s.sentTo, ["ok@x.com"]);
+  }
+});
+
+test("a contact blocked after the campaign was queued is skipped at send time", async () => {
+  const s = setup(["ok@x.com", "blocked@x.com"], { blocked: ["blocked@x.com"] });
+  cur = s;
+  await runCampaign(1);
+  assert.deepEqual(s.sentTo, ["ok@x.com"]);
+  const rec = s.recs.find((r) => r.email === "blocked@x.com");
+  assert.deepEqual([rec?.status, rec?.error], ["skipped", "contact is blocked"]);
 });
