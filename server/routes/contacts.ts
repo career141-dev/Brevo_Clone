@@ -3,6 +3,79 @@ import { prisma } from "../prisma.js";
 
 const router = Router();
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CHUNK = 1000;
+
+// POST /api/contacts/import-list — create (or reuse) a job-role list and fill it with candidates
+router.post("/import-list", async (req: Request, res: Response) => {
+  try {
+    const { listName, folderId, contacts } = req.body;
+    const name = typeof listName === "string" ? listName.trim() : "";
+    if (!name) return res.status(400).json({ error: "Job role name is required." });
+    if (name.length > 255) return res.status(400).json({ error: "Name must be under 255 characters." });
+    if (!folderId) return res.status(400).json({ error: "Folder is required." });
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ error: "contacts array is required" });
+    }
+
+    const folder = await prisma.folder.findUnique({ where: { id: Number(folderId) } });
+    if (!folder) return res.status(400).json({ error: "Selected folder does not exist." });
+
+    // Clean + de-dupe by lowercase email; bad rows are skipped, not fatal
+    const byEmail = new Map<string, { email: string; fullName: string | null; firstName: string | null; lastName: string | null }>();
+    for (const c of contacts) {
+      const email = typeof c?.email === "string" ? c.email.trim().toLowerCase() : "";
+      if (!EMAIL_RE.test(email) || byEmail.has(email)) continue;
+      const fullName = typeof c.name === "string" ? c.name.trim().replace(/\s+/g, " ") : "";
+      const [first, ...rest] = fullName.split(" ");
+      byEmail.set(email, {
+        email,
+        fullName: fullName || null,
+        firstName: first || null,
+        lastName: rest.join(" ") || null,
+      });
+    }
+    const clean = [...byEmail.values()];
+    const skipped = contacts.length - clean.length;
+    if (clean.length === 0) return res.status(400).json({ error: "No valid email addresses found." });
+
+    // Reuse an existing list with the same name so re-uploads add to it
+    let list = await prisma.list.findFirst({ where: { name, type: "list" } });
+    if (!list) list = await prisma.list.create({ data: { name, folderId: Number(folderId), type: "list" } });
+
+    let created = 0;
+    const links: { contactId: number; listId: number }[] = [];
+    for (let i = 0; i < clean.length; i += CHUNK) {
+      const chunk = clean.slice(i, i + CHUNK);
+      const r = await prisma.contact.createMany({
+        data: chunk.map((c) => ({ ...c, source: "excel-import" })),
+        skipDuplicates: true,
+      });
+      created += r.count;
+      const rows = await prisma.contact.findMany({
+        where: { email: { in: chunk.map((c) => c.email) } },
+        select: { id: true },
+      });
+      links.push(...rows.map((c: { id: number }) => ({ contactId: c.id, listId: list.id })));
+    }
+    for (let i = 0; i < links.length; i += CHUNK) {
+      await prisma.contactList.createMany({ data: links.slice(i, i + CHUNK), skipDuplicates: true });
+    }
+
+    res.json({
+      listId: list.id,
+      listName: list.name,
+      created,
+      existing: clean.length - created,
+      skipped,
+      total: contacts.length,
+    });
+  } catch (err) {
+    console.error("Import list error:", err);
+    res.status(500).json({ error: "Failed to import candidates" });
+  }
+});
+
 // PUT /api/contacts/:id — update single contact
 router.put("/:id", async (req: Request, res: Response) => {
   try {

@@ -57,6 +57,11 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ contactIds, listIds }),
       }),
+    importList: (data: { listName: string; folderId: number; contacts: { email: string; name: string }[] }) =>
+      request<{ listId: number; listName: string; created: number; existing: number; skipped: number; total: number }>(
+        "/contacts/import-list",
+        { method: "POST", body: JSON.stringify(data) },
+      ),
     assignOwner: (contactIds: number[], ownerId: string) =>
       request<{ success: boolean; affected: number }>("/contacts/bulk/assign", {
         method: "POST",
