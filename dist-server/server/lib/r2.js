@@ -24,7 +24,7 @@ export async function uploadToR2(buffer, fileName, contentType = "application/oc
     if (!r2Client || !isR2Configured) {
         throw new Error("Cloudflare R2 is not configured. Please check environment variables.");
     }
-    const ext = fileName.includes(".") ? `.${fileName.split(".").pop()}` : "";
+    const ext = fileName.includes(".") ? `.${fileName.split(".").pop().replace(/[^a-zA-Z0-9]/g, "")}` : "";
     const base = fileName.replace(ext, "").replace(/[^a-zA-Z0-9_-]/g, "_");
     const uniqueKey = `${Date.now()}_${base}${ext}`;
     await r2Client.send(new PutObjectCommand({

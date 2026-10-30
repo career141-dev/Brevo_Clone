@@ -198,9 +198,11 @@ router.delete("/bulk", async (req, res) => {
         if (!Array.isArray(contactIds) || contactIds.length === 0) {
             return res.status(400).json({ error: "contactIds array is required" });
         }
-        const result = await prisma.contact.deleteMany({
-            where: { id: { in: contactIds.map(Number) } },
-        });
+        const ids = contactIds.map(Number);
+        // List and automation memberships block the delete otherwise (foreign keys).
+        await prisma.contactList.deleteMany({ where: { contactId: { in: ids } } });
+        await prisma.contactAutomation.deleteMany({ where: { contactId: { in: ids } } });
+        const result = await prisma.contact.deleteMany({ where: { id: { in: ids } } });
         res.json({ success: true, affected: result.count });
     }
     catch (err) {

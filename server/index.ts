@@ -21,7 +21,7 @@ import { UAParser } from "ua-parser-js";
 import { uploadToR2, isR2Configured } from "./lib/r2.js";
 import { JWT_SECRET, PIXEL_GIF, injectTracking, makeUnsubscribeUrl } from "./lib/tracking.js";
 import { verifySnsMessage } from "./lib/sns.js";
-import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, resumeSendingCampaigns, stopSending } from "./lib/campaign-sender.js";
+import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize, resumeSendingCampaigns, stopSending } from "./lib/campaign-sender.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -35,8 +35,6 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:5173",
   credentials: true
 }));
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,7 +42,11 @@ const uploadsDir = path.resolve(process.cwd(), "public/uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
-app.use("/uploads", express.static(uploadsDir));
+app.use("/uploads", express.static(uploadsDir, {
+  setHeaders: (res, filePath) => {
+    if (!/\.(png|jpe?g|gif|webp)$/i.test(filePath)) res.setHeader("Content-Disposition", "attachment");
+  },
+}));
 
 // Allowed origins for /api/download — prevents open proxy abuse
 const R2_PUBLIC_DOMAIN = (process.env.R2_PUBLIC_URL || "").replace(/^https?:\/\//, "").split("/")[0];
@@ -121,6 +123,16 @@ const apiLimiter = rateLimit({
 });
 
 app.use("/api/", apiLimiter);
+
+// Sending and file routes are expensive or abusable, so they get a much lower limit than ordinary reads.
+const sensitiveLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: "Too many requests, please slow down.",
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(/^\/api\/(upload|download|campaigns\/\d+\/(send|resume|send-test))/, sensitiveLimiter);
 // Auth: set CLERK_SECRET_KEY + CLERK_PUBLISHABLE_KEY to require a signed-in Clerk user on every /api route except
 // tracking/unsubscribe/webhooks (those are public by design). Optional ALLOWED_USER_IDS=id1,id2 restricts who may use
 // the app (otherwise anyone who can sign up on your Clerk instance can see all data and send via SES).
@@ -141,6 +153,8 @@ const TEAM_USER_IDS = [
   "user_3EtWIDT0SkIWh03rVqpGcOzkgFn", // uzmaan@career141.com
 ];
 const ALLOWED_USER_IDS = [...new Set([...TEAM_USER_IDS, ...cleanEnv(process.env.ALLOWED_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean)])];
+const IS_DEPLOYED = process.env.NODE_ENV === "production" || Boolean(process.env.RAILWAY_ENVIRONMENT_NAME);
+if (!CLERK_ENABLED && IS_DEPLOYED) throw new Error("CLERK_SECRET_KEY is required in production: refusing to start with an open API.");
 if (!CLERK_ENABLED) console.warn("[AUTH] CLERK_SECRET_KEY not set: API is running UNAUTHENTICATED as a single fixed user.");
 else console.log(`[AUTH] Clerk enabled, allowed users: ${ALLOWED_USER_IDS.join(", ") || "ANY signed-in user"}`);
 if (CLERK_ENABLED) app.use("/api/", clerkMiddleware({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY }));
@@ -167,6 +181,12 @@ app.use("/api/", async (req: any, res: any, next: any) => {
   authStorage.run({ userId: LEGACY_USER_ID }, next);
 });
 
+// Body parsing runs after auth so anonymous callers can't force 50MB parses. Public routes bring their own small parsers.
+const parseJson = express.json({ limit: "50mb" });
+const parseForm = express.urlencoded({ limit: "50mb", extended: true });
+app.use((req: any, res: any, next: any) => (PUBLIC_API.test(req.originalUrl) ? next() : parseJson(req, res, next)));
+app.use((req: any, res: any, next: any) => (PUBLIC_API.test(req.originalUrl) ? next() : parseForm(req, res, next)));
+
 // ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
 const analyticsCache = new Map<string, { data: any; expiresAt: number }>();
 function getCached(key: string) {
@@ -186,6 +206,9 @@ function invalidateAnalyticsCache(campaignId?: number) {
 }
 
 // POST /api/upload - Handle file upload and return public downloadable URL (Cloudflare R2 + local fallback)
+const UPLOAD_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
 app.post("/api/upload", async (req: any, res: any) => {
   try {
     const { fileName, fileData } = req.body;
@@ -193,10 +216,16 @@ app.post("/api/upload", async (req: any, res: any) => {
       return res.status(400).json({ error: "fileName and fileData required" });
     }
 
+    const ext = path.extname(fileName).toLowerCase();
+    if (!UPLOAD_EXTENSIONS.has(ext)) {
+      return res.status(400).json({ error: `File type ${ext || "(none)"} is not allowed.` });
+    }
     const base64Data = fileData.replace(/^data:[^;]+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");
+    if (buffer.length > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({ error: "File is too large (limit 25 MB)." });
+    }
 
-    const ext = path.extname(fileName) || ".bin";
     const safeName = path.basename(fileName, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
     const uniqueFileName = `${Date.now()}_${safeName}${ext}`;
     const filePath = path.join(uploadsDir, uniqueFileName);
@@ -220,16 +249,16 @@ app.post("/api/upload", async (req: any, res: any) => {
         fileUrl = r2Result.url;
         isR2 = true;
       } catch (r2Err) {
-        console.warn("[R2 UPLOAD FAILED, FALLING BACK TO DISK]:", r2Err);
+        // No disk fallback when R2 is set up: Railway's disk is wiped on deploy, so links in sent emails would break later.
+        console.error("[R2 UPLOAD FAILED]:", r2Err);
+        return res.status(502).json({ error: "File storage failed, please try again." });
       }
     }
 
-    // 2. Local disk fallback
+    // 2. Local disk, only for development without R2
     if (!fileUrl) {
       await fs.promises.writeFile(filePath, buffer);
-      const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-      const host = req.headers["x-forwarded-host"] || req.headers.host;
-      fileUrl = `${protocol}://${host}/uploads/${uniqueFileName}`;
+      fileUrl = `${process.env.APP_URL ?? `http://localhost:${PORT}`}/uploads/${uniqueFileName}`;
     }
 
     res.json({
@@ -414,10 +443,13 @@ app.post("/api/contacts", async (req, res) => {
   }
 });
 
-app.delete("/api/contacts/:id", async (req, res) => {
+app.delete("/api/contacts/:id", async (req, res, next) => {
+  // Non-numeric paths such as /bulk belong to the contacts router mounted below.
+  if (!/^\d+$/.test(req.params.id)) return next();
   try {
     const id = Number(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid contact ID" });
+    await prisma.contactList.deleteMany({ where: { contactId: id } });
+    await prisma.contactAutomation.deleteMany({ where: { contactId: id } });
     await prisma.contact.delete({ where: { id } });
     res.json({ success: true });
   } catch (err: any) {
@@ -1264,9 +1296,7 @@ app.post("/api/campaigns/:id/send-test", async (req, res) => {
 
     // If fromEmail is missing or invalid, lookup configured senders in database
     if (!fromEmail || !fromEmail.includes("@")) {
-      const dbSender = await prisma.sender.findFirst({
-        where: { verificationStatus: "verified" },
-      }) || await prisma.sender.findFirst();
+      const dbSender = await prisma.sender.findFirst();
 
       if (dbSender && dbSender.email && dbSender.email.includes("@")) {
         fromEmail = dbSender.email.trim();
@@ -1274,13 +1304,9 @@ app.post("/api/campaigns/:id/send-test", async (req, res) => {
       }
     }
 
-    // Ultimate fallback if no sender in DB either
-    if (!fromEmail || !fromEmail.includes("@")) {
-      fromEmail = "events@premiumroles.com";
-    }
-    if (!fromName) {
-      fromName = "Talent Suite 2026";
-    }
+    if (!fromEmail || !fromEmail.includes("@")) fromEmail = process.env.SES_FROM_EMAIL ?? "";
+    if (!fromEmail) return res.status(400).json({ error: "No sender address configured." });
+    if (!fromName) fromName = process.env.SES_FROM_NAME ?? "Career141";
     if (!templateHtml || !templateHtml.trim()) {
       return res.status(400).json({ error: "No email template selected to test." });
     }
@@ -1289,13 +1315,6 @@ app.post("/api/campaigns/:id/send-test", async (req, res) => {
     const dbContact = await prisma.contact.findFirst({
       where: { email: cleanTestEmail },
     });
-
-    const emailPrefix = cleanTestEmail.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const firstName = (dbContact?.firstName || "").trim() || (dbContact?.fullName || "").trim().split(" ")[0] || emailPrefix || "Test";
-    const lastName = (dbContact?.lastName || "").trim() || ((dbContact?.fullName || "").trim().includes(" ") ? (dbContact?.fullName || "").trim().split(" ").slice(1).join(" ") : "");
-    const fullName = (dbContact?.fullName || "").trim() || `${firstName} ${lastName}`.trim() || "Test User";
-    const company = (dbContact?.company || "").trim() || "Test Company";
-    const designation = (dbContact?.designation || "").trim() || "Tester";
 
     // Prepare template HTML with placeholders, normalize relative document/image URLs & fallback unsubscribe URL
     let template = normalizeEmailHtml(templateHtml);
@@ -1310,14 +1329,11 @@ app.post("/api/campaigns/:id/send-test", async (req, res) => {
 
     const unsubUrl = makeUnsubscribeUrl(cleanTestEmail, campaignId || null);
 
-    let html = template
-      .replace(/{{first_name}}/g, firstName)
-      .replace(/{{last_name}}/g, lastName)
-      .replace(/{{full_name}}/g, fullName)
-      .replace(/{{company}}/g, company)
-      .replace(/{{designation}}/g, designation)
-      .replace(/{{email}}/g, cleanTestEmail)
-      .replace(/{{unsubscribe_url}}/g, unsubUrl);
+    let html = personalize(
+      template,
+      { ...dbContact, email: cleanTestEmail, company: dbContact?.company || "Test Company", designation: dbContact?.designation || "Tester" },
+      unsubUrl,
+    );
 
     // Inject tracking pixel & link rewrite
     html = injectTracking(html, cleanTestEmail, campaignId || null);
@@ -2245,12 +2261,11 @@ app.post(
         await prisma.contact.updateMany({ where: { email }, data: { status: "bounced" } });
         await recordEvent(email, campaignId, "bounced");
       } else if (type === "Complaint") {
-        await prisma.contact.updateMany({ where: { email }, data: { status: "unsubscribed" } });
+        await prisma.contact.updateMany({ where: { email }, data: { status: "complained" } });
         await recordEvent(email, campaignId, "complained");
       } else if (SNS_SIMPLE_EVENTS[type]) {
         await recordEvent(email, campaignId, SNS_SIMPLE_EVENTS[type]);
       }
-      invalidateAnalyticsCache(campaignId ?? undefined);
     }
 
     return res.status(200).json({ ok: true });
@@ -2293,9 +2308,7 @@ app.get("/api/track/open", async (req, res) => {
     if (isBotOpen) return;
 
     // Only the first open per contact per campaign is stored (unique dedupKey, race-free)
-    if (await recordEvent(email.toLowerCase(), campaignId, "opened")) {
-      invalidateAnalyticsCache(campaignId ?? undefined);
-    }
+    await recordEvent(email.toLowerCase(), campaignId, "opened");
   } catch {
     // Swallow — invalid / expired token
   }
@@ -2313,12 +2326,11 @@ app.get("/api/track/click", async (req, res) => {
       campaignId: number | null;
       url: string;
     };
+    // Tracked links are always http(s); refuse javascript:, data: and the like even from a valid token.
+    if (!/^https?:\/\//i.test(url)) return res.status(400).send("Invalid link.");
 
     // Log the click event (allow multiple clicks)
     await recordEvent(email.toLowerCase(), campaignId, "clicked", { url, userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null }, false);
-    // Invalidate cache so analytics update quickly
-    invalidateAnalyticsCache(campaignId ?? undefined);
-
     return res.redirect(302, url);
   } catch {
     return res.status(400).send("Invalid or expired tracking link.");
@@ -2355,7 +2367,6 @@ async function unsubscribe(token: string) {
   const email = decoded.email.toLowerCase();
   await prisma.contact.updateMany({ where: { email }, data: { status: "unsubscribed" } });
   await recordEvent(email, decoded.campaignId ?? null, "unsubscribed");
-  invalidateAnalyticsCache(decoded.campaignId ?? undefined);
   return email;
 }
 
@@ -2959,6 +2970,13 @@ app.get(/^(?!\/api).*/, (_req, res) => {
   res.sendFile(path.join(distPath, "index.html"));
 });
 
+// Last resort: never send stack traces or internal details to the browser.
+app.use((err: any, _req: any, res: any, next: any) => {
+  if (res.headersSent) return next(err);
+  console.error("[API ERROR]", err);
+  res.status(err?.status ?? 500).json({ error: err?.status === 413 ? "Request is too large." : "Something went wrong." });
+});
+
 // ── Start ───────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
@@ -2966,9 +2984,9 @@ app.listen(PORT, () => {
 });
 
 // Resume campaigns left in "sending" by a crash/redeploy (replaces the old startup reset). Only on deployed instances:
-// a dev machine pointed at the production DB must never start sending someone else's campaign. ponytail: assumes ONE
-// API instance; multiple instances would each pick up the same campaign (add a row-level claim before scaling out).
-if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.ENABLE_SENDER_SWEEP) {
+// a dev machine pointed at the production DB must never start sending someone else's campaign. The campaign lease in
+// campaign-sender.ts keeps overlapping instances from sending the same campaign.
+if (IS_DEPLOYED || process.env.ENABLE_SENDER_SWEEP) {
   const sweep = () => resumeSendingCampaigns().catch((e) => console.error("Sender sweep failed:", e));
   void sweep();
   setInterval(sweep, 60_000);

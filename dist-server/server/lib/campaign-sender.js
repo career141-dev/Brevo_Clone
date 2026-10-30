@@ -43,7 +43,8 @@ export function formatEmailWithDisplayName(name, email) {
     return `"${name.trim().replace(/"/g, "")}" <${cleanEmail}>`;
 }
 const UNSUB_FALLBACK = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>If you wish to unsubscribe, you can <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">unsubscribe here</a>.</p></div>`;
-function personalize(template, c, unsubUrl) {
+const escapeHtml = (v) => v.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+export function personalize(template, c, unsubUrl) {
     const rawFirst = (c.firstName || "").trim();
     const rawLast = (c.lastName || "").trim();
     const rawFull = (c.fullName || "").trim();
@@ -58,7 +59,8 @@ function personalize(template, c, unsubUrl) {
         unsubscribe_url: unsubUrl,
     };
     // Single pass with a function replacer: contact values containing "$&" etc. can't be misread as patterns.
-    return template.replace(/{{(first_name|last_name|full_name|company|designation|email|unsubscribe_url)}}/g, (_m, k) => vars[k]);
+    // Contact fields come from imports, so they're escaped: a row can't inject links or markup into mail from our domain.
+    return template.replace(/{{(first_name|last_name|full_name|company|designation|email|unsubscribe_url)}}/g, (_m, k) => k === "unsubscribe_url" ? vars[k] : escapeHtml(vars[k]));
 }
 const parseIds = (s) => String(s ?? "").split(",").map((x) => Number(x.trim())).filter((n) => !isNaN(n) && n > 0);
 /** Subscribed contacts of the selected audience, deduplicated by lowercase email. */
@@ -70,9 +72,15 @@ async function resolveAudience(campaign) {
             // Look up contacts of ANY status so unsubscribed/bounced addresses stay suppressed instead of being treated as "unknown".
             const known = await prisma.contact.findMany({ where: { email: { in: wanted } }, select: { id: true, email: true, status: true } });
             const byEmail = new Map(known.map((c) => [c.email.toLowerCase(), c]));
+            // Addresses with no contact row have no status, so past bounces/complaints are the only way to keep them suppressed.
+            const suppressedRows = await prisma.emailEvent.findMany({
+                where: { email: { in: wanted }, eventType: { in: ["bounced", "complained", "unsubscribed"] } },
+                select: { email: true },
+            });
+            const suppressed = new Set(suppressedRows.map((e) => e.email.toLowerCase()));
             for (const email of wanted) {
                 const c = byEmail.get(email);
-                if (c && c.status !== "subscribed")
+                if ((c && c.status !== "subscribed") || suppressed.has(email))
                     continue;
                 out.set(email, { contactId: c?.id ?? null, email });
             }

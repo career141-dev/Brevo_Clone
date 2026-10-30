@@ -6,7 +6,7 @@ process.env.JWT_SECRET = "test-secret";
 process.env.SEND_QUOTA_WAIT_MS = "50";
 
 type Rec = { id: number; campaignId: number; contactId: number | null; email: string; status: string; error: string | null };
-type Opts = { failEmails?: string[]; unsubscribed?: string[]; failAll?: boolean; audience?: string[]; sentBefore?: string[]; quotaRemaining?: number };
+type Opts = { failEmails?: string[]; unsubscribed?: string[]; failAll?: boolean; audience?: string[]; sentBefore?: string[]; quotaRemaining?: number; suppressed?: string[] };
 
 function setup(emails: string[], opts: Opts = {}) {
   const campaign: any = {
@@ -51,7 +51,8 @@ function setup(emails: string[], opts: Opts = {}) {
     },
     emailEvent: {
       createMany: async ({ data }: any) => events.push(...data),
-      findMany: async () => events.filter((e) => e.eventType === "sent"),
+      findMany: async ({ where }: any) =>
+        where.eventType?.in ? (opts.suppressed ?? []).map((email) => ({ email })) : events.filter((e) => e.eventType === "sent"),
       count: async () => events.filter((e) => e.eventType === "sent").length,
     },
   };
@@ -74,7 +75,7 @@ let cur: ReturnType<typeof setup>;
 const proxy = (pick: (s: ReturnType<typeof setup>) => any) => new Proxy({}, { get: (_t, k) => pick(cur)[k] });
 mock.module("../prisma.js", { exports: { prisma: proxy((s) => s.prisma) } });
 mock.module("./ses.js", { exports: { sesClient: proxy((s) => s.sesClient), sesv2Client: proxy((s) => s.sesv2Client) } });
-const { runCampaign, dispatchCampaign, isRunning } = await import("./campaign-sender.js");
+const { runCampaign, dispatchCampaign, isRunning, personalize } = await import("./campaign-sender.js");
 
 const idle = async () => { while (isRunning(1)) await new Promise((r) => setTimeout(r, 20)); };
 
@@ -177,4 +178,21 @@ test("a campaign leased by another process is left alone until the lease expires
   assert.deepEqual(s.sentTo.sort(), ["a@x.com", "b@x.com"]);
   assert.equal(s.campaign.status, "sent");
   assert.equal(s.campaign.leaseOwner, null);
+});
+
+test("personalize escapes contact fields but leaves the unsubscribe link usable", () => {
+  const html = personalize('<p>{{first_name}} {{company}}</p><a href="{{unsubscribe_url}}">x</a>', { email: "a@x.com", firstName: "<b>Bob</b>", company: `A&B "Co"` }, "https://x.com/u?a=1&b=2");
+  assert.equal(html, '<p>&lt;b&gt;Bob&lt;/b&gt; A&amp;B &quot;Co&quot;</p><a href="https://x.com/u?a=1&b=2">x</a>');
+});
+
+test("individual emails skip addresses that bounced or complained before, even with no contact row", async () => {
+  const s = setup([], { audience: [], suppressed: ["bad@x.com"] });
+  s.campaign.status = "draft";
+  s.campaign.audienceType = "individual";
+  s.campaign.individualEmails = "bad@x.com, good@x.com";
+  cur = s;
+  const r = await dispatchCampaign(1, "send");
+  assert.equal(r.ok && r.queued, 1);
+  await idle();
+  assert.deepEqual(s.sentTo, ["good@x.com"]);
 });

@@ -49,3 +49,6 @@ skills-lock.json
 test.mjs
 test.ts
 test_stats.mjs
+
+# User uploads never belong in git
+public/uploads/

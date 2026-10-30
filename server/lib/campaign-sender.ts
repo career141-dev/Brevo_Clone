@@ -60,7 +60,9 @@ type Person = {
   designation?: string | null;
 };
 
-function personalize(template: string, c: Person, unsubUrl: string): string {
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+export function personalize(template: string, c: Person, unsubUrl: string): string {
   const rawFirst = (c.firstName || "").trim();
   const rawLast = (c.lastName || "").trim();
   const rawFull = (c.fullName || "").trim();
@@ -75,7 +77,10 @@ function personalize(template: string, c: Person, unsubUrl: string): string {
     unsubscribe_url: unsubUrl,
   };
   // Single pass with a function replacer: contact values containing "$&" etc. can't be misread as patterns.
-  return template.replace(/{{(first_name|last_name|full_name|company|designation|email|unsubscribe_url)}}/g, (_m, k) => vars[k]);
+  // Contact fields come from imports, so they're escaped: a row can't inject links or markup into mail from our domain.
+  return template.replace(/{{(first_name|last_name|full_name|company|designation|email|unsubscribe_url)}}/g, (_m, k) =>
+    k === "unsubscribe_url" ? vars[k] : escapeHtml(vars[k]),
+  );
 }
 
 const parseIds = (s: string | null | undefined) =>
@@ -92,9 +97,15 @@ async function resolveAudience(campaign: any): Promise<{ contactId: number | nul
       // Look up contacts of ANY status so unsubscribed/bounced addresses stay suppressed instead of being treated as "unknown".
       const known = await prisma.contact.findMany({ where: { email: { in: wanted } }, select: { id: true, email: true, status: true } });
       const byEmail = new Map<string, { id: number; status: string }>(known.map((c: any) => [c.email.toLowerCase(), c]));
+      // Addresses with no contact row have no status, so past bounces/complaints are the only way to keep them suppressed.
+      const suppressedRows = await prisma.emailEvent.findMany({
+        where: { email: { in: wanted }, eventType: { in: ["bounced", "complained", "unsubscribed"] } },
+        select: { email: true },
+      });
+      const suppressed = new Set(suppressedRows.map((e: any) => e.email.toLowerCase()));
       for (const email of wanted) {
         const c = byEmail.get(email);
-        if (c && c.status !== "subscribed") continue;
+        if ((c && c.status !== "subscribed") || suppressed.has(email)) continue;
         out.set(email, { contactId: c?.id ?? null, email });
       }
     }

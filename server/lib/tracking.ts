@@ -4,7 +4,9 @@ if (!process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET environment variable is required.");
 }
 export const JWT_SECRET = process.env.JWT_SECRET;
-const APP_URL = () => process.env.APP_URL ?? "http://localhost:3001";
+// Same fallback as the sender: a missing APP_URL must never put localhost links into real mail.
+const APP_URL = () =>
+  (process.env.APP_URL ?? (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : "http://localhost:3001")).replace(/\/$/, "");
 
 export function makeUnsubscribeUrl(email: string, campaignId: number | null): string {
   // No expiry on unsubscribe links — recipients must always be able to unsubscribe (CAN-SPAM / GDPR compliance)
