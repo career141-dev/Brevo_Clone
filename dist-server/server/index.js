@@ -125,7 +125,7 @@ app.use("/api/", (req, res, next) => {
     if (!userId || (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId))) {
         return res.status(401).json({ error: "Unauthorized" });
     }
-    authStorage.run({ userId }, next);
+    authStorage.run({ userId: LEGACY_USER_ID }, next);
 });
 // ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
 const analyticsCache = new Map();

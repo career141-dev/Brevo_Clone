@@ -119,8 +119,9 @@ const apiLimiter = rateLimit({
 app.use("/api/", apiLimiter);
 // Auth: set CLERK_SECRET_KEY + CLERK_PUBLISHABLE_KEY to require a signed-in Clerk user on every /api route except
 // tracking/unsubscribe/webhooks (those are public by design). Optional ALLOWED_USER_IDS=id1,id2 restricts who may use
-// the app (otherwise anyone who can sign up on your Clerk instance gets their own empty workspace and can send via SES).
-// Without the keys the legacy single hardcoded user is used, exactly as before.
+// the app (otherwise anyone who can sign up on your Clerk instance can see all data and send via SES).
+// Every signed-in user works in the one shared team workspace (LEGACY_USER_ID owns all existing data).
+// Without the keys the API runs unauthenticated in that same workspace.
 const LEGACY_USER_ID = "user_3Epvu1kcUczQTmQSvidHS9K4Wak";
 const CLERK_ENABLED = Boolean(process.env.CLERK_SECRET_KEY);
 const PUBLIC_API = /^\/api\/(track|unsubscribe|webhooks)(\/|\?|$)/;
@@ -134,7 +135,7 @@ app.use("/api/", (req: any, res: any, next: any) => {
   if (!userId || (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId))) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  authStorage.run({ userId }, next);
+  authStorage.run({ userId: LEGACY_USER_ID }, next);
 });
 
 // ■■ Analytics Cache (30s TTL for near-real-time data) ■■■■■■■■■■■
