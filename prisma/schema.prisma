@@ -68,7 +68,6 @@ model Contact {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
   contactLists ContactList[]
-  emailEvents  EmailEvent[]
   contactAutomations ContactAutomation[]
 
   @@index([status])
@@ -152,7 +151,8 @@ model EmailEvent {
   userAgent  String?   @db.VarChar(500)
   dedupKey   String?   @unique @db.VarChar(255)
   timestamp  DateTime  @default(now())
-  contact    Contact?  @relation(fields: [email], references: [email])
+  // No relation to Contact on purpose: a FK on email rejected events for non-contacts (test sends, individual
+  // emails) and blocked deleting contacts that were ever emailed. Joined by the email index instead.
 
   @@index([email])
   @@index([campaignId, eventType])

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 
 process.env.JWT_SECRET = "test-secret";
+process.env.SEND_QUOTA_WAIT_MS = "50";
 
 type Rec = { id: number; campaignId: number; contactId: number | null; email: string; status: string; error: string | null };
 type Opts = { failEmails?: string[]; unsubscribed?: string[]; failAll?: boolean; audience?: string[]; sentBefore?: string[]; quotaRemaining?: number };
@@ -103,25 +104,42 @@ test("aborts when the whole first chunk fails (bad sender config), not after bur
   assert.equal(s.sendTimes.length, 9, "only the first chunk was attempted");
 });
 
-test("dispatch skips recipients who already got the campaign, caps to the SES daily quota, and resume sends the rest", async () => {
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("dispatch skips recipients who already got it, queues everyone, and waits for the SES daily quota instead of stranding the rest", async () => {
   const all = ["a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com"];
   const s = setup([], { audience: all, sentBefore: ["a@x.com"], quotaRemaining: 3 });
   s.campaign.status = "draft";
   cur = s;
 
   const first = await dispatchCampaign(1, "send");
-  assert.deepEqual(first.ok && [first.queued, first.alreadySent], [3, 1]);
+  assert.deepEqual(first.ok && [first.queued, first.alreadySent], [4, 1], "a already received it; everyone else is queued");
+  while (s.sentTo.length < 3) await wait(20);
+  await wait(200);
+  assert.equal(s.sentTo.length, 3, "only the 3 emails left in the daily quota go out");
+  assert.equal(s.campaign.status, "sending", "the campaign keeps waiting for quota instead of being marked sent");
+
+  cur.sesClient.send = async () => ({ MaxSendRate: 10, Max24HourSend: 100, SentLast24Hours: 0 }) as any; // quota refills
   await idle();
-  assert.deepEqual(s.sentTo.sort(), ["b@x.com", "c@x.com", "d@x.com"], "a already received it; e is cut by the quota cap");
+  assert.deepEqual(s.sentTo.sort(), ["b@x.com", "c@x.com", "d@x.com", "e@x.com"], "the rest goes out automatically, no /resume");
   assert.equal(s.campaign.status, "sent");
+  assert.equal(s.campaign.totalRecipients, 5);
 
   const again = await dispatchCampaign(1, "send");
   assert.equal(again.ok, false, "a sent campaign cannot be re-sent");
+});
 
-  cur.sesClient.send = async () => ({ MaxSendRate: 10, Max24HourSend: 100, SentLast24Hours: 0 }) as any;
-  const resumed = await dispatchCampaign(1, "resume");
-  assert.deepEqual(resumed.ok && resumed.queued, 1);
-  await idle();
-  assert.deepEqual(s.sentTo.sort(), ["b@x.com", "c@x.com", "d@x.com", "e@x.com"]);
-  assert.equal(s.campaign.totalRecipients, 5);
+test("an SES daily-quota error leaves recipients queued and retries them, never marking them failed", async () => {
+  const s = setup(["a@x.com", "b@x.com"]);
+  cur = s;
+  let quotaErrors = 2;
+  const realSend = s.sesv2Client.send;
+  s.sesv2Client.send = async (cmd: any) => {
+    if (quotaErrors-- > 0) throw Object.assign(new Error("Daily message quota exceeded"), { name: "LimitExceededException" });
+    return realSend(cmd);
+  };
+  await runCampaign(1);
+  assert.equal(s.recs.filter((r) => r.status === "failed").length, 0);
+  assert.deepEqual(s.sentTo.sort(), ["a@x.com", "b@x.com"]);
+  assert.equal(s.campaign.status, "sent");
 });

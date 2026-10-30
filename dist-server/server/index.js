@@ -142,23 +142,17 @@ app.use("/api/", async (req, res, next) => {
         return next();
     const userId = getAuth(req).userId;
     if (!userId) {
-        // Re-run verification only to surface Clerk's real error message (the token itself is never logged or returned).
+        // Re-run verification only to log Clerk's real error (server logs only; the token itself is never logged).
         const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-        const detail = !bearer
-            ? "no Authorization header"
-            : await verifyToken(bearer, { secretKey: CLERK_SECRET_KEY }).then((r) => r?.errors?.[0]?.message ?? "token verified but middleware saw no user", (e) => e?.message ?? String(e));
-        console.warn(`[AUTH] 401 not signed in: ${detail}`);
-        return res.status(401).json({ error: "Unauthorized", reason: "not signed in (no valid Clerk token)", detail });
+        if (bearer) {
+            const detail = await verifyToken(bearer, { secretKey: CLERK_SECRET_KEY }).then((r) => r?.errors?.[0]?.message ?? "token verified but middleware saw no user", (e) => e?.message ?? String(e));
+            console.warn(`[AUTH] 401 invalid token: ${detail}`);
+        }
+        return res.status(401).json({ error: "Unauthorized", reason: "not signed in" });
     }
     if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
-        console.warn(`[AUTH] rejected ${userId}: not in ALLOWED_USER_IDS`);
-        // User IDs are not secret; echoing what the server actually parsed makes Railway variable mistakes visible.
-        return res.status(401).json({
-            error: "Unauthorized",
-            reason: `account ${userId} is not in ALLOWED_USER_IDS`,
-            allowedSeenByServer: ALLOWED_USER_IDS,
-            rawLength: (process.env.ALLOWED_USER_IDS ?? "").length,
-        });
+        console.warn(`[AUTH] rejected ${userId}: not in allowed users (${ALLOWED_USER_IDS.join(", ")})`);
+        return res.status(401).json({ error: "Unauthorized", reason: "this account is not allowed to use the app" });
     }
     authStorage.run({ userId: LEGACY_USER_ID }, next);
 });
@@ -249,15 +243,8 @@ app.get("/api/contacts", async (req, res) => {
         const listIdQuery = req.query.listId ? Number(req.query.listId) : undefined;
         const baseWhere = {};
         if (listIdQuery) {
-            const targetList = await prisma.list.findFirst({
-                where: {
-                    OR: [
-                        { id: listIdQuery },
-                        { brevoId: listIdQuery }
-                    ]
-                },
-                select: { id: true }
-            });
+            // Internal ids only: brevoId values collide with other lists' internal ids.
+            const targetList = await prisma.list.findFirst({ where: { id: listIdQuery }, select: { id: true } });
             if (targetList) {
                 baseWhere.contactLists = {
                     some: {
@@ -312,15 +299,8 @@ app.get("/api/contacts/stats", async (req, res) => {
             targetIds = [listIdQuery];
         }
         if (targetIds.length > 0) {
-            const matchingLists = await prisma.list.findMany({
-                where: {
-                    OR: [
-                        { id: { in: targetIds } },
-                        { brevoId: { in: targetIds } }
-                    ]
-                },
-                select: { id: true }
-            });
+            // Internal ids only: brevoId values collide with other lists' internal ids.
+            const matchingLists = await prisma.list.findMany({ where: { id: { in: targetIds } }, select: { id: true } });
             const resolvedListIds = matchingLists.map(l => l.id);
             if (resolvedListIds.length > 0) {
                 baseWhere.contactLists = {
@@ -823,37 +803,11 @@ app.get("/api/campaigns/stats", async (req, res) => {
         res.status(500).json({ error: "Failed to fetch campaign stats" });
     }
 });
-// GET all campaigns (with automatic self-healing for stuck sending campaigns)
+// GET all campaigns. Read-only on purpose: the old "self-healing" here flipped live "sending" campaigns to "sent",
+// which made the background sender stop mid-send whenever someone opened this page. Stuck sends are resumed by the
+// sender sweep (resumeSendingCampaigns) instead.
 app.get("/api/campaigns", async (req, res) => {
     try {
-        // 1. Self-healing: Check for any campaigns stuck in "sending" status
-        const stuckCampaigns = await prisma.campaign.findMany({
-            where: { status: "sending" },
-        });
-        for (const c of stuckCampaigns) {
-            try {
-                const sentEventsCount = await prisma.emailEvent.count({
-                    where: { campaignId: c.id, eventType: "sent" },
-                });
-                // If sent events exist, mark as sent; if 0 events sent after 5 mins, revert to draft
-                const ageInMs = Date.now() - new Date(c.createdAt).getTime();
-                if (sentEventsCount > 0) {
-                    await prisma.campaign.update({
-                        where: { id: c.id },
-                        data: { status: "sent", sentAt: c.sentAt || new Date(), totalRecipients: sentEventsCount },
-                    });
-                }
-                else if (ageInMs > 2 * 60 * 1000) {
-                    await prisma.campaign.update({
-                        where: { id: c.id },
-                        data: { status: "draft" },
-                    });
-                }
-            }
-            catch (e) {
-                console.warn("Failed self-healing for campaign", c.id, e);
-            }
-        }
         const campaigns = await prisma.campaign.findMany({
             orderBy: { createdAt: "desc" },
         });
@@ -2213,68 +2167,64 @@ app.get("/api/track/click", async (req, res) => {
     }
 });
 // ── Unsubscribe (one-click opt-out) ──────────────────────────────────
-app.get("/api/unsubscribe", async (req, res) => {
-    const { token } = req.query;
-    if (!token)
-        return res.status(400).send("Invalid link.");
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        await prisma.contact.updateMany({
-            where: { email: decoded.email.toLowerCase() },
-            data: { status: "unsubscribed" },
-        });
-        await recordEvent(decoded.email.toLowerCase(), decoded.campaignId ?? null, "unsubscribed");
-        // Invalidate analytics cache so stats update immediately
-        invalidateAnalyticsCache(decoded.campaignId ?? undefined);
-        return res.status(200).send(`
-<!DOCTYPE html>
+// Unsubscribe: GET only shows a confirm button. Corporate link scanners (Safe Links, Mimecast) open every link in an
+// email, so unsubscribing on GET silently removed people who never clicked. The change happens on POST only.
+const escapeHtml = (v) => v.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const unsubscribePage = (title, body) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Unsubscribed - Career141</title>
+  <meta name="robots" content="noindex" />
+  <title>${title} - Career141</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
     .card { background: white; border-radius: 16px; padding: 48px 40px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
-    .icon { width: 64px; height: 64px; background: #f0fdf4; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px; }
     h1 { font-size: 22px; font-weight: 700; color: #111827; margin-bottom: 10px; }
     p { font-size: 15px; color: #6b7280; line-height: 1.6; }
     .email { font-weight: 600; color: #374151; }
+    button { margin-top: 24px; background: #111827; color: white; border: 0; border-radius: 10px; padding: 12px 24px; font-size: 15px; font-weight: 600; cursor: pointer; }
   </style>
 </head>
-<body>
-  <div class="card">
-    <div class="icon">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-    </div>
-    <h1>You've been unsubscribed</h1>
-    <p>The email address <span class="email">${decoded.email}</span> has been removed from our mailing list. You will no longer receive marketing emails from Career141.</p>
-  </div>
-</body>
-</html>
-`);
+<body><div class="card"><h1>${title}</h1>${body}</div></body>
+</html>`;
+async function unsubscribe(token) {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const email = decoded.email.toLowerCase();
+    await prisma.contact.updateMany({ where: { email }, data: { status: "unsubscribed" } });
+    await recordEvent(email, decoded.campaignId ?? null, "unsubscribed");
+    invalidateAnalyticsCache(decoded.campaignId ?? undefined);
+    return email;
+}
+app.get("/api/unsubscribe", async (req, res) => {
+    const token = String(req.query.token ?? "");
+    if (!token)
+        return res.status(400).send("Invalid link.");
+    try {
+        const { email } = jwt.verify(token, JWT_SECRET);
+        return res.status(200).send(unsubscribePage("Unsubscribe?", `
+      <p>Stop sending marketing emails from Career141 to <span class="email">${escapeHtml(email)}</span>?</p>
+      <form method="POST" action="/api/unsubscribe?token=${encodeURIComponent(token)}">
+        <input type="hidden" name="confirm" value="1" />
+        <button type="submit">Unsubscribe</button>
+      </form>`));
     }
     catch {
         return res.status(400).send("Invalid or expired unsubscribe link.");
     }
 });
-// ── RFC 8058 One-Click Unsubscribe (POST — used by Gmail/Apple Mail native button) ──
+// POST: the confirm button above (confirm=1, gets a page) and RFC 8058 one-click from Gmail/Apple Mail (gets "OK").
 app.post("/api/unsubscribe", express.urlencoded({ extended: false }), async (req, res) => {
-    // RFC 8058: email clients POST with List-Unsubscribe=One-Click body
-    const token = (req.query.token || req.body?.token);
+    const token = String(req.query.token || req.body?.token || "");
     if (!token)
         return res.status(400).send("Missing token.");
     try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        await prisma.contact.updateMany({
-            where: { email: decoded.email.toLowerCase() },
-            data: { status: "unsubscribed" },
-        });
-        await recordEvent(decoded.email.toLowerCase(), decoded.campaignId ?? null, "unsubscribed");
-        invalidateAnalyticsCache(decoded.campaignId ?? undefined);
-        // RFC 8058 requires a 200 OK with no redirect for POST
-        return res.status(200).send("OK");
+        const email = await unsubscribe(token);
+        if (req.body?.confirm !== "1")
+            return res.status(200).send("OK"); // RFC 8058: 200, no redirect
+        return res.status(200).send(unsubscribePage("You've been unsubscribed", `
+      <p>The email address <span class="email">${escapeHtml(email)}</span> has been removed from our mailing list. You will no longer receive marketing emails from Career141.</p>`));
     }
     catch {
         return res.status(400).send("Invalid or expired token.");

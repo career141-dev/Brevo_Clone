@@ -69,16 +69,8 @@ router.post("/bulk/lists", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "listIds array is required" });
     }
 
-    // Resolve any brevoId or internal list IDs
-    const matchingLists = await prisma.list.findMany({
-      where: {
-        OR: [
-          { id: { in: listIds.map(Number) } },
-          { brevoId: { in: listIds.map(Number) } }
-        ]
-      },
-      select: { id: true }
-    });
+    // Internal list ids only: brevoId values collide with other lists' internal ids.
+    const matchingLists = await prisma.list.findMany({ where: { id: { in: listIds.map(Number) } }, select: { id: true } });
     const resolvedListIds = matchingLists.map(l => l.id);
     const targetListIds = resolvedListIds.length > 0 ? resolvedListIds : listIds.map(Number);
 
@@ -105,16 +97,8 @@ router.post("/bulk/remove-from-lists", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "listIds array is required" });
     }
 
-    // Resolve any brevoId or internal list IDs
-    const matchingLists = await prisma.list.findMany({
-      where: {
-        OR: [
-          { id: { in: listIds.map(Number) } },
-          { brevoId: { in: listIds.map(Number) } }
-        ]
-      },
-      select: { id: true }
-    });
+    // Internal list ids only: brevoId values collide with other lists' internal ids.
+    const matchingLists = await prisma.list.findMany({ where: { id: { in: listIds.map(Number) } }, select: { id: true } });
     const resolvedListIds = matchingLists.length > 0 ? matchingLists.map(l => l.id) : listIds.map(Number);
 
     const result = await prisma.contactList.deleteMany({

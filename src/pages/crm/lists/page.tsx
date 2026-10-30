@@ -469,7 +469,7 @@ export default function ListsPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-44">
-                          <DropdownMenuItem onClick={() => navigate(`/contacts?listId=${list.brevoId || list.id}&listName=${encodeURIComponent(list.name)}`)}>
+                          <DropdownMenuItem onClick={() => navigate(`/contacts?listId=${list.id}&listName=${encodeURIComponent(list.name)}`)}>
                             <Eye className="size-4 mr-2 text-muted-foreground" />
                             View Contacts
                           </DropdownMenuItem>

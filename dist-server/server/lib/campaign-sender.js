@@ -6,6 +6,9 @@ import { injectTracking, makeUnsubscribeUrl } from "./tracking.js";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const THROTTLE_ERRORS = ["TooManyRequestsException", "ThrottlingException", "Throttling"];
 const ACCOUNT_ERRORS = ["SendingPausedException", "AccountSuspendedException", "MailFromDomainNotVerifiedException"];
+const QUOTA_WAIT_MS = Number(process.env.SEND_QUOTA_WAIT_MS) || 10 * 60_000;
+// SES v2 reports the rolling-24h cap as LimitExceededException ("Daily message quota exceeded"); v1 used Throttling.
+const isQuotaError = (e) => e?.name === "LimitExceededException" || /daily message quota|quota exceeded/i.test(String(e?.message ?? ""));
 // "Unengaged" = got >= UNENGAGED_MIN_SENDS emails in the last UNENGAGED_DAYS days and never opened/clicked.
 const UNENGAGED_MIN_SENDS = 3;
 const UNENGAGED_DAYS = 90;
@@ -56,16 +59,6 @@ function personalize(template, c, unsubUrl) {
     return template.replace(/{{(first_name|last_name|full_name|company|designation|email|unsubscribe_url)}}/g, (_m, k) => vars[k]);
 }
 const parseIds = (s) => String(s ?? "").split(",").map((x) => Number(x.trim())).filter((n) => !isNaN(n) && n > 0);
-/** List ids may be internal ids or Brevo ids; match both so imported lists resolve either way. */
-async function withListAliases(ids) {
-    if (ids.length === 0)
-        return [];
-    const lists = await prisma.list.findMany({
-        where: { OR: [{ id: { in: ids } }, { brevoId: { in: ids } }] },
-        select: { id: true, brevoId: true },
-    });
-    return [...new Set([...ids, ...lists.map((l) => l.id), ...lists.map((l) => l.brevoId).filter(Boolean)])];
-}
 /** Subscribed contacts of the selected audience, deduplicated by lowercase email. */
 async function resolveAudience(campaign) {
     const out = new Map();
@@ -84,8 +77,10 @@ async function resolveAudience(campaign) {
         }
     }
     else {
-        const targetIds = await withListAliases(campaign.audienceListIds ? parseIds(campaign.audienceListIds) : campaign.audienceId ? [campaign.audienceId] : []);
-        const excludeIds = await withListAliases(parseIds(campaign.excludeListIds));
+        // Internal list ids only. Also matching brevoId pulled in unrelated lists: 120 lists have a brevoId equal to
+        // another list's internal id (e.g. one past campaign would have gained 17 extra lists / 11k contacts).
+        const targetIds = campaign.audienceListIds ? parseIds(campaign.audienceListIds) : campaign.audienceId ? [campaign.audienceId] : [];
+        const excludeIds = parseIds(campaign.excludeListIds);
         const contacts = await prisma.contact.findMany({
             where: {
                 status: "subscribed",
@@ -155,13 +150,9 @@ export async function dispatchCampaign(campaignId, mode) {
         return fail(400, "No template selected");
     const sentRows = await prisma.emailEvent.findMany({ where: { campaignId, eventType: "sent" }, select: { email: true } });
     const alreadySentSet = new Set(sentRows.map((e) => e.email.toLowerCase()));
-    let recipients = (await resolveAudience(campaign)).filter((r) => !alreadySentSet.has(r.email));
-    // Cap to the remaining daily quota rather than failing halfway; the rest can be sent later via /resume.
-    const remaining = await dailyQuotaRemaining();
-    if (remaining !== null && remaining > 0 && recipients.length > remaining) {
-        console.log(`[QUOTA CAP] Capping campaign ${campaignId} from ${recipients.length} to ${remaining} recipients.`);
-        recipients = recipients.slice(0, remaining);
-    }
+    // Everyone is queued. The worker paces itself to the SES daily quota and waits for it to refill on its own, instead
+    // of capping here and leaving the rest stranded until someone presses /resume.
+    const recipients = (await resolveAudience(campaign)).filter((r) => !alreadySentSet.has(r.email));
     // Snapshot first (idempotent) so a failure here can never leave a half-built audience being sent.
     for (let i = 0; i < recipients.length; i += 1000) {
         await prisma.campaignRecipient.createMany({
@@ -232,18 +223,28 @@ async function processCampaign(campaignId) {
     console.log(`[SEND][Campaign ${campaignId}] starting, ${rate} emails/sec, reply-to: ${replyToAddresses.join(", ") || "none"}`);
     let sentTotal = 0;
     let backoff = 0;
+    // Emails left in the SES rolling-24h quota; null = unlimited/unreadable (then SES errors are the only signal).
+    let budget = await dailyQuotaRemaining();
     while (true) {
         const current = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
         if (current?.status !== "sending")
             return; // paused, reset or deleted
+        if (budget !== null && budget <= 0) {
+            budget = await dailyQuotaRemaining();
+            if (budget !== null && budget <= 0) {
+                // ponytail: fixed re-check interval; a pause/delete is noticed only after the wait ends.
+                console.warn(`[SEND][Campaign ${campaignId}] SES daily quota used up, re-checking in ${QUOTA_WAIT_MS / 60_000} min`);
+                await sleep(QUOTA_WAIT_MS);
+                continue;
+            }
+        }
         const batch = await prisma.campaignRecipient.findMany({
             where: { campaignId, status: "queued" },
             orderBy: { id: "asc" },
-            take: rate,
+            take: budget === null ? rate : Math.min(rate, budget),
         });
         if (batch.length === 0)
             break;
-        const started = Date.now();
         const contactIds = batch.map((r) => r.contactId).filter(Boolean);
         const contacts = contactIds.length
             ? await prisma.contact.findMany({
@@ -252,6 +253,8 @@ async function processCampaign(campaignId) {
             })
             : [];
         const contactById = new Map(contacts.map((c) => [c.id, c]));
+        // The 1s window starts when the sends start (not before the DB lookups), so two chunks can never land in one second.
+        const started = Date.now();
         const results = await Promise.all(batch.map(async (r) => {
             const contact = r.contactId ? contactById.get(r.contactId) : null;
             // Suppression is re-checked at send time: the contact may have unsubscribed/bounced since the snapshot.
@@ -281,6 +284,8 @@ async function processCampaign(campaignId) {
             }
             catch (e) {
                 const name = e?.name ?? "";
+                if (isQuotaError(e))
+                    return { r, outcome: "quota", error: e.message };
                 if (THROTTLE_ERRORS.includes(name))
                     return { r, outcome: "throttled", error: e.message };
                 if (ACCOUNT_ERRORS.includes(name))
@@ -292,7 +297,10 @@ async function processCampaign(campaignId) {
         const failed = results.filter((x) => x.outcome === "failed");
         const skipped = results.filter((x) => x.outcome === "skipped");
         const throttled = results.some((x) => x.outcome === "throttled");
+        const quotaHit = results.some((x) => x.outcome === "quota");
         const accountError = results.find((x) => x.outcome === "account");
+        if (budget !== null)
+            budget -= sent.length;
         // One write per outcome per chunk instead of one per email.
         // At-least-once: a crash between the SES call and this write re-sends at most one chunk on resume.
         if (sent.length > 0) {
@@ -325,6 +333,11 @@ async function processCampaign(campaignId) {
             console.error(`[SEND][Campaign ${campaignId}] first chunk failed entirely, aborting: ${failed[0].error}`);
             await prisma.campaign.update({ where: { id: campaignId }, data: { status: endStatus() } });
             return;
+        }
+        if (quotaHit) {
+            // Quota rows stay "queued"; force a re-check (and wait) at the top of the loop instead of marking them failed.
+            budget = 0;
+            continue;
         }
         if (throttled) {
             // Throttled rows stay "queued"; the SDK already retried with adaptive backoff, so slow the whole loop down.
