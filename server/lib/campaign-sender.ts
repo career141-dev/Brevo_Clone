@@ -21,7 +21,7 @@ const UNENGAGED_DAYS = 90;
 const getAppBaseUrl = () => {
   if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, "");
   if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
-  return "https://brevoclone-production.up.railway.app";
+  return "https://email.career141.com";
 };
 
 export function normalizeEmailHtml(html: string): string {
