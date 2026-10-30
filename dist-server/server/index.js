@@ -116,7 +116,14 @@ const CLERK_SECRET_KEY = cleanEnv(process.env.CLERK_SECRET_KEY);
 const CLERK_PUBLISHABLE_KEY = cleanEnv(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY);
 const CLERK_ENABLED = Boolean(CLERK_SECRET_KEY);
 const PUBLIC_API = /^\/api\/(track|unsubscribe|webhooks)(\/|\?|$)/;
-const ALLOWED_USER_IDS = cleanEnv(process.env.ALLOWED_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean);
+// Team accounts are allowed from code so access never depends on the Railway variable being edited correctly;
+// ALLOWED_USER_IDS can still add more.
+const TEAM_USER_IDS = [
+    LEGACY_USER_ID, // sanjeevsivasuthakaran@gmail.com (owns the data)
+    "user_3EWBGeBqi9dxi5mlkRgX51G7LGA", // sanjaysanjeev2000@gmail.com
+    "user_3EtWIDT0SkIWh03rVqpGcOzkgFn", // uzmaan@career141.com
+];
+const ALLOWED_USER_IDS = [...new Set([...TEAM_USER_IDS, ...cleanEnv(process.env.ALLOWED_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean)])];
 if (!CLERK_ENABLED)
     console.warn("[AUTH] CLERK_SECRET_KEY not set: API is running UNAUTHENTICATED as a single fixed user.");
 else
