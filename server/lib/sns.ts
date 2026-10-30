@@ -19,12 +19,15 @@ export function accountIdFromAccessKey(keyId: string | undefined): string | null
   return String((first6Bytes & 0x7fffffffff80n) >> 7n).padStart(12, "0");
 }
 
+// The AWS account that sends our email. Trusted directly so bounce tracking can't depend on which key is deployed.
+const SES_AWS_ACCOUNT = "266235178551";
+
 /** The SNS topic(s) we accept: an exact SNS_TOPIC_ARN if set, otherwise any topic in our own AWS account. */
 function isOurTopic(topicArn: unknown): boolean {
   if (typeof topicArn !== "string") return false;
   if (process.env.SNS_TOPIC_ARN) return topicArn === process.env.SNS_TOPIC_ARN.trim();
-  const account = accountIdFromAccessKey(process.env.AWS_ACCESS_KEY_ID);
-  return account !== null && topicArn.split(":")[4] === account;
+  const account = topicArn.split(":")[4];
+  return account === SES_AWS_ACCOUNT || account === accountIdFromAccessKey(process.env.AWS_ACCESS_KEY_ID);
 }
 
 /**

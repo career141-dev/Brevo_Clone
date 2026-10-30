@@ -1,7 +1,7 @@
 import { Router } from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { uploadToR2, isR2Configured } from "../lib/r2.js";
+import { uploadToR2, isR2Configured, readFromR2 } from "../lib/r2.js";
 
 export const downloadRouter = Router();
 export const uploadRouter = Router();
@@ -46,6 +46,15 @@ downloadRouter.get("/api/download", async (req, res) => {
       }
 
       res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
+
+      // Our own bucket: read it directly, so already-sent emails keep working even if Cloudflare blocks the public link.
+      if (isR2Configured && new URL(fileUrl).hostname === R2_PUBLIC_DOMAIN) {
+        const file = await readFromR2(decodeURIComponent(new URL(fileUrl).pathname.slice(1)));
+        if (!file) return res.status(404).send("File not found on storage");
+        res.setHeader("Content-Type", file.contentType);
+        return res.send(file.body);
+      }
+
       // No redirects: an allowed host must not be able to bounce us to internal addresses.
       const response = await fetch(fileUrl, { redirect: "error" });
       if (!response.ok) {

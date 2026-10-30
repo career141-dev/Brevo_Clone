@@ -29,6 +29,7 @@ test("derives the AWS account id from an access key id", () => {
 
 test("rejects a validly signed message from another AWS account's topic; honours SNS_TOPIC_ARN", async () => {
   assert.equal(await verifySnsMessage(signed({ ...base, TopicArn: "arn:aws:sns:us-east-1:111122223333:evil" })), false);
+  assert.equal(await verifySnsMessage(signed({ ...base, TopicArn: "arn:aws:sns:ap-south-1:266235178551:ses-events" })), true, "our SES account is always trusted");
   process.env.SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:609629065308:only-this";
   assert.equal(await verifySnsMessage(signed(base)), false, "same account but not the configured topic");
   assert.equal(await verifySnsMessage(signed({ ...base, TopicArn: "arn:aws:sns:us-east-1:609629065308:only-this" })), true);

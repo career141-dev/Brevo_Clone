@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 
 const accountId = process.env.R2_ACCOUNT_ID || "";
 const accessKeyId = process.env.R2_ACCESS_KEY_ID || "";
@@ -56,4 +56,19 @@ export async function uploadToR2(
     key: uniqueKey,
     size: buffer.length,
   };
+}
+
+/**
+ * Reads a file directly from the bucket. Public r2.dev links can be blocked by Cloudflare (our sponsor deck was flagged
+ * "Suspected Phishing"), so downloads must not depend on that address. Returns null when the file doesn't exist.
+ */
+export async function readFromR2(key: string): Promise<{ body: Buffer; contentType: string } | null> {
+  if (!r2Client) return null;
+  try {
+    const res = await r2Client.send(new GetObjectCommand({ Bucket: bucketName, Key: key }));
+    return { body: Buffer.from(await res.Body!.transformToByteArray()), contentType: res.ContentType || "application/octet-stream" };
+  } catch (err: any) {
+    if (err?.name === "NoSuchKey") return null;
+    throw err;
+  }
 }
