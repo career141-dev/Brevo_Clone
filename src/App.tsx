@@ -1,28 +1,31 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { DefaultProviders } from "./components/providers/default.tsx";
-import AuthCallback from "./pages/auth/Callback.tsx";
-import LoginPage from "./pages/login/page.tsx";
-import RegisterPage from "./pages/register/page.tsx";
-import NotFound from "./pages/NotFound.tsx";
 import AppLayout from "./components/app-layout.tsx";
-import DashboardPage from "./pages/dashboard/page.tsx";
-import ContactsPage from "./pages/contacts/page.tsx";
-import CampaignsPage from "./pages/campaigns/page.tsx";
-import AutomationsPage from "./pages/automations/page.tsx";
-import AnalyticsPage from "./pages/analytics/page.tsx";
-import AnalyticsDetailPage from "./pages/analytics/detail.tsx";
-import SettingsPage from "./pages/settings/page.tsx";
-import CrmListsPage from "./pages/crm/lists/page.tsx";
-import CrmSegmentsPage from "./pages/crm/segments/page.tsx";
-import CrmCompaniesPage from "./pages/crm/companies/page.tsx";
-import CrmTemplatesPage from "./pages/crm/templates/page.tsx";
 import { ComingSoonPage } from "./pages/_components/coming-soon.tsx";
-import GetStartedPage from "./pages/get-started/page.tsx";
+
+const AuthCallback = lazy(() => import("./pages/auth/Callback.tsx"));
+const LoginPage = lazy(() => import("./pages/login/page.tsx"));
+const RegisterPage = lazy(() => import("./pages/register/page.tsx"));
+const NotFound = lazy(() => import("./pages/NotFound.tsx"));
+const DashboardPage = lazy(() => import("./pages/dashboard/page.tsx"));
+const ContactsPage = lazy(() => import("./pages/contacts/page.tsx"));
+const CampaignsPage = lazy(() => import("./pages/campaigns/page.tsx"));
+const AutomationsPage = lazy(() => import("./pages/automations/page.tsx"));
+const AnalyticsPage = lazy(() => import("./pages/analytics/page.tsx"));
+const AnalyticsDetailPage = lazy(() => import("./pages/analytics/detail.tsx"));
+const SettingsPage = lazy(() => import("./pages/settings/page.tsx"));
+const CrmListsPage = lazy(() => import("./pages/crm/lists/page.tsx"));
+const CrmSegmentsPage = lazy(() => import("./pages/crm/segments/page.tsx"));
+const CrmCompaniesPage = lazy(() => import("./pages/crm/companies/page.tsx"));
+const CrmTemplatesPage = lazy(() => import("./pages/crm/templates/page.tsx"));
+const GetStartedPage = lazy(() => import("./pages/get-started/page.tsx"));
 
 export default function App() {
   return (
     <DefaultProviders>
       <BrowserRouter>
+        <Suspense fallback={null}>
         <Routes>
           <Route path="/auth/callback" element={<AuthCallback />} />
           <Route path="/login" element={<LoginPage />} />
@@ -49,6 +52,7 @@ export default function App() {
 
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </DefaultProviders>
   );

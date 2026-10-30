@@ -11,6 +11,7 @@
     "build": "prisma generate && tsc -b && vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
     "lint": "eslint .",
+    "test": "node --experimental-test-module-mocks --import tsx --test server/lib/*.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:pull": "prisma db pull",
     "prisma:push": "prisma db push",
