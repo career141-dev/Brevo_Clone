@@ -7,7 +7,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { clerkMiddleware, getAuth } from "@clerk/express";
+import { clerkMiddleware, getAuth, verifyToken } from "@clerk/express";
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import { CostExplorerClient, GetCostAndUsageCommand } from "@aws-sdk/client-cost-explorer";
@@ -106,27 +106,38 @@ const apiLimiter = rateLimit({
 app.use("/api/", apiLimiter);
 // Auth: set CLERK_SECRET_KEY + CLERK_PUBLISHABLE_KEY to require a signed-in Clerk user on every /api route except
 // tracking/unsubscribe/webhooks (those are public by design). Optional ALLOWED_USER_IDS=id1,id2 restricts who may use
-// the app (otherwise anyone who can sign up on your Clerk instance gets their own empty workspace and can send via SES).
-// Without the keys the legacy single hardcoded user is used, exactly as before.
+// the app (otherwise anyone who can sign up on your Clerk instance can see all data and send via SES).
+// Every signed-in user works in the one shared team workspace (LEGACY_USER_ID owns all existing data).
+// Without the keys the API runs unauthenticated in that same workspace.
 const LEGACY_USER_ID = "user_3Epvu1kcUczQTmQSvidHS9K4Wak";
-const CLERK_ENABLED = Boolean(process.env.CLERK_SECRET_KEY);
+// Quotes/whitespace are stripped because Railway's form editor keeps them literally when pasted from a .env line.
+const cleanEnv = (v) => (v ?? "").replace(/["']/g, "").trim();
+const CLERK_SECRET_KEY = cleanEnv(process.env.CLERK_SECRET_KEY);
+const CLERK_PUBLISHABLE_KEY = cleanEnv(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY);
+const CLERK_ENABLED = Boolean(CLERK_SECRET_KEY);
 const PUBLIC_API = /^\/api\/(track|unsubscribe|webhooks)(\/|\?|$)/;
-// Quotes are stripped because Railway's form editor keeps them literally when pasted from a .env line.
-const ALLOWED_USER_IDS = (process.env.ALLOWED_USER_IDS ?? "").split(",").map((s) => s.replace(/["']/g, "").trim()).filter(Boolean);
+const ALLOWED_USER_IDS = cleanEnv(process.env.ALLOWED_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean);
 if (!CLERK_ENABLED)
     console.warn("[AUTH] CLERK_SECRET_KEY not set: API is running UNAUTHENTICATED as a single fixed user.");
 else
     console.log(`[AUTH] Clerk enabled, allowed users: ${ALLOWED_USER_IDS.join(", ") || "ANY signed-in user"}`);
 if (CLERK_ENABLED)
-    app.use("/api/", clerkMiddleware());
-app.use("/api/", (req, res, next) => {
+    app.use("/api/", clerkMiddleware({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY }));
+app.use("/api/", async (req, res, next) => {
     if (!CLERK_ENABLED)
         return authStorage.run({ userId: LEGACY_USER_ID }, next);
     if (PUBLIC_API.test(req.originalUrl))
         return next();
     const userId = getAuth(req).userId;
-    if (!userId)
-        return res.status(401).json({ error: "Unauthorized", reason: "not signed in (no valid Clerk token)" });
+    if (!userId) {
+        // Re-run verification only to surface Clerk's real error message (the token itself is never logged or returned).
+        const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+        const detail = !bearer
+            ? "no Authorization header"
+            : await verifyToken(bearer, { secretKey: CLERK_SECRET_KEY }).then((r) => r?.errors?.[0]?.message ?? "token verified but middleware saw no user", (e) => e?.message ?? String(e));
+        console.warn(`[AUTH] 401 not signed in: ${detail}`);
+        return res.status(401).json({ error: "Unauthorized", reason: "not signed in (no valid Clerk token)", detail });
+    }
     if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
         console.warn(`[AUTH] rejected ${userId}: not in ALLOWED_USER_IDS`);
         return res.status(401).json({ error: "Unauthorized", reason: `account ${userId} is not in ALLOWED_USER_IDS` });
