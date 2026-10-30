@@ -30,7 +30,9 @@ function setup(emails: string[], opts: Opts = {}) {
       findUnique: async () => ({ ...campaign }),
       update: async ({ data }: any) => Object.assign(campaign, data),
       updateMany: async ({ where, data }: any) => {
-        if (!where.status.in.includes(campaign.status)) return { count: 0 };
+        if (where.status && !(where.status.in ?? [where.status]).includes(campaign.status)) return { count: 0 };
+        if (where.leaseOwner && campaign.leaseOwner !== where.leaseOwner) return { count: 0 };
+        if (where.OR && campaign.leaseOwner && campaign.leaseOwner !== data.leaseOwner && campaign.leaseUntil > new Date()) return { count: 0 };
         Object.assign(campaign, data);
         return { count: 1 };
       },
@@ -159,4 +161,20 @@ test("a 200ms database does not slow sending below the SES rate, and nobody is s
   const span = (s.sendTimes.at(-1)! - s.sendTimes[0]) / 1000;
   // 100 emails at 9/sec = 11 chunks, 10 gaps. A DB-paced loop would need 1.4s+ per chunk (14s+).
   assert.ok(span < 12.5, `took ${span}s`);
+});
+
+test("a campaign leased by another process is left alone until the lease expires, and the lease is released when done", async () => {
+  const s = setup(["a@x.com", "b@x.com"]);
+  cur = s;
+  s.campaign.leaseOwner = "other-container";
+  s.campaign.leaseUntil = new Date(Date.now() + 60_000);
+  await runCampaign(1);
+  assert.equal(s.sentTo.length, 0, "must not send while another process holds the lease");
+  assert.equal(s.campaign.leaseOwner, "other-container", "must not clear someone else's lease");
+
+  s.campaign.leaseUntil = new Date(Date.now() - 1000); // that process died
+  await runCampaign(1);
+  assert.deepEqual(s.sentTo.sort(), ["a@x.com", "b@x.com"]);
+  assert.equal(s.campaign.status, "sent");
+  assert.equal(s.campaign.leaseOwner, null);
 });

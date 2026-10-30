@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { prisma } from "../prisma.js";
@@ -184,6 +185,19 @@ export async function dispatchCampaign(campaignId, mode) {
 }
 const running = new Set();
 let stopping = false;
+// During a Railway deploy two containers overlap, and the in-memory `running` set can't see across them. A short lease
+// on the campaign row lets only one process send it; if that process dies, the lease expires and the sweep takes over.
+const WORKER_ID = randomUUID();
+const LEASE_MS = 60_000;
+/** Takes or renews the lease. False when the campaign isn't "sending" (paused/deleted) or another process holds it. */
+async function claimLease(campaignId) {
+    const now = new Date();
+    const { count } = await prisma.campaign.updateMany({
+        where: { id: campaignId, status: "sending", OR: [{ leaseOwner: null }, { leaseOwner: WORKER_ID }, { leaseUntil: { lt: now } }] },
+        data: { leaseOwner: WORKER_ID, leaseUntil: new Date(now.getTime() + LEASE_MS) },
+    });
+    return count === 1;
+}
 /** Graceful shutdown: workers finish their current chunk and saves, so a redeploy cannot lose or re-send it. */
 export async function stopSending(maxWaitMs = 8000) {
     stopping = true;
@@ -203,6 +217,7 @@ export async function runCampaign(campaignId) {
         console.error(`[SEND][Campaign ${campaignId}] worker error:`, err);
     }
     finally {
+        await prisma.campaign.updateMany({ where: { id: campaignId, leaseOwner: WORKER_ID }, data: { leaseOwner: null, leaseUntil: null } }).catch(() => { });
         running.delete(campaignId);
     }
 }
@@ -214,6 +229,8 @@ export async function resumeSendingCampaigns() {
 async function processCampaign(campaignId) {
     const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
     if (!campaign || campaign.status !== "sending")
+        return;
+    if (!(await claimLease(campaignId)))
         return;
     let template = normalizeEmailHtml(campaign.templateHtml);
     if (!template.includes("{{unsubscribe_url}}")) {
@@ -249,9 +266,8 @@ async function processCampaign(campaignId) {
     };
     while (!stopping) {
         await settleWrites();
-        const current = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
-        if (current?.status !== "sending")
-            return; // paused, reset or deleted
+        if (!(await claimLease(campaignId)))
+            return; // paused, reset, deleted, or another process took over
         if (budget !== null && budget <= 0) {
             budget = await dailyQuotaRemaining();
             if (budget !== null && budget <= 0) {

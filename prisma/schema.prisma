@@ -136,6 +136,8 @@ model Campaign {
   scheduledAt    DateTime?
   sentAt         DateTime?
   totalRecipients Int           @default(0)
+  leaseOwner     String?
+  leaseUntil     DateTime?
   createdAt      DateTime       @default(now())
 
   @@index([userId])
