@@ -1,9 +1,9 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../prisma.js";
+import { cleanCandidates } from "../lib/candidates.js";
 
 const router = Router();
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CHUNK = 1000;
 
 // POST /api/contacts/import-list — create (or reuse) a job-role list and fill it with candidates
@@ -12,7 +12,7 @@ router.post("/import-list", async (req: Request, res: Response) => {
     const { listName, folderId, contacts } = req.body;
     const name = typeof listName === "string" ? listName.trim() : "";
     if (!name) return res.status(400).json({ error: "Job role name is required." });
-    if (name.length > 255) return res.status(400).json({ error: "Name must be under 255 characters." });
+    if (name.length > 191) return res.status(400).json({ error: "Name must be 191 characters or fewer." });
     if (!folderId) return res.status(400).json({ error: "Folder is required." });
     if (!Array.isArray(contacts) || contacts.length === 0) {
       return res.status(400).json({ error: "contacts array is required" });
@@ -21,21 +21,7 @@ router.post("/import-list", async (req: Request, res: Response) => {
     const folder = await prisma.folder.findUnique({ where: { id: Number(folderId) } });
     if (!folder) return res.status(400).json({ error: "Selected folder does not exist." });
 
-    // Clean + de-dupe by lowercase email; bad rows are skipped, not fatal
-    const byEmail = new Map<string, { email: string; fullName: string | null; firstName: string | null; lastName: string | null }>();
-    for (const c of contacts) {
-      const email = typeof c?.email === "string" ? c.email.trim().toLowerCase() : "";
-      if (!EMAIL_RE.test(email) || byEmail.has(email)) continue;
-      const fullName = typeof c.name === "string" ? c.name.trim().replace(/\s+/g, " ") : "";
-      const [first, ...rest] = fullName.split(" ");
-      byEmail.set(email, {
-        email,
-        fullName: fullName || null,
-        firstName: first || null,
-        lastName: rest.join(" ") || null,
-      });
-    }
-    const clean = [...byEmail.values()];
+    const clean = cleanCandidates(contacts);
     const skipped = contacts.length - clean.length;
     if (clean.length === 0) return res.status(400).json({ error: "No valid email addresses found." });
 

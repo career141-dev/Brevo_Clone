@@ -1,11 +1,11 @@
-import * as XLSX from "xlsx";
-
 export type Sheet = { headers: string[]; rows: Record<string, unknown>[] };
 export type Candidate = { email: string; name: string };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function readSheet(file: File): Promise<Sheet> {
+  // Loaded on demand: the parser is about 500 kB and most sessions never import a sheet.
+  const XLSX = await import("xlsx");
   const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });

@@ -80,7 +80,7 @@ export default function ExcelListForm({ folders, onBack, onDone }: Props) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Sales"
-            maxLength={255}
+            maxLength={191}
             className="h-10 text-sm"
           />
         </div>

@@ -256,7 +256,7 @@ export default function ImportContactsModal({ open, onClose }: Props) {
                   <div className="space-y-4">
                     <div className="space-y-1.5">
                       <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Job role (list name)</Label>
-                      <Input placeholder="e.g. Sales" value={role} onChange={(e) => setRole(e.target.value)} maxLength={255} />
+                      <Input placeholder="e.g. Sales" value={role} onChange={(e) => setRole(e.target.value)} maxLength={191} />
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Folder</Label>
