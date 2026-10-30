@@ -60,7 +60,8 @@ app.get("/api/download", async (req, res) => {
         if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) {
             try {
                 const parsedHost = new URL(fileUrl).hostname;
-                const isAllowed = ALLOWED_DOWNLOAD_HOSTS.some(h => h && parsedHost.endsWith(h));
+                // Exact host or a real subdomain only ("evilr2.dev" must not match "r2.dev").
+                const isAllowed = ALLOWED_DOWNLOAD_HOSTS.some(h => h && (parsedHost === h || parsedHost.endsWith("." + h)));
                 if (!isAllowed) {
                     console.warn(`[DOWNLOAD BLOCKED] Rejected proxy request for external URL: ${fileUrl}`);
                     return res.status(403).send("Forbidden: Only Career141 R2 hosted files can be downloaded via this endpoint.");
@@ -70,7 +71,8 @@ app.get("/api/download", async (req, res) => {
                 return res.status(400).send("Invalid file URL.");
             }
             res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
-            const response = await fetch(fileUrl);
+            // No redirects: an allowed host must not be able to bounce us to internal addresses.
+            const response = await fetch(fileUrl, { redirect: "error" });
             if (!response.ok) {
                 return res.status(response.status).send("File not found on storage");
             }
@@ -81,7 +83,10 @@ app.get("/api/download", async (req, res) => {
         }
         // 2. If local /uploads/ file
         const localDiskName = fileUrl.replace(/^\/uploads\//, "");
-        const localPath = path.join(uploadsDir, localDiskName);
+        const localPath = path.resolve(uploadsDir, localDiskName);
+        // Path traversal guard: "../../etc/passwd" must never leave the uploads folder.
+        if (!localPath.startsWith(uploadsDir + path.sep))
+            return res.status(400).send("Invalid file path");
         if (fs.existsSync(localPath)) {
             res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
             return res.download(localPath, cleanName);
