@@ -91,6 +91,7 @@
     "ua-parser-js": "^2.0.10",
     "use-debounce": "^10.1.1",
     "vaul": "^1.1.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^3.25.76",
     "zxcvbn": "^4.4.2"
   },

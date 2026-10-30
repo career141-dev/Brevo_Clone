@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { List as ListIcon, ChevronLeft, ChevronRight, Search, MoreHorizontal, Plus, Loader2, Trash2, Eye, Pencil, UserPlus } from "lucide-react";
+import { List as ListIcon, ChevronLeft, ChevronRight, Search, MoreHorizontal, Plus, Loader2, Trash2, Eye, Pencil, UserPlus, FileSpreadsheet } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox.tsx";
 import {
   Table,
@@ -56,6 +56,7 @@ import {
 } from "@/components/ui/alert-dialog.tsx";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import ExcelListForm from "./_components/excel-list-form.tsx";
 
 export default function ListsPage() {
   const queryClient = useQueryClient();
@@ -74,6 +75,7 @@ export default function ListsPage() {
   const [selectedFolderId, setSelectedFolderId] = useState("");
   const [nameError, setNameError] = useState("");
   const [folderError, setFolderError] = useState("");
+  const [fromExcel, setFromExcel] = useState(false);
 
   // Dialog Edit List Form State
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -156,6 +158,7 @@ export default function ListsPage() {
     setSelectedFolderId("");
     setNameError("");
     setFolderError("");
+    setFromExcel(false);
   };
 
   const handleCreateList = (e: React.FormEvent) => {
@@ -547,9 +550,21 @@ export default function ListsPage() {
       }}>
         <SheetContent side="right" className="w-full sm:max-w-md p-6 flex flex-col gap-6">
           <SheetHeader className="border-b pb-4">
-            <SheetTitle className="text-xl font-semibold text-foreground">Create a list</SheetTitle>
+            <SheetTitle className="text-xl font-semibold text-foreground">
+              {fromExcel ? "Create a list from Excel" : "Create a list"}
+            </SheetTitle>
           </SheetHeader>
 
+          {fromExcel ? (
+            <ExcelListForm
+              folders={folders}
+              onBack={() => setFromExcel(false)}
+              onDone={() => {
+                setDrawerOpen(false);
+                resetForm();
+              }}
+            />
+          ) : (
           <form onSubmit={handleCreateList} className="flex-1 flex flex-col justify-between">
             <div className="space-y-5">
               {/* List Name Input */}
@@ -635,7 +650,17 @@ export default function ListsPage() {
                 )}
               </Button>
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setFromExcel(true)}
+              className="mt-3 h-9 w-full text-xs"
+            >
+              <FileSpreadsheet className="size-4 mr-2" />
+              Create a list with Excel sheet
+            </Button>
           </form>
+          )}
         </SheetContent>
       </Sheet>
 
