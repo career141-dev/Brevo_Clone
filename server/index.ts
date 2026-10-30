@@ -21,7 +21,7 @@ import { UAParser } from "ua-parser-js";
 import { uploadToR2, isR2Configured } from "./lib/r2.js";
 import { JWT_SECRET, PIXEL_GIF, injectTracking, makeUnsubscribeUrl } from "./lib/tracking.js";
 import { verifySnsMessage } from "./lib/sns.js";
-import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, resumeSendingCampaigns } from "./lib/campaign-sender.js";
+import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, resumeSendingCampaigns, stopSending } from "./lib/campaign-sender.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -2973,3 +2973,8 @@ if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT_NAM
   void sweep();
   setInterval(sweep, 60_000);
 }
+
+// Railway sends SIGTERM on redeploy: let in-flight email chunks finish and save before exiting.
+process.on("SIGTERM", () => {
+  void stopSending().finally(() => process.exit(0));
+});

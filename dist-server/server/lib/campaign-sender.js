@@ -7,6 +7,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const THROTTLE_ERRORS = ["TooManyRequestsException", "ThrottlingException", "Throttling"];
 const ACCOUNT_ERRORS = ["SendingPausedException", "AccountSuspendedException", "MailFromDomainNotVerifiedException"];
 const QUOTA_WAIT_MS = Number(process.env.SEND_QUOTA_WAIT_MS) || 10 * 60_000;
+const PAGE_SECONDS = 10; // how much sending one recipient read covers; also how quickly a pause is noticed
 // SES v2 reports the rolling-24h cap as LimitExceededException ("Daily message quota exceeded"); v1 used Throttling.
 const isQuotaError = (e) => e?.name === "LimitExceededException" || /daily message quota|quota exceeded/i.test(String(e?.message ?? ""));
 // "Unengaged" = got >= UNENGAGED_MIN_SENDS emails in the last UNENGAGED_DAYS days and never opened/clicked.
@@ -154,11 +155,15 @@ export async function dispatchCampaign(campaignId, mode) {
     // of capping here and leaving the rest stranded until someone presses /resume.
     const recipients = (await resolveAudience(campaign)).filter((r) => !alreadySentSet.has(r.email));
     // Snapshot first (idempotent) so a failure here can never leave a half-built audience being sent.
-    for (let i = 0; i < recipients.length; i += 1000) {
-        await prisma.campaignRecipient.createMany({
-            data: recipients.slice(i, i + 1000).map((r) => ({ campaignId, contactId: r.contactId, email: r.email })),
+    // 5000-row chunks, 4 at a time, instead of ~90 sequential round trips for a 90k audience.
+    const chunks = [];
+    for (let i = 0; i < recipients.length; i += 5000)
+        chunks.push(recipients.slice(i, i + 5000));
+    for (let i = 0; i < chunks.length; i += 4) {
+        await Promise.all(chunks.slice(i, i + 4).map((chunk) => prisma.campaignRecipient.createMany({
+            data: chunk.map((r) => ({ campaignId, contactId: r.contactId, email: r.email })),
             skipDuplicates: true,
-        });
+        })));
     }
     await prisma.campaignRecipient.updateMany({ where: { campaignId, status: "failed" }, data: { status: "queued", error: null } });
     const queued = await prisma.campaignRecipient.count({ where: { campaignId, status: "queued" } });
@@ -178,8 +183,16 @@ export async function dispatchCampaign(campaignId, mode) {
     return { ok: true, total, queued, alreadySent: alreadySentSet.size };
 }
 const running = new Set();
+let stopping = false;
+/** Graceful shutdown: workers finish their current chunk and saves, so a redeploy cannot lose or re-send it. */
+export async function stopSending(maxWaitMs = 8000) {
+    stopping = true;
+    const deadline = Date.now() + maxWaitMs;
+    while (running.size > 0 && Date.now() < deadline)
+        await sleep(100);
+}
 export async function runCampaign(campaignId) {
-    if (running.has(campaignId))
+    if (stopping || running.has(campaignId))
         return;
     running.add(campaignId);
     try {
@@ -225,7 +238,17 @@ async function processCampaign(campaignId) {
     let backoff = 0;
     // Emails left in the SES rolling-24h quota; null = unlimited/unreadable (then SES errors are the only signal).
     let budget = await dailyQuotaRemaining();
-    while (true) {
+    // The latest background write. It must finish before recipients are re-read, otherwise rows already sent would still
+    // look "queued" and go out twice. Only one runs at a time, so a slow DB slows sending instead of building a backlog.
+    let writes = Promise.resolve();
+    let writeError = null;
+    const settleWrites = async () => {
+        await writes;
+        if (writeError)
+            throw writeError; // campaign stays "sending"; the sweep restarts it from the database state
+    };
+    while (!stopping) {
+        await settleWrites();
         const current = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
         if (current?.status !== "sending")
             return; // paused, reset or deleted
@@ -238,14 +261,16 @@ async function processCampaign(campaignId) {
                 continue;
             }
         }
-        const batch = await prisma.campaignRecipient.findMany({
+        // Read several seconds of recipients at once: the DB is ~200ms away, so reading per chunk would set the send speed.
+        const pageSize = rate * PAGE_SECONDS;
+        const page = await prisma.campaignRecipient.findMany({
             where: { campaignId, status: "queued" },
             orderBy: { id: "asc" },
-            take: budget === null ? rate : Math.min(rate, budget),
+            take: budget === null ? pageSize : Math.min(pageSize, budget),
         });
-        if (batch.length === 0)
+        if (page.length === 0)
             break;
-        const contactIds = batch.map((r) => r.contactId).filter(Boolean);
+        const contactIds = page.map((r) => r.contactId).filter(Boolean);
         const contacts = contactIds.length
             ? await prisma.contact.findMany({
                 where: { id: { in: contactIds } },
@@ -253,105 +278,119 @@ async function processCampaign(campaignId) {
             })
             : [];
         const contactById = new Map(contacts.map((c) => [c.id, c]));
-        // The 1s window starts when the sends start (not before the DB lookups), so two chunks can never land in one second.
-        const started = Date.now();
-        const results = await Promise.all(batch.map(async (r) => {
-            const contact = r.contactId ? contactById.get(r.contactId) : null;
-            // Suppression is re-checked at send time: the contact may have unsubscribed/bounced since the snapshot.
-            if (contact && contact.status !== "subscribed")
-                return { r, outcome: "skipped", error: `contact is ${contact.status}` };
-            const unsubUrl = makeUnsubscribeUrl(r.email, campaignId);
-            const html = injectTracking(personalize(template, { ...contact, email: r.email }, unsubUrl), r.email, campaignId);
-            try {
-                await sesv2Client.send(new SendEmailCommand({
-                    FromEmailAddress: fromHeader,
-                    Destination: { ToAddresses: [r.email] },
-                    ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
-                    ConfigurationSetName: "career141-tracking",
-                    Content: {
-                        Simple: {
-                            Subject: { Data: campaign.subject, Charset: "UTF-8" },
-                            Body: { Html: { Data: html, Charset: "UTF-8" } },
-                            Headers: [
-                                { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
-                                { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
-                            ],
+        for (let i = 0; i < page.length && !stopping; i += rate) {
+            const batch = page.slice(i, i + rate);
+            const sends = batch.map(async (r) => {
+                const contact = r.contactId ? contactById.get(r.contactId) : null;
+                // Suppression is re-checked close to send time (at most PAGE_SECONDS old): the contact may have unsubscribed since the snapshot.
+                if (contact && contact.status !== "subscribed")
+                    return { r, outcome: "skipped", error: `contact is ${contact.status}` };
+                const unsubUrl = makeUnsubscribeUrl(r.email, campaignId);
+                const html = injectTracking(personalize(template, { ...contact, email: r.email }, unsubUrl), r.email, campaignId);
+                try {
+                    await sesv2Client.send(new SendEmailCommand({
+                        FromEmailAddress: fromHeader,
+                        Destination: { ToAddresses: [r.email] },
+                        ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
+                        ConfigurationSetName: "career141-tracking",
+                        Content: {
+                            Simple: {
+                                Subject: { Data: campaign.subject, Charset: "UTF-8" },
+                                Body: { Html: { Data: html, Charset: "UTF-8" } },
+                                Headers: [
+                                    { Name: "List-Unsubscribe", Value: `<${unsubUrl}>` },
+                                    { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+                                ],
+                            },
                         },
-                    },
-                    EmailTags: [{ Name: "campaign_id", Value: String(campaignId) }],
-                }));
-                return { r, outcome: "sent" };
-            }
-            catch (e) {
-                const name = e?.name ?? "";
-                if (isQuotaError(e))
-                    return { r, outcome: "quota", error: e.message };
-                if (THROTTLE_ERRORS.includes(name))
-                    return { r, outcome: "throttled", error: e.message };
-                if (ACCOUNT_ERRORS.includes(name))
-                    return { r, outcome: "account", error: `${name}: ${e.message}` };
-                return { r, outcome: "failed", error: String(e?.message ?? e).slice(0, 500) };
-            }
-        }));
-        const sent = results.filter((x) => x.outcome === "sent");
-        const failed = results.filter((x) => x.outcome === "failed");
-        const skipped = results.filter((x) => x.outcome === "skipped");
-        const throttled = results.some((x) => x.outcome === "throttled");
-        const quotaHit = results.some((x) => x.outcome === "quota");
-        const accountError = results.find((x) => x.outcome === "account");
-        if (budget !== null)
-            budget -= sent.length;
-        // One write per outcome per chunk instead of one per email.
-        // At-least-once: a crash between the SES call and this write re-sends at most one chunk on resume.
-        if (sent.length > 0) {
-            await prisma.campaignRecipient.updateMany({ where: { id: { in: sent.map((x) => x.r.id) } }, data: { status: "sent", sentAt: new Date() } });
-            await prisma.emailEvent.createMany({
-                data: sent.map((x) => ({ email: x.r.email, campaignId, eventType: "sent", dedupKey: `sent:${campaignId}:${x.r.email}` })),
-                skipDuplicates: true,
+                        EmailTags: [{ Name: "campaign_id", Value: String(campaignId) }],
+                    }));
+                    return { r, outcome: "sent" };
+                }
+                catch (e) {
+                    const name = e?.name ?? "";
+                    if (isQuotaError(e))
+                        return { r, outcome: "quota", error: e.message };
+                    if (THROTTLE_ERRORS.includes(name))
+                        return { r, outcome: "throttled", error: e.message };
+                    if (ACCOUNT_ERRORS.includes(name))
+                        return { r, outcome: "account", error: `${name}: ${e.message}` };
+                    return { r, outcome: "failed", error: String(e?.message ?? e).slice(0, 500) };
+                }
             });
+            // Every send has fired by here. The 1s window starts now (not at the first send, or before the DB lookups), so two
+            // chunks can never land inside one second and exceed the SES rate.
+            const lastSendAt = Date.now();
+            const results = await Promise.all(sends);
+            const sent = results.filter((x) => x.outcome === "sent");
+            const failed = results.filter((x) => x.outcome === "failed");
+            const skipped = results.filter((x) => x.outcome === "skipped");
+            const throttled = results.some((x) => x.outcome === "throttled");
+            const quotaHit = results.some((x) => x.outcome === "quota");
+            const accountError = results.find((x) => x.outcome === "account");
+            if (budget !== null)
+                budget -= sent.length;
             sentTotal += sent.length;
-            // Live counter the campaigns UI reads while a send is in progress.
-            await prisma.campaign.update({ where: { id: campaignId }, data: { totalRecipients: baseSent + sentTotal } }).catch(() => { });
+            const liveTotal = baseSent + sentTotal;
+            const byReason = new Map();
+            for (const x of [...failed, ...skipped]) {
+                const key = `${x.outcome}|${x.error}`;
+                const g = byReason.get(key) ?? { status: x.outcome, error: x.error, ids: [] };
+                g.ids.push(x.r.id);
+                byReason.set(key, g);
+            }
+            // Results are saved in the background while the next chunk goes out, so DB latency doesn't eat the 1s window.
+            // At-least-once: a crash before this write re-sends at most this chunk on resume.
+            await settleWrites();
+            writes = Promise.all([
+                ...(sent.length > 0
+                    ? [
+                        prisma.campaignRecipient.updateMany({ where: { id: { in: sent.map((x) => x.r.id) } }, data: { status: "sent", sentAt: new Date() } }),
+                        prisma.emailEvent.createMany({
+                            data: sent.map((x) => ({ email: x.r.email, campaignId, eventType: "sent", dedupKey: `sent:${campaignId}:${x.r.email}` })),
+                            skipDuplicates: true,
+                        }),
+                        // Live counter the campaigns UI reads while a send is in progress.
+                        prisma.campaign.update({ where: { id: campaignId }, data: { totalRecipients: liveTotal } }).catch(() => { }),
+                    ]
+                    : []),
+                ...[...byReason.values()].map((g) => prisma.campaignRecipient.updateMany({ where: { id: { in: g.ids } }, data: { status: g.status, error: g.error } })),
+            ]).then(() => { }, (e) => { writeError = e; });
+            if (accountError) {
+                await settleWrites();
+                console.error(`[SEND][Campaign ${campaignId}] SES account-level error, pausing campaign: ${accountError.error}`);
+                await prisma.campaign.update({ where: { id: campaignId }, data: { status: "paused" } });
+                return;
+            }
+            // Every recipient of the first chunk failed => configuration problem (unverified sender etc.); don't burn the whole list.
+            if (sentTotal === 0 && failed.length === batch.length && batch.length >= Math.min(rate, 5)) {
+                await settleWrites();
+                console.error(`[SEND][Campaign ${campaignId}] first chunk failed entirely, aborting: ${failed[0].error}`);
+                await prisma.campaign.update({ where: { id: campaignId }, data: { status: endStatus() } });
+                return;
+            }
+            if (quotaHit) {
+                // Quota rows stay "queued"; force a re-check (and wait) at the top of the loop instead of marking them failed.
+                budget = 0;
+                break;
+            }
+            if (throttled) {
+                // Throttled rows stay "queued"; the SDK already retried with adaptive backoff, so slow the whole loop down.
+                backoff = Math.min(60_000, (backoff || 2_000) * 2);
+                console.warn(`[SEND][Campaign ${campaignId}] SES throttling, backing off ${backoff}ms`);
+                await sleep(backoff);
+                break;
+            }
+            backoff = 0;
+            // ponytail: fixed-window limiter (chunk size == rate, one chunk per second); a token bucket would smooth bursts.
+            const elapsed = Date.now() - lastSendAt;
+            if (elapsed < 1000)
+                await sleep(1000 - elapsed);
         }
-        const byReason = new Map();
-        for (const x of [...failed, ...skipped]) {
-            const key = `${x.outcome}|${x.error}`;
-            const g = byReason.get(key) ?? { status: x.outcome, error: x.error, ids: [] };
-            g.ids.push(x.r.id);
-            byReason.set(key, g);
-        }
-        for (const g of byReason.values()) {
-            await prisma.campaignRecipient.updateMany({ where: { id: { in: g.ids } }, data: { status: g.status, error: g.error } });
-        }
-        if (accountError) {
-            console.error(`[SEND][Campaign ${campaignId}] SES account-level error, pausing campaign: ${accountError.error}`);
-            await prisma.campaign.update({ where: { id: campaignId }, data: { status: "paused" } });
-            return;
-        }
-        // Every recipient of the first chunk failed => configuration problem (unverified sender etc.); don't burn the whole list.
-        if (sentTotal === 0 && failed.length === batch.length && batch.length >= Math.min(rate, 5)) {
-            console.error(`[SEND][Campaign ${campaignId}] first chunk failed entirely, aborting: ${failed[0].error}`);
-            await prisma.campaign.update({ where: { id: campaignId }, data: { status: endStatus() } });
-            return;
-        }
-        if (quotaHit) {
-            // Quota rows stay "queued"; force a re-check (and wait) at the top of the loop instead of marking them failed.
-            budget = 0;
-            continue;
-        }
-        if (throttled) {
-            // Throttled rows stay "queued"; the SDK already retried with adaptive backoff, so slow the whole loop down.
-            backoff = Math.min(60_000, (backoff || 2_000) * 2);
-            console.warn(`[SEND][Campaign ${campaignId}] SES throttling, backing off ${backoff}ms`);
-            await sleep(backoff);
-            continue;
-        }
-        backoff = 0;
-        // ponytail: fixed-window limiter (chunk size == rate, one chunk per second); a token bucket would smooth bursts.
-        const elapsed = Date.now() - started;
-        if (elapsed < 1000)
-            await sleep(1000 - elapsed);
     }
+    await settleWrites();
+    if (stopping)
+        return; // shutting down mid-campaign: it stays "sending" and the next process continues it
     const finalSent = await prisma.emailEvent.count({ where: { campaignId, eventType: "sent" } });
     await prisma.campaign.update({
         where: { id: campaignId },

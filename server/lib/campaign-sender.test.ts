@@ -143,3 +143,20 @@ test("an SES daily-quota error leaves recipients queued and retries them, never 
   assert.deepEqual(s.sentTo.sort(), ["a@x.com", "b@x.com"]);
   assert.equal(s.campaign.status, "sent");
 });
+
+test("a 200ms database does not slow sending below the SES rate, and nobody is sent twice across pages", async () => {
+  const emails = Array.from({ length: 100 }, (_, i) => `u${i}@x.com`);
+  const s = setup(emails);
+  cur = s;
+  const slow = (o: any) => Object.fromEntries(Object.entries(o).map(([k, f]: any) => [k, async (...a: any[]) => { await wait(200); return f(...a); }]));
+  for (const model of ["campaignRecipient", "emailEvent", "campaign", "contact"] as const) (s.prisma as any)[model] = slow(s.prisma[model]);
+
+  await runCampaign(1);
+
+  assert.equal(s.sentTo.length, 100);
+  assert.equal(new Set(s.sentTo).size, 100, "rows must be saved before they are re-read, or they go out twice");
+  assert.equal(s.campaign.status, "sent");
+  const span = (s.sendTimes.at(-1)! - s.sendTimes[0]) / 1000;
+  // 100 emails at 9/sec = 11 chunks, 10 gaps. A DB-paced loop would need 1.4s+ per chunk (14s+).
+  assert.ok(span < 12.5, `took ${span}s`);
+});
