@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Career141 email - cost guards. Budgets that ignore Free plan credits (so they fire while credits still pay),
+  an automatic stop on the app's sending, and a rule that blocks the paid add-ons behind the old account's
+  USD 1,794 VirtDelivMgr bill. Deploy in us-east-1 (Budgets is global and lives there).
+
+Parameters:
+  MonthlyLimitUsd:
+    Type: Number
+    Default: 5
+    Description: Monthly AWS spend that stops the app's sending. 5 = 50,000 emails at 0.10 USD per 1,000.
+  DailyAlertUsd:
+    Type: Number
+    Default: 1
+  AlertEmail1:
+    Type: String
+    Default: sanjeev@career141.com
+  AlertEmail2:
+    Type: String
+    Default: uzmaan@career141.com
+  AppUser:
+    Type: String
+    Default: brevo-sender
+    Description: The IAM user the app sends with; it loses send permission when the monthly limit is reached.
+  BlockSendingPolicyArn:
+    Type: String
+    Default: arn:aws:iam::266235178551:policy/block-sending
+  BudgetsExecutionRoleArn:
+    Type: String
+    Default: arn:aws:iam::266235178551:role/budgets-block-sending-role
+
+Resources:
+  # Credits and refunds excluded: on the Free plan the credit pays the bill, so a budget that counts it sees 0 USD
+  # and never fires. This one sees what the usage really costs.
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: career141-monthly-usage
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref MonthlyLimitUsd, Unit: USD }
+        CostTypes: { IncludeCredit: false, IncludeRefund: false }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 20, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail1 }, { SubscriptionType: EMAIL, Address: !Ref AlertEmail2 }]
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 60, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail1 }, { SubscriptionType: EMAIL, Address: !Ref AlertEmail2 }]
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail1 }, { SubscriptionType: EMAIL, Address: !Ref AlertEmail2 }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail1 }, { SubscriptionType: EMAIL, Address: !Ref AlertEmail2 }]
+
+  DailyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: career141-daily-usage
+        BudgetType: COST
+        TimeUnit: DAILY
+        BudgetLimit: { Amount: !Ref DailyAlertUsd, Unit: USD }
+        CostTypes: { IncludeCredit: false, IncludeRefund: false }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail1 }, { SubscriptionType: EMAIL, Address: !Ref AlertEmail2 }]
+
+  # At the monthly limit the app's AWS user loses SES send permission until the next month (Budgets detaches it then).
+  StopSendingAtLimit:
+    Type: AWS::Budgets::BudgetsAction
+    Properties:
+      BudgetName: !Ref MonthlyBudget
+      NotificationType: ACTUAL
+      ActionType: APPLY_IAM_POLICY
+      ActionThreshold: { Type: PERCENTAGE, Value: 100 }
+      ApprovalModel: AUTOMATIC
+      ExecutionRoleArn: !Ref BudgetsExecutionRoleArn
+      Definition:
+        IamActionDefinition:
+          PolicyArn: !Ref BlockSendingPolicyArn
+          Users: [!Ref AppUser]
+      Subscribers:
+        - { Type: EMAIL, Address: !Ref AlertEmail1 }
+        - { Type: EMAIL, Address: !Ref AlertEmail2 }
+
+  # The switches that cost money by themselves. IAM cannot restrict the root user, so this protects every other
+  # login: use one in the admins group below for daily work, and keep root (with MFA) for emergencies.
+  NoCostlySwitches:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: career141-no-costly-switches
+      Description: Blocks paid SES add-ons, plan upgrades and purchases that billed the old account.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: NoPaidSesAddOns
+            Effect: Deny
+            Action:
+              - ses:*Vdm*
+              - ses:*Deliverability*
+              - ses:*DedicatedIp*
+              - ses:*Validation*
+              - ses:PutAccountPricingAttributes
+              - ses:CreateMultiRegionEndpoint
+              - ses:CreateIngressPoint
+              - ses:CreateRelay
+              - ses:CreateArchive
+              - ses:CreateAddonSubscription
+              - ses:CreateAddonInstance
+            Resource: "*"
+          - Sid: NoPlanUpgradesOrPurchases
+            Effect: Deny
+            Action:
+              - supportplans:*
+              - aws-marketplace:Subscribe
+              - aws-marketplace:AcceptAgreementRequest
+              - savingsplans:CreateSavingsPlan
+              - ec2:PurchaseReservedInstancesOffering
+              - rds:PurchaseReservedDBInstancesOffering
+            Resource: "*"
+
+  Admins:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: career141-admins
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+        - !Ref NoCostlySwitches
+
+Outputs:
+  AdminsGroup:
+    Value: !Ref Admins
+    Description: Put each person's own IAM login in this group and stop using root day to day.
