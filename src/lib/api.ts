@@ -256,6 +256,12 @@ export const api = {
       }>(`/billing/summary?range=${range}`),
     exchangeRate: () =>
       request<{ usd_to_lkr: number; updated_at: string; source: string }>("/billing/exchange-rate"),
+    sendLimits: () =>
+      request<{
+        daily: { limit: number; used: number };
+        monthly: { limit: number; used: number; estimated_cost_usd: number };
+        aws: { limit_24h: number | null; sent_24h: number | null; per_second: number | null } | null;
+      }>("/billing/send-limits"),
     awsCosts: (range: "current_month" | "last_30" | "all_time") =>
       request<{
         total_cost_usd: number;

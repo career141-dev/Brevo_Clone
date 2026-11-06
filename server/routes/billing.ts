@@ -2,6 +2,9 @@ import { Router } from "express";
 import { CostExplorerClient, GetCostAndUsageCommand } from "@aws-sdk/client-cost-explorer";
 import { prisma } from "../prisma.js";
 import { getCached, setCache } from "../lib/analytics-cache.js";
+import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
+import { sesClient } from "../lib/ses.js";
+import { DAILY_SEND_LIMIT, MONTHLY_SEND_LIMIT, sendUsage } from "../lib/send-limits.js";
 
 export const billingRouter = Router();
 const router = billingRouter;
@@ -121,6 +124,24 @@ router.get("/api/billing/aws-costs", async (req, res) => {
       });
     }
     res.status(500).json({ error: "Failed to fetch AWS cost data", detail: err.message });
+  }
+});
+
+// GET /api/billing/send-limits — our own daily/monthly caps and AWS's, with what has been used (SES quota reads are free)
+router.get("/api/billing/send-limits", async (_req, res) => {
+  try {
+    const [usage, ses] = await Promise.all([
+      sendUsage(),
+      sesClient.send(new GetSendQuotaCommand({})).catch(() => null),
+    ]);
+    res.json({
+      daily: { limit: DAILY_SEND_LIMIT, used: usage.lastDay },
+      monthly: { limit: MONTHLY_SEND_LIMIT, used: usage.thisMonth, estimated_cost_usd: Math.round(usage.thisMonth * SES_PRICE_PER_EMAIL_USD * 100) / 100 },
+      aws: ses ? { limit_24h: ses.Max24HourSend ?? null, sent_24h: ses.SentLast24Hours ?? null, per_second: ses.MaxSendRate ?? null } : null,
+    });
+  } catch (err: any) {
+    console.error("Send limits error:", err);
+    res.status(500).json({ error: "Failed to read send limits", detail: err.message });
   }
 });
 

@@ -68,6 +68,12 @@ export default function SettingsPage() {
     refetchInterval: 5 * 60 * 1000,
   });
 
+  const { data: sendLimits } = useQuery({
+    queryKey: ["billing-send-limits"],
+    queryFn: () => api.billing.sendLimits(),
+    refetchInterval: 60000,
+  });
+
   const { data: awsCosts, isLoading: isLoadingAwsCosts, error: awsCostsError } = useQuery({
     queryKey: ["billing-aws-costs", billingRange],
     queryFn: () => api.billing.awsCosts(billingRange),
@@ -511,6 +517,40 @@ export default function SettingsPage() {
               </a>
             </div>
           </div>
+
+          {/* Sending limits: our own caps under AWS's, so a mistake can't run up a bill */}
+          {sendLimits && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-5">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Sending limits</h3>
+              <p className="text-xs text-gray-500 mt-0.5 mb-4">
+                Campaigns stop at these limits. Over the daily limit, the rest go out by themselves the next day; at the
+                monthly limit, the campaign pauses. Change them on Railway with DAILY_SEND_LIMIT and MONTHLY_SEND_LIMIT (0 = no limit).
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {[
+                  { label: "Last 24 hours", used: sendLimits.daily.used, limit: sendLimits.daily.limit, note: "" },
+                  { label: "This month", used: sendLimits.monthly.used, limit: sendLimits.monthly.limit, note: `about $${sendLimits.monthly.estimated_cost_usd.toFixed(2)} so far` },
+                  { label: "AWS limit (24 hours)", used: sendLimits.aws?.sent_24h ?? 0, limit: sendLimits.aws?.limit_24h ?? 0, note: sendLimits.aws?.per_second ? `${sendLimits.aws.per_second} per second` : "could not read" },
+                ].map((row) => {
+                  const pct = row.limit > 0 ? Math.min(100, Math.round((row.used / row.limit) * 100)) : 0;
+                  return (
+                    <div key={row.label}>
+                      <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                        <span>{row.label}</span>
+                        <span className="tabular-nums">
+                          {row.used.toLocaleString()} / {row.limit > 0 ? row.limit.toLocaleString() : "no limit"}
+                        </span>
+                      </div>
+                      <div className="h-2 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                        <div className={`h-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500"}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      {row.note && <p className="text-xs text-gray-500 mt-1">{row.note}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Time Range Toggle */}
           <div className="flex items-center gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">

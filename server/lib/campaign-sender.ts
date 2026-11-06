@@ -6,6 +6,7 @@ import { sesClient, sesv2Client } from "./ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "./tracking.js";
 import { hostEmbeddedImages } from "./embedded-images.js";
 import { checkEmailContent } from "./content-check.js";
+import { MONTHLY_SEND_LIMIT, remainingSends, sendUsage } from "./send-limits.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -143,7 +144,7 @@ async function resolveAudience(campaign: any): Promise<{ contactId: number | nul
 }
 
 /** Remaining SES rolling-24h quota, or null if unlimited/unreadable (e.g. missing ses:GetSendQuota permission). */
-async function dailyQuotaRemaining(): Promise<number | null> {
+async function sesQuotaRemaining(): Promise<number | null> {
   try {
     const q = await sesClient.send(new GetSendQuotaCommand({}));
     if (q.Max24HourSend === undefined || q.Max24HourSend < 0) return null;
@@ -151,6 +152,14 @@ async function dailyQuotaRemaining(): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/** Emails the worker may send now: the least of SES's 24h room and our own daily and monthly caps (null = no limit). */
+async function sendBudget(): Promise<{ budget: number | null; monthFull: boolean; dailyLeft: number | null }> {
+  const [ses, usage] = await Promise.all([sesQuotaRemaining(), sendUsage()]);
+  const own = remainingSends(usage);
+  const caps = [ses, own.daily, own.monthly].filter((v): v is number => v !== null);
+  return { budget: caps.length > 0 ? Math.min(...caps) : null, monthFull: own.monthly === 0, dailyLeft: own.daily };
 }
 
 async function sendRate(): Promise<number> {
@@ -197,6 +206,10 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
   }
   const check = checkEmailContent(campaign.subject, normalizeEmailHtml(hosted));
   if (check.problems.length > 0) return fail(400, "Fix this before sending", check.problems.join(" "));
+  const caps = await sendBudget();
+  if (caps.monthFull) {
+    return fail(400, "This month's send limit is used up", `MONTHLY_SEND_LIMIT is ${MONTHLY_SEND_LIMIT}. Raise it on Railway, or send after the 1st.`);
+  }
 
   const sentRows = await prisma.emailEvent.findMany({ where: { campaignId, eventType: "sent" }, select: { email: true } });
   const alreadySentSet = new Set<string>(sentRows.map((e: any) => e.email.toLowerCase()));
@@ -240,7 +253,11 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
 
   void runCampaign(campaignId);
   const total = await prisma.campaignRecipient.count({ where: { campaignId } });
-  return { ok: true, total, queued, alreadySent: alreadySentSet.size, warnings: check.warnings };
+  const warnings = [...check.warnings];
+  if (caps.dailyLeft !== null && queued > caps.dailyLeft) {
+    warnings.push(`Your daily limit lets ${caps.dailyLeft} go today. The other ${queued - caps.dailyLeft} go out by themselves over the next days.`);
+  }
+  return { ok: true, total, queued, alreadySent: alreadySentSet.size, warnings };
 }
 
 const running = new Set<number>();
@@ -316,8 +333,8 @@ async function processCampaign(campaignId: number) {
 
   let sentTotal = 0;
   let backoff = 0;
-  // Emails left in the SES rolling-24h quota; null = unlimited/unreadable (then SES errors are the only signal).
-  let budget = await dailyQuotaRemaining();
+  // Emails left under SES's rolling-24h quota and our own caps; null = unlimited/unreadable (then SES errors are the only signal).
+  let budget = (await sendBudget()).budget;
   // The latest background write. It must finish before recipients are re-read, otherwise rows already sent would still
   // look "queued" and go out twice. Only one runs at a time, so a slow DB slows sending instead of building a backlog.
   let writes: Promise<void> = Promise.resolve();
@@ -332,10 +349,18 @@ async function processCampaign(campaignId: number) {
     if (!(await claimLease(campaignId))) return; // paused, reset, deleted, or another process took over
 
     if (budget !== null && budget <= 0) {
-      budget = await dailyQuotaRemaining();
+      const now = await sendBudget();
+      budget = now.budget;
+      if (now.monthFull) {
+        // Waiting weeks in "sending" would hide it; paused says what happened, and Resume continues next month.
+        await settleWrites();
+        console.warn(`[SEND][Campaign ${campaignId}] monthly send limit (MONTHLY_SEND_LIMIT=${MONTHLY_SEND_LIMIT}) reached, pausing`);
+        await prisma.campaign.update({ where: { id: campaignId }, data: { status: "paused" } });
+        return;
+      }
       if (budget !== null && budget <= 0) {
         // ponytail: fixed re-check interval; a pause/delete is noticed only after the wait ends.
-        console.warn(`[SEND][Campaign ${campaignId}] SES daily quota used up, re-checking in ${QUOTA_WAIT_MS / 60_000} min`);
+        console.warn(`[SEND][Campaign ${campaignId}] daily send limit or SES quota used up, re-checking in ${QUOTA_WAIT_MS / 60_000} min`);
         await sleep(QUOTA_WAIT_MS);
         continue;
       }
