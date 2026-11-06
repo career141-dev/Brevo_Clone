@@ -48,9 +48,10 @@ router.get("/api/billing/aws-costs", async (req, res) => {
   const cacheKey = `billing:aws-costs:${range}`;
   const cached = getCached(cacheKey) as { status: number; body: any } | undefined;
   if (cached) return res.status(cached.status).json(cached.body);
-  // Denials are cached too, or a missing permission would be retried (and billed) on every page view.
+  // Denials are cached too, or a missing permission would be retried (and billed) on every page view; only for an
+  // hour, so a permission granted later shows the same day.
   const reply = (status: number, body: any) => {
-    setCache(cacheKey, { status, body }, AWS_COSTS_TTL_MS);
+    setCache(cacheKey, { status, body }, status === 200 ? AWS_COSTS_TTL_MS : 60 * 60 * 1000);
     return res.status(status).json(body);
   };
   try {
