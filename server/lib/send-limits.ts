@@ -7,7 +7,8 @@ function readLimit(name: string, fallback: number): number {
   const n = Number(raw);
   return raw !== undefined && raw.trim() !== "" && Number.isInteger(n) && n >= 0 ? n : fallback;
 }
-export const DAILY_SEND_LIMIT = readLimit("DAILY_SEND_LIMIT", 2000);
+// 10,000 a day (owner, 6 Nov 2026): one campaign to the ~50,000 list goes out over about five days.
+export const DAILY_SEND_LIMIT = readLimit("DAILY_SEND_LIMIT", 10000);
 export const MONTHLY_SEND_LIMIT = readLimit("MONTHLY_SEND_LIMIT", 50000);
 
 export type SendUsage = { lastDay: number; thisMonth: number };
