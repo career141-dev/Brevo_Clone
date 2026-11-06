@@ -118,6 +118,20 @@ Resources:
               - rds:PurchaseReservedDBInstancesOffering
             Resource: "*"
 
+  # Settings > Billing reads the real AWS spend. The app asks once a day per range (server/routes/billing.ts),
+  # so at 0.01 USD a request this costs under 0.10 USD a month.
+  AppReadsCosts:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: read-costs-for-billing-page
+      Users: [!Ref AppUser]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: ce:GetCostAndUsage
+            Resource: "*"
+
   Admins:
     Type: AWS::IAM::Group
     Properties:
