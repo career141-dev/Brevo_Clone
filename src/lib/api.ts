@@ -149,6 +149,8 @@ export const api = {
       request<any>(`/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     send: (id: number) =>
       request<any>(`/campaigns/${id}/send`, { method: "POST" }),
+    schedule: (id: number, scheduledAt: string) =>
+      request<{ success: boolean; scheduledAt: string; warnings: string[] }>(`/campaigns/${id}/schedule`, { method: "POST", body: JSON.stringify({ scheduledAt }) }),
     reset: (id: number, targetStatus?: string) =>
       request<any>(`/campaigns/${id}/reset`, { method: "POST", body: JSON.stringify({ targetStatus }) }),
     sendTest: (id: number, testEmail: string, draftData?: any) =>

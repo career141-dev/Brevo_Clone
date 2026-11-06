@@ -772,6 +772,22 @@ export default function CampaignsPage() {
     else if (step === 4) handleNextStep4();
   };
 
+  const [scheduleAt, setScheduleAt] = useState("");
+  const scheduleCampaignMutation = useMutation({
+    // datetime-local is the sender's own clock; toISOString turns it into the absolute moment the server stores.
+    mutationFn: (vars: { id: number; at: string }) => api.campaigns.schedule(vars.id, new Date(vars.at).toISOString()),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
+      toast.success(`Scheduled for ${format(new Date(data.scheduledAt), "d MMM yyyy, h:mm a")}. It sends by itself.`);
+      showSpamWarnings(data.warnings);
+      setScheduleAt("");
+      setWizardOpen(false);
+      resetWizard();
+    },
+    onError: (err: any) => toast.error(err?.message || "Failed to schedule campaign.", { duration: 6000 }),
+  });
+
   const handleSendCampaign = () => {
     if (!campaignId) return;
 
@@ -927,7 +943,12 @@ export default function CampaignsPage() {
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{campaign.subject}</div>
                     </td>
-                    <td className="p-4">{getStatusBadge(campaign.status)}</td>
+                    <td className="p-4">
+                      {getStatusBadge(campaign.status)}
+                      {campaign.status === "scheduled" && campaign.scheduledAt && (
+                        <div className="text-xs text-muted-foreground mt-1">{format(new Date(campaign.scheduledAt), "d MMM, h:mm a")}</div>
+                      )}
+                    </td>
                     <td className="p-4">
                       <span className="font-medium">{campaign.totalRecipients || 0}</span>
                     </td>
@@ -2087,6 +2108,24 @@ export default function CampaignsPage() {
                 )}
               </Button>
             ) : (
+              <div className="flex items-center gap-2">
+              <Input
+                id="schedule-at"
+                type="datetime-local"
+                aria-label="Send later at"
+                value={scheduleAt}
+                min={format(new Date(), "yyyy-MM-dd'T'HH:mm")}
+                onChange={(e) => setScheduleAt(e.target.value)}
+                className="w-52"
+              />
+              <Button
+                variant="outline"
+                onClick={() => campaignId && scheduleCampaignMutation.mutate({ id: campaignId, at: scheduleAt })}
+                disabled={!scheduleAt || !campaignId || scheduleCampaignMutation.isPending || (audienceStats?.subscribed ?? 0) === 0}
+              >
+                {scheduleCampaignMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
+                Schedule
+              </Button>
               <Button
                 onClick={handleSendCampaign}
                 disabled={sendCampaignMutation.isPending || (audienceStats?.subscribed ?? 0) === 0}
@@ -2104,6 +2143,7 @@ export default function CampaignsPage() {
                   </>
                 )}
               </Button>
+              </div>
             )}
           </div>
         </SheetContent>

@@ -7,7 +7,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { clerkMiddleware, getAuth, verifyToken } from "@clerk/express";
 import { prisma, WORKSPACE_USER_ID } from "./prisma.js";
-import { resumeSendingCampaigns, stopSending } from "./lib/campaign-sender.js";
+import { resumeSendingCampaigns, sendDueScheduledCampaigns, stopSending } from "./lib/campaign-sender.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { billingRouter } from "./routes/billing.js";
 import { brevoRouter } from "./routes/brevo.js";
@@ -164,7 +164,11 @@ app.listen(PORT, () => {
 // a dev machine pointed at the production DB must never start sending someone else's campaign. The campaign lease in
 // campaign-sender.ts keeps overlapping instances from sending the same campaign.
 if (IS_DEPLOYED || process.env.ENABLE_SENDER_SWEEP) {
-  const sweep = () => resumeSendingCampaigns().catch((e) => console.error("Sender sweep failed:", e));
+  const sweep = () =>
+    Promise.all([
+      resumeSendingCampaigns().catch((e) => console.error("Sender sweep failed:", e)),
+      sendDueScheduledCampaigns().catch((e) => console.error("Schedule sweep failed:", e)),
+    ]);
   void sweep();
   setInterval(sweep, 60_000);
 }

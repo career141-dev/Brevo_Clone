@@ -299,6 +299,22 @@ export async function runCampaign(campaignId: number) {
   }
 }
 
+/**
+ * Starts scheduled campaigns whose time has come; runs from the same 60s sweep. Each one is first moved back to draft
+ * with a guarded update, so when two containers overlap during a deploy only one of them sends it. If the send is
+ * refused (spam check, empty audience, monthly limit) it stays a draft and the reason goes to the log.
+ */
+export async function sendDueScheduledCampaigns() {
+  const due = await prisma.campaign.findMany({ where: { status: "scheduled", scheduledAt: { lte: new Date() } }, select: { id: true } });
+  for (const { id } of due) {
+    const { count } = await prisma.campaign.updateMany({ where: { id, status: "scheduled" }, data: { status: "draft" } });
+    if (count !== 1) continue;
+    const result = await dispatchCampaign(id, "send");
+    if (result.ok) console.log(`[SCHEDULE][Campaign ${id}] started, ${result.queued} queued`);
+    else console.error(`[SCHEDULE][Campaign ${id}] not sent, left as draft: ${result.error}${result.details ? ` - ${result.details}` : ""}`);
+  }
+}
+
 export async function resumeSendingCampaigns() {
   const stuck = await prisma.campaign.findMany({ where: { status: "sending" }, select: { id: true } });
   for (const c of stuck) void runCampaign(c.id);

@@ -361,6 +361,33 @@ router.post("/api/campaigns/:id/send", async (req, res) => {
   }
 });
 
+// POST /api/campaigns/:id/schedule { scheduledAt } — sends by itself at that time (the 60s sweep in server/index.ts).
+// The content check runs now as well, so a problem shows today rather than in the log at send time.
+router.post("/api/campaigns/:id/schedule", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const when = new Date(req.body?.scheduledAt);
+    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+    if (isNaN(when.getTime())) return res.status(400).json({ error: "Pick a date and time." });
+    if (when.getTime() < Date.now() + 60_000) return res.status(400).json({ error: "Pick a time at least a minute from now." });
+    if (when.getTime() > Date.now() + 90 * 86400_000) return res.status(400).json({ error: "Pick a time within the next 90 days." });
+
+    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+    if (!["draft", "scheduled"].includes(campaign.status)) return res.status(400).json({ error: `A ${campaign.status} campaign can't be scheduled.` });
+    if (!campaign.templateHtml) return res.status(400).json({ error: "No template selected" });
+    const hosted = await hostEmbeddedImages(campaign.templateHtml);
+    const check = checkEmailContent(campaign.subject, normalizeEmailHtml(hosted));
+    if (check.problems.length > 0) return res.status(400).json({ error: "Fix this before scheduling", details: check.problems.join(" ") });
+
+    await prisma.campaign.update({ where: { id: campaignId }, data: { status: "scheduled", scheduledAt: when, templateHtml: hosted } });
+    res.json({ success: true, scheduledAt: when.toISOString(), warnings: check.warnings });
+  } catch (err: any) {
+    console.error("Schedule campaign error:", err);
+    res.status(500).json({ error: "Failed to schedule campaign", details: err.message });
+  }
+});
+
 // GET /api/campaigns/:id/progress — live send progress (cheap COUNT ... GROUP BY on campaign_recipients)
 router.get("/api/campaigns/:id/progress", async (req, res) => {
   try {
