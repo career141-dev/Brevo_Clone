@@ -5,6 +5,7 @@ import { sesv2Client } from "../lib/ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "../lib/tracking.js";
 import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize } from "../lib/campaign-sender.js";
 import { getCached, setCache, invalidateAnalyticsCache } from "../lib/analytics-cache.js";
+import { hostEmbeddedImages } from "../lib/embedded-images.js";
 
 export const campaignsRouter = Router();
 const router = campaignsRouter;
@@ -488,7 +489,7 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
     });
 
     // Prepare template HTML with placeholders, normalize relative document/image URLs & fallback unsubscribe URL
-    let template = normalizeEmailHtml(templateHtml);
+    let template = normalizeEmailHtml(await hostEmbeddedImages(templateHtml));
     if (!template.includes("{{unsubscribe_url}}")) {
       const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>This is a test email. <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">Unsubscribe link test</a></p></div>`;
       if (/<\/body>/i.test(template)) {

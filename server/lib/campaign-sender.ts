@@ -4,6 +4,7 @@ import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { prisma } from "../prisma.js";
 import { sesClient, sesv2Client } from "./ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "./tracking.js";
+import { hostEmbeddedImages } from "./embedded-images.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -184,6 +185,14 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
   const hasListAudience = parseIds(campaign.audienceListIds).length > 0 || Boolean(campaign.audienceId);
   if (campaign.audienceType !== "individual" && !hasListAudience && !campaign.individualEmails) return fail(400, "No audience selected");
   if (!campaign.templateHtml) return fail(400, "No template selected");
+
+  // Saved back so the worker (and any resume) sends the hosted version, and the pictures are uploaded only once.
+  try {
+    const hosted = await hostEmbeddedImages(campaign.templateHtml);
+    if (hosted !== campaign.templateHtml) await prisma.campaign.update({ where: { id: campaignId }, data: { templateHtml: hosted } });
+  } catch (err: any) {
+    return fail(502, "Could not upload the email's images", String(err?.message ?? err));
+  }
 
   const sentRows = await prisma.emailEvent.findMany({ where: { campaignId, eventType: "sent" }, select: { email: true } });
   const alreadySentSet = new Set<string>(sentRows.map((e: any) => e.email.toLowerCase()));

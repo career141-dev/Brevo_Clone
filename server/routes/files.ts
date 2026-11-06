@@ -122,6 +122,8 @@ uploadRouter.post("/api/upload", async (req: any, res: any) => {
         else if (ext === ".zip") contentType = "application/zip";
         else if (ext === ".png") contentType = "image/png";
         else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+        else if (ext === ".gif") contentType = "image/gif";
+        else if (ext === ".webp") contentType = "image/webp";
 
         const r2Result = await uploadToR2(buffer, fileName, contentType);
         fileUrl = r2Result.url;

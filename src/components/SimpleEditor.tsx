@@ -467,16 +467,23 @@ export default function SimpleEditor({
     execCmd("insertHTML", `<img src="${url}" style="max-width:100%;width:100%;height:auto;display:block;margin:8px auto;" data-resizable="true" />`);
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Uploaded and linked, never pasted in as base64: Gmail hides inline images and they bloat the mail into spam.
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string;
-      if (dataUrl)
-        execCmd("insertHTML", `<img src="${dataUrl}" style="max-width:100%;width:100%;height:auto;display:block;margin:8px auto;" data-resizable="true" />`);
-    };
-    reader.readAsDataURL(file);
+    // The upload awaits, so remember where the cursor was before focus moves to the toast.
+    const sel = window.getSelection();
+    const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+    const toastId = toast.loading(`Uploading ${file.name}...`);
+    try {
+      const { url } = await api.uploadFile(file);
+      toast.dismiss(toastId);
+      if (range) { sel!.removeAllRanges(); sel!.addRange(range); }
+      execCmd("insertHTML", `<img src="${url}" style="max-width:100%;width:100%;height:auto;display:block;margin:8px auto;" data-resizable="true" />`);
+    } catch (err: any) {
+      toast.dismiss(toastId);
+      toast.error(`Image upload failed: ${err.message || "Unknown error"}`);
+    }
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
