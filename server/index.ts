@@ -6,7 +6,7 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { clerkMiddleware, getAuth, verifyToken } from "@clerk/express";
-import { WORKSPACE_USER_ID } from "./prisma.js";
+import { prisma, WORKSPACE_USER_ID } from "./prisma.js";
 import { resumeSendingCampaigns, stopSending } from "./lib/campaign-sender.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { billingRouter } from "./routes/billing.js";
@@ -124,6 +124,17 @@ app.use(brevoRouter);
 app.use(eventsRouter);
 app.use(sendersRouter);
 app.use(billingRouter);
+
+// Public health check for uptime monitors and Railway: outside /api so sign-in doesn't apply; says nothing private.
+app.get("/health", async (_req, res) => {
+  const started = Date.now();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: "ok", database_ms: Date.now() - started, uptime_s: Math.round(process.uptime()) });
+  } catch {
+    res.status(503).json({ status: "error", database: "unreachable" });
+  }
+});
 
 // ── Static frontend (production) ────────────────────────────────────
 
