@@ -80,6 +80,7 @@ const TEAM_USER_IDS = [
   WORKSPACE_USER_ID, // sanjeevsivasuthakaran@gmail.com (owns the data)
   "user_3EWBGeBqi9dxi5mlkRgX51G7LGA", // sanjaysanjeev2000@gmail.com
   "user_3EtWIDT0SkIWh03rVqpGcOzkgFn", // uzmaan@career141.com
+  "user_3EWIWFe1VNqKS8uJLw1LaUIqmCw", // sanjeev@career141.com (signed in, saw an empty app on 6 Nov: every call 401)
 ];
 const ALLOWED_USER_IDS = [...new Set([...TEAM_USER_IDS, ...cleanEnv(process.env.ALLOWED_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean)])];
 const IS_DEPLOYED = process.env.NODE_ENV === "production" || Boolean(process.env.RAILWAY_ENVIRONMENT_NAME);
