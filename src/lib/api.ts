@@ -20,6 +20,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    // A refused account used to see an empty app with zeros everywhere; say why, once per page load.
+    if (res.status === 403 && !refusalShown) {
+      refusalShown = true;
+      toast.error(`You're signed in, but ${body.reason ?? "this account can't use the app"}. Sign out and use your company email.`, { duration: 15000 });
+    }
     const errorMessage = body.details
       ? `${body.error || 'Error'}: ${body.details}`
       : (body.error ?? `Request failed (${res.status})`);
