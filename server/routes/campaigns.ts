@@ -6,6 +6,7 @@ import { injectTracking, makeUnsubscribeUrl } from "../lib/tracking.js";
 import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize } from "../lib/campaign-sender.js";
 import { getCached, setCache, invalidateAnalyticsCache } from "../lib/analytics-cache.js";
 import { hostEmbeddedImages } from "../lib/embedded-images.js";
+import { checkEmailContent } from "../lib/content-check.js";
 
 export const campaignsRouter = Router();
 const router = campaignsRouter;
@@ -352,6 +353,7 @@ router.post("/api/campaigns/:id/send", async (req, res) => {
       campaignId,
       recipientCount: result.queued,
       status: "sending",
+      warnings: result.warnings ?? [],
     });
   } catch (err: any) {
     console.error("Send campaign error:", err);
@@ -424,6 +426,7 @@ router.post("/api/campaigns/:id/resume", async (req, res) => {
       alreadySent: result.alreadySent,
       remainingToSend: result.queued,
       status: "sending",
+      warnings: result.warnings ?? [],
     });
   } catch (err: any) {
     console.error("Resume campaign error:", err);
@@ -490,6 +493,9 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
 
     // Prepare template HTML with placeholders, normalize relative document/image URLs & fallback unsubscribe URL
     let template = normalizeEmailHtml(await hostEmbeddedImages(templateHtml));
+    // Same check as a real send, so a test shows what would block or hurt the campaign.
+    const check = checkEmailContent(subject === "(No subject)" ? "" : subject, template);
+    if (check.problems.length > 0) return res.status(400).json({ error: "Fix this before sending", details: check.problems.join(" ") });
     if (!template.includes("{{unsubscribe_url}}")) {
       const fallbackUnsubHtml = `<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 12px; color: #666;"><p>This is a test email. <a href="{{unsubscribe_url}}" style="color: #0070f3; text-decoration: underline;">Unsubscribe link test</a></p></div>`;
       if (/<\/body>/i.test(template)) {
@@ -586,6 +592,7 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
       success: true,
       message: `Test email successfully sent to ${cleanTestEmail}`,
       testEmail: cleanTestEmail,
+      warnings: check.warnings,
     });
   } catch (err: any) {
     console.error("Send test campaign error:", err);

@@ -83,6 +83,11 @@ import { toast } from "sonner";
 import TemplatePickerModal from "@/components/TemplatePickerModal.tsx";
 import SimpleEditor from "@/components/SimpleEditor.tsx";
 
+// The server's pre-send spam checks: the mail still goes, but each warning makes the spam folder more likely.
+function showSpamWarnings(warnings?: string[]) {
+  for (const w of warnings ?? []) toast.warning(w, { duration: 10000 });
+}
+
 export default function CampaignsPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -268,10 +273,11 @@ export default function CampaignsPage() {
 
   const sendCampaignMutation = useMutation({
     mutationFn: (id: number) => api.campaigns.send(id),
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
       queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
       toast.success("Campaign started sending!");
+      showSpamWarnings(data?.warnings);
       setWizardOpen(false);
       resetWizard();
     },
@@ -296,10 +302,11 @@ export default function CampaignsPage() {
       };
       return api.campaigns.sendTest(campaignId || 0, vars.testEmail, draftData);
     },
-    onSuccess: (_, vars) => {
+    onSuccess: (data: any, vars) => {
       const sentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       setLastTestSentTo({ email: vars.testEmail, time: sentTime });
       toast.success(`Test email sent to ${vars.testEmail}! Please check your inbox.`);
+      showSpamWarnings(data?.warnings);
     },
     onError: (err: any) => {
       const serverDetails = err?.response?.data?.details;

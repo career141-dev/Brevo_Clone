@@ -5,6 +5,7 @@ import { prisma } from "../prisma.js";
 import { sesClient, sesv2Client } from "./ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "./tracking.js";
 import { hostEmbeddedImages } from "./embedded-images.js";
+import { checkEmailContent } from "./content-check.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -162,7 +163,7 @@ async function sendRate(): Promise<number> {
 }
 
 export type DispatchResult =
-  | { ok: true; total: number; queued: number; alreadySent: number; alreadyRunning?: boolean }
+  | { ok: true; total: number; queued: number; alreadySent: number; alreadyRunning?: boolean; warnings?: string[] }
   | { ok: false; status: number; error: string; details?: string };
 
 /**
@@ -187,12 +188,15 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
   if (!campaign.templateHtml) return fail(400, "No template selected");
 
   // Saved back so the worker (and any resume) sends the hosted version, and the pictures are uploaded only once.
+  let hosted: string;
   try {
-    const hosted = await hostEmbeddedImages(campaign.templateHtml);
+    hosted = await hostEmbeddedImages(campaign.templateHtml);
     if (hosted !== campaign.templateHtml) await prisma.campaign.update({ where: { id: campaignId }, data: { templateHtml: hosted } });
   } catch (err: any) {
     return fail(502, "Could not upload the email's images", String(err?.message ?? err));
   }
+  const check = checkEmailContent(campaign.subject, normalizeEmailHtml(hosted));
+  if (check.problems.length > 0) return fail(400, "Fix this before sending", check.problems.join(" "));
 
   const sentRows = await prisma.emailEvent.findMany({ where: { campaignId, eventType: "sent" }, select: { email: true } });
   const alreadySentSet = new Set<string>(sentRows.map((e: any) => e.email.toLowerCase()));
@@ -236,7 +240,7 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
 
   void runCampaign(campaignId);
   const total = await prisma.campaignRecipient.count({ where: { campaignId } });
-  return { ok: true, total, queued, alreadySent: alreadySentSet.size };
+  return { ok: true, total, queued, alreadySent: alreadySentSet.size, warnings: check.warnings };
 }
 
 const running = new Set<number>();
