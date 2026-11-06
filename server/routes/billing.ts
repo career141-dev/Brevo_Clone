@@ -35,10 +35,22 @@ router.get("/api/billing/exchange-rate", async (_req, res) => {
   }
 });
 
+// Every Cost Explorer request is billed at $0.01, and the Settings page polled it every 5 minutes (about $86 a month
+// with the page left open). AWS only refreshes cost data a few times a day, so one answer per range per day is enough.
+const AWS_COSTS_TTL_MS = 24 * 60 * 60 * 1000;
+
 // GET /api/billing/aws-costs — real cost data from AWS Cost Explorer
 router.get("/api/billing/aws-costs", async (req, res) => {
+  const range = ["current_month", "last_30", "all_time"].includes(req.query.range as string) ? (req.query.range as string) : "current_month";
+  const cacheKey = `billing:aws-costs:${range}`;
+  const cached = getCached(cacheKey) as { status: number; body: any } | undefined;
+  if (cached) return res.status(cached.status).json(cached.body);
+  // Denials are cached too, or a missing permission would be retried (and billed) on every page view.
+  const reply = (status: number, body: any) => {
+    setCache(cacheKey, { status, body }, AWS_COSTS_TTL_MS);
+    return res.status(status).json(body);
+  };
   try {
-    const range = (req.query.range as string) || "current_month";
     const now = new Date();
     
     // AWS Cost Explorer MONTHLY granularity requires Start and End to be exactly the 1st of the month.
@@ -92,17 +104,18 @@ router.get("/api/billing/aws-costs", async (req, res) => {
       });
     }
 
-    res.json({
+    return reply(200, {
       total_cost_usd: totalCostUsd,
       range,
       period: { start: startDate, end: endDate },
       monthly_breakdown: monthlyBreakdown,
+      updated_at: now.toISOString(),
     });
   } catch (err: any) {
     console.error("AWS Cost Explorer error:", err);
     // If Cost Explorer access is denied or fails, return a graceful error
     if (err.name === "AccessDeniedException" || err.Code === "AccessDeniedException") {
-      return res.status(403).json({
+      return reply(403, {
         error: "AWS Cost Explorer Access Denied",
         detail: "Please ensure the IAM user has 'ce:GetCostAndUsage' permission.",
       });

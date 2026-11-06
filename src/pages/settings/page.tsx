@@ -71,8 +71,9 @@ export default function SettingsPage() {
   const { data: awsCosts, isLoading: isLoadingAwsCosts, error: awsCostsError } = useQuery({
     queryKey: ["billing-aws-costs", billingRange],
     queryFn: () => api.billing.awsCosts(billingRange),
-    refetchInterval: 5 * 60 * 1000,
-    retry: 1,
+    // Each AWS cost request is billed; the server answers from a daily cache, so polling would only add load.
+    staleTime: 60 * 60 * 1000,
+    retry: false,
   });
 
   const { data: domainsData, isLoading: isLoadingDomains } = useQuery({
