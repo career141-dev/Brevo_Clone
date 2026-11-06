@@ -4,7 +4,11 @@
  * This replaces a hard-coded list of user ids, which turned away every new colleague (6 Nov 2026: a signed-in
  * sanjeev@career141.com saw an empty app because every call answered 401).
  */
-export type EmailRecord = { emailAddress: string; verification?: { status?: string | null } | null };
+export type EmailRecord = { emailAddress: string; verification?: { status?: string | null; strategy?: string | null } | null };
+
+// Proof that the person can read the mailbox: Clerk's own code or link (or an admin creating them). "Verified" by a
+// third-party login is refused: another company's Microsoft tenant can assert any address it likes ("nOAuth").
+const MAILBOX_PROOFS = new Set(["email_code", "email_link", "admin"]);
 
 const clean = (v?: string) => (v ?? "").replace(/["']/g, "").trim();
 export const ALLOWED_EMAIL_DOMAINS = (clean(process.env.ALLOWED_EMAIL_DOMAINS) || "career141.com")
@@ -13,7 +17,7 @@ export const ALLOWED_EMAIL_DOMAINS = (clean(process.env.ALLOWED_EMAIL_DOMAINS) |
 /** True when one of the addresses is verified and at an allowed domain. An unverified address proves nothing. */
 export function hasCompanyEmail(emails: EmailRecord[], domains = ALLOWED_EMAIL_DOMAINS): boolean {
   return emails.some((e) => {
-    if (e.verification?.status !== "verified") return false;
+    if (e.verification?.status !== "verified" || !MAILBOX_PROOFS.has(e.verification?.strategy ?? "")) return false;
     const domain = e.emailAddress.toLowerCase().split("@").pop() ?? "";
     return domains.includes(domain);
   });

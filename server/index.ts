@@ -60,7 +60,7 @@ const sensitiveLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use(/^\/api\/(upload|download|campaigns\/\d+\/(send|resume|send-test))/, sensitiveLimiter);
+app.use(/^\/api\/(upload|download|campaigns\/\d+\/(send|resume|send-test|schedule))/, sensitiveLimiter);
 
 // Public on purpose: recipients open attachment links from emails. Mounted after the limiters so they apply.
 app.use(downloadRouter);
@@ -84,7 +84,18 @@ if (!CLERK_ENABLED) console.warn("[AUTH] CLERK_SECRET_KEY not set: API is runnin
 else console.log(`[AUTH] Clerk enabled, allowed: verified @${ALLOWED_EMAIL_DOMAINS.join(", @")} emails${ALLOWED_USER_IDS.length ? ` plus ${ALLOWED_USER_IDS.join(", ")}` : ""}`);
 const clerkApi = CLERK_ENABLED ? createClerkClient({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY }) : null;
 const loadEmails = async (userId: string) => ((await clerkApi!.users.getUser(userId)).emailAddresses ?? []) as EmailRecord[];
-if (CLERK_ENABLED) app.use("/api/", clerkMiddleware({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY }));
+// Only sessions started on this app's own pages count: the Clerk instance could also sign people in to another app.
+const toOrigin = (u?: string) => { try { return u ? new URL(u.includes("://") ? u : `https://${u}`).origin : ""; } catch { return ""; } };
+const AUTHORIZED_PARTIES = [...new Set([
+  "https://email.career141.com",
+  toOrigin(process.env.APP_URL),
+  toOrigin(process.env.FRONTEND_URL),
+  toOrigin(process.env.RAILWAY_PUBLIC_DOMAIN),
+  ...(IS_DEPLOYED ? [] : ["http://localhost:5173", "http://localhost:3001"]),
+].filter(Boolean))];
+if (CLERK_ENABLED) {
+  app.use("/api/", clerkMiddleware({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY, authorizedParties: AUTHORIZED_PARTIES }));
+}
 app.use("/api/", async (req: any, res: any, next: any) => {
   if (!CLERK_ENABLED) return next();
   if (PUBLIC_API.test(req.originalUrl)) return next();

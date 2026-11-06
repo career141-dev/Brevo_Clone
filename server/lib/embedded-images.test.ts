@@ -14,7 +14,7 @@ test("inline images become hosted links, each picture uploaded once", async () =
   const out = await hostEmbeddedImages(html, upload);
 
   assert.equal(uploads.length, 1);
-  assert.match(uploads[0], /^img-[0-9a-f]{16}\.png\|image\/png$/);
+  assert.match(uploads[0], /^img-[0-9a-f]{32}\.png\|image\/png$/);
   assert.ok(!out.includes("data:image"));
   assert.equal(out.match(/https:\/\/files\.example\.com\/img-/g)?.length, 2);
   assert.ok(out.includes(`src='https://files.example.com/`), "keeps the original quote style");

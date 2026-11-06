@@ -21,7 +21,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     // A refused account used to see an empty app with zeros everywhere; say why, once per page load.
-    if (res.status === 403 && !refusalShown) {
+    // Only the sign-in refusal carries `reason`; other 403s (e.g. AWS cost access) must not tell people to sign out.
+    if (res.status === 403 && body.reason && !refusalShown) {
       refusalShown = true;
       toast.error(`You're signed in, but ${body.reason ?? "this account can't use the app"}. Sign out and use your company email.`, { duration: 15000 });
     }

@@ -193,7 +193,9 @@ router.delete("/api/campaigns/bulk", async (req, res) => {
       return res.status(400).json({ error: "Cannot delete more than 100 campaigns at once" });
     }
     
-    // First delete associated email events
+    // "sent" rows are what the daily/monthly send limits count (send-limits.ts), so they stay, detached from the
+    // campaign; deleting them gave a deleted campaign's emails back to the limits. Everything else goes.
+    await prisma.emailEvent.updateMany({ where: { campaignId: { in: campaignIds }, eventType: "sent" }, data: { campaignId: null } });
     await prisma.emailEvent.deleteMany({
       where: { campaignId: { in: campaignIds } },
     });
@@ -219,7 +221,8 @@ router.delete("/api/campaigns/:id", async (req, res) => {
       where: { id: campaignId },
     });
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
-    // First delete associated email events to clean up
+    // "sent" rows stay, detached, because the send limits count them (see the bulk delete above).
+    await prisma.emailEvent.updateMany({ where: { campaignId, eventType: "sent" }, data: { campaignId: null } });
     await prisma.emailEvent.deleteMany({
       where: { campaignId: campaignId },
     });

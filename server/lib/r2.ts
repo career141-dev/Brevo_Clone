@@ -29,7 +29,9 @@ export const r2Client = isR2Configured
 export async function uploadToR2(
   buffer: Buffer,
   fileName: string,
-  contentType: string = "application/octet-stream"
+  contentType: string = "application/octet-stream",
+  // A fixed key (e.g. a content hash) makes re-uploading the same bytes overwrite one object instead of adding another.
+  exactKey?: string,
 ): Promise<{ url: string; key: string; size: number }> {
   if (!r2Client || !isR2Configured) {
     throw new Error("Cloudflare R2 is not configured. Please check environment variables.");
@@ -37,7 +39,7 @@ export async function uploadToR2(
 
   const ext = fileName.includes(".") ? `.${fileName.split(".").pop()!.replace(/[^a-zA-Z0-9]/g, "")}` : "";
   const base = fileName.replace(ext, "").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const uniqueKey = `${Date.now()}_${base}${ext}`;
+  const uniqueKey = exactKey ?? `${Date.now()}_${base}${ext}`;
 
   await r2Client.send(
     new PutObjectCommand({

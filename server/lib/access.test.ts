@@ -2,7 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { hasCompanyEmail, isAllowedUser } from "./access.js";
 
-const verified = (emailAddress: string) => ({ emailAddress, verification: { status: "verified" } });
+const verified = (emailAddress: string) => ({ emailAddress, verification: { status: "verified", strategy: "email_code" } });
+
+test("an address vouched for by another company's login does not count", () => {
+  const viaMicrosoft = { emailAddress: "ceo@career141.com", verification: { status: "verified", strategy: "from_oauth_microsoft" } };
+  assert.equal(hasCompanyEmail([viaMicrosoft], ["career141.com"]), false);
+});
 
 test("only a verified company address lets someone in", () => {
   assert.equal(hasCompanyEmail([verified("Sanjeev@Career141.com")], ["career141.com"]), true);

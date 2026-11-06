@@ -300,18 +300,22 @@ export async function runCampaign(campaignId: number) {
 }
 
 /**
- * Starts scheduled campaigns whose time has come; runs from the same 60s sweep. Each one is first moved back to draft
- * with a guarded update, so when two containers overlap during a deploy only one of them sends it. If the send is
- * refused (spam check, empty audience, monthly limit) it stays a draft and the reason goes to the log.
+ * Starts scheduled campaigns whose time has come; runs from the same 60s sweep. A container stopped mid-dispatch
+ * leaves it "scheduled", so the next sweep simply tries again.
  */
 export async function sendDueScheduledCampaigns() {
   const due = await prisma.campaign.findMany({ where: { status: "scheduled", scheduledAt: { lte: new Date() } }, select: { id: true } });
   for (const { id } of due) {
-    const { count } = await prisma.campaign.updateMany({ where: { id, status: "scheduled" }, data: { status: "draft" } });
-    if (count !== 1) continue;
+    // Dispatched straight from "scheduled": its own flip to "sending" is guarded, so a second container that loses the
+    // race gets a refusal and changes nothing. A refused send becomes "paused" (only if still scheduled), not a plain
+    // draft, so the list shows it never went; pressing Send again shows the reason.
     const result = await dispatchCampaign(id, "send");
-    if (result.ok) console.log(`[SCHEDULE][Campaign ${id}] started, ${result.queued} queued`);
-    else console.error(`[SCHEDULE][Campaign ${id}] not sent, left as draft: ${result.error}${result.details ? ` - ${result.details}` : ""}`);
+    if (result.ok) {
+      if (!result.alreadyRunning) console.log(`[SCHEDULE][Campaign ${id}] started, ${result.queued} queued`);
+      continue;
+    }
+    const { count } = await prisma.campaign.updateMany({ where: { id, status: "scheduled" }, data: { status: "paused" } });
+    if (count === 1) console.error(`[SCHEDULE][Campaign ${id}] not sent, paused: ${result.error}${result.details ? ` - ${result.details}` : ""}`);
   }
 }
 
@@ -350,7 +354,7 @@ async function processCampaign(campaignId: number) {
   let sentTotal = 0;
   let backoff = 0;
   // Emails left under SES's rolling-24h quota and our own caps; null = unlimited/unreadable (then SES errors are the only signal).
-  let budget = (await sendBudget()).budget;
+  let budget: number | null = null; // read at the top of every loop
   // The latest background write. It must finish before recipients are re-read, otherwise rows already sent would still
   // look "queued" and go out twice. Only one runs at a time, so a slow DB slows sending instead of building a backlog.
   let writes: Promise<void> = Promise.resolve();
@@ -364,7 +368,9 @@ async function processCampaign(campaignId: number) {
     await settleWrites();
     if (!(await claimLease(campaignId))) return; // paused, reset, deleted, or another process took over
 
-    if (budget !== null && budget <= 0) {
+    // Re-read before every page, not only when this worker's own count runs out: two campaigns sending at once each
+    // started with the whole daily budget and together sent double the limit (6 Nov 2026 review).
+    {
       const now = await sendBudget();
       budget = now.budget;
       if (now.monthFull) {

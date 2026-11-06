@@ -948,6 +948,10 @@ export default function CampaignsPage() {
                       {campaign.status === "scheduled" && campaign.scheduledAt && (
                         <div className="text-xs text-muted-foreground mt-1">{format(new Date(campaign.scheduledAt), "d MMM, h:mm a")}</div>
                       )}
+                      {/* The sweep pauses a scheduled send it could not start (server/lib/campaign-sender.ts). */}
+                      {campaign.status === "paused" && campaign.scheduledAt && !campaign.totalRecipients && (
+                        <div className="text-xs text-red-600 mt-1 max-w-[180px]">Scheduled send didn't start. Open it and press Send to see why.</div>
+                      )}
                     </td>
                     <td className="p-4">
                       <span className="font-medium">{campaign.totalRecipients || 0}</span>

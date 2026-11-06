@@ -13,10 +13,17 @@ export const MONTHLY_SEND_LIMIT = readLimit("MONTHLY_SEND_LIMIT", 50000);
 
 export type SendUsage = { lastDay: number; thisMonth: number };
 
-/** Campaign emails sent in the rolling last 24 hours and since the 1st of this month (server time, UTC on Railway). */
+// The team works in Colombo (UTC+05:30, no daylight saving); Railway's clock is UTC, which started the month 5.5h late.
+const COLOMBO_OFFSET_MS = 5.5 * 3_600_000;
+export function colomboMonthStart(now: Date): Date {
+  const local = new Date(now.getTime() + COLOMBO_OFFSET_MS);
+  return new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), 1) - COLOMBO_OFFSET_MS);
+}
+
+/** Campaign emails sent in the rolling last 24 hours and since the 1st of this month in Colombo. */
 export async function sendUsage(now = new Date()): Promise<SendUsage> {
   const dayAgo = new Date(now.getTime() - 86_400_000);
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthStart = colomboMonthStart(now);
   const [lastDay, thisMonth] = await Promise.all([
     prisma.emailEvent.count({ where: { eventType: "sent", timestamp: { gte: dayAgo } } }),
     prisma.emailEvent.count({ where: { eventType: "sent", timestamp: { gte: monthStart } } }),
