@@ -1,4 +1,7 @@
+import { toast } from "sonner";
+
 const BASE = import.meta.env.VITE_API_URL ?? "/api";
+let refusalShown = false;
 
 // The API verifies the Clerk session token when CLERK_SECRET_KEY is configured on the server.
 // Queries fire on first render, before clerk-js has restored the session; without waiting they go out with no token (401).

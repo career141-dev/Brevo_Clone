@@ -5,8 +5,9 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { clerkMiddleware, getAuth, verifyToken } from "@clerk/express";
-import { prisma, WORKSPACE_USER_ID } from "./prisma.js";
+import { clerkMiddleware, createClerkClient, getAuth, verifyToken } from "@clerk/express";
+import { prisma } from "./prisma.js";
+import { ALLOWED_EMAIL_DOMAINS, isAllowedUser, type EmailRecord } from "./lib/access.js";
 import { resumeSendingCampaigns, sendDueScheduledCampaigns, stopSending } from "./lib/campaign-sender.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { billingRouter } from "./routes/billing.js";
@@ -74,19 +75,15 @@ const CLERK_SECRET_KEY = cleanEnv(process.env.CLERK_SECRET_KEY);
 const CLERK_PUBLISHABLE_KEY = cleanEnv(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY);
 const CLERK_ENABLED = Boolean(CLERK_SECRET_KEY);
 const PUBLIC_API = /^\/api\/(track|unsubscribe|webhooks)(\/|\?|$)/;
-// Team accounts are allowed from code so access never depends on the Railway variable being edited correctly;
-// ALLOWED_USER_IDS can still add more.
-const TEAM_USER_IDS = [
-  WORKSPACE_USER_ID, // sanjeevsivasuthakaran@gmail.com (owns the data)
-  "user_3EWBGeBqi9dxi5mlkRgX51G7LGA", // sanjaysanjeev2000@gmail.com
-  "user_3EtWIDT0SkIWh03rVqpGcOzkgFn", // uzmaan@career141.com
-  "user_3EWIWFe1VNqKS8uJLw1LaUIqmCw", // sanjeev@career141.com (signed in, saw an empty app on 6 Nov: every call 401)
-];
-const ALLOWED_USER_IDS = [...new Set([...TEAM_USER_IDS, ...cleanEnv(process.env.ALLOWED_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean)])];
+// Anyone with a verified company email (server/lib/access.ts) may use the app; ALLOWED_USER_IDS adds named exceptions.
+// The data is shared in one workspace (WORKSPACE_USER_ID in prisma.ts) whoever signs in, so no one's data moves.
+const ALLOWED_USER_IDS = cleanEnv(process.env.ALLOWED_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean);
 const IS_DEPLOYED = process.env.NODE_ENV === "production" || Boolean(process.env.RAILWAY_ENVIRONMENT_NAME);
 if (!CLERK_ENABLED && IS_DEPLOYED) throw new Error("CLERK_SECRET_KEY is required in production: refusing to start with an open API.");
 if (!CLERK_ENABLED) console.warn("[AUTH] CLERK_SECRET_KEY not set: API is running UNAUTHENTICATED as a single fixed user.");
-else console.log(`[AUTH] Clerk enabled, allowed users: ${ALLOWED_USER_IDS.join(", ") || "ANY signed-in user"}`);
+else console.log(`[AUTH] Clerk enabled, allowed: verified @${ALLOWED_EMAIL_DOMAINS.join(", @")} emails${ALLOWED_USER_IDS.length ? ` plus ${ALLOWED_USER_IDS.join(", ")}` : ""}`);
+const clerkApi = CLERK_ENABLED ? createClerkClient({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY }) : null;
+const loadEmails = async (userId: string) => ((await clerkApi!.users.getUser(userId)).emailAddresses ?? []) as EmailRecord[];
 if (CLERK_ENABLED) app.use("/api/", clerkMiddleware({ secretKey: CLERK_SECRET_KEY, publishableKey: CLERK_PUBLISHABLE_KEY }));
 app.use("/api/", async (req: any, res: any, next: any) => {
   if (!CLERK_ENABLED) return next();
@@ -104,9 +101,16 @@ app.use("/api/", async (req: any, res: any, next: any) => {
     }
     return res.status(401).json({ error: "Unauthorized", reason: "not signed in" });
   }
-  if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
-    console.warn(`[AUTH] rejected ${userId}: not in allowed users (${ALLOWED_USER_IDS.join(", ")})`);
-    return res.status(401).json({ error: "Unauthorized", reason: "this account is not allowed to use the app" });
+  let allowed = false;
+  try {
+    allowed = await isAllowedUser(userId, ALLOWED_USER_IDS, loadEmails);
+  } catch (err: any) {
+    console.error(`[AUTH] could not read ${userId} from Clerk:`, err?.message ?? err);
+    return res.status(503).json({ error: "Sign-in check failed", reason: "could not reach the sign-in service, try again" });
+  }
+  if (!allowed) {
+    console.warn(`[AUTH] rejected ${userId}: no verified @${ALLOWED_EMAIL_DOMAINS.join("/@")} email`);
+    return res.status(403).json({ error: "Forbidden", reason: `only verified @${ALLOWED_EMAIL_DOMAINS[0]} accounts can use the app` });
   }
   next();
 });
