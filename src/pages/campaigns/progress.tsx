@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { format, isToday, isTomorrow } from "date-fns";
-import { AlertTriangle, ArrowLeft, BarChart3, CheckCircle2, Clock, Loader2, PauseCircle, Send } from "lucide-react";
+import { AlertTriangle, ArrowLeft, BarChart3, CheckCircle2, Clock, Loader2, PauseCircle, PlayCircle, Send } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent } from "@/components/ui/card.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
+import { PauseDialog, useResume } from "./_components/send-controls.tsx";
 
 const n = (v: number) => v.toLocaleString();
 
@@ -41,6 +42,8 @@ export default function CampaignProgressPage() {
 
   // Ticks the countdown between polls. The server's seconds are counted from when it answered.
   const [now, setNow] = useState(Date.now());
+  const [pausing, setPausing] = useState(false);
+  const resume = useResume();
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -149,8 +152,19 @@ export default function CampaignProgressPage() {
         <Button onClick={() => navigate(`/analytics/${id}`)} className="gap-2">
           <BarChart3 className="size-4" /> View analytics
         </Button>
+        {data.status === "sending" && (
+          <Button variant="outline" className="gap-2" onClick={() => setPausing(true)}>
+            <PauseCircle className="size-4" /> Pause sending
+          </Button>
+        )}
+        {data.status === "paused" && data.queued > 0 && (
+          <Button variant="outline" className="gap-2" disabled={resume.isPending} onClick={() => resume.mutate(Number(id))}>
+            {resume.isPending ? <Loader2 className="size-4 animate-spin" /> : <PlayCircle className="size-4" />} Resume sending
+          </Button>
+        )}
         <Button variant="outline" onClick={() => navigate("/campaigns")}>Back to campaigns</Button>
       </div>
+      <PauseDialog target={pausing ? { id: Number(id), name: data.name } : null} onClose={() => setPausing(false)} />
     </div>
   );
 }

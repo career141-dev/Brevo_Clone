@@ -442,6 +442,10 @@ async function processCampaign(campaignId: number) {
 
     for (let i = 0; i < page.length && !stopping; i += rate) {
       const batch = page.slice(i, i + rate);
+      // Renewed with every chunk, alongside the sends so the DB round trip doesn't slow them: a Pause (or delete) now
+      // stops the send within about a second instead of a whole page (~120 emails), and a page slower than LEASE_MS
+      // can no longer let a second container take over and re-send rows not yet saved.
+      const leaseCheck = i === 0 ? Promise.resolve(true) : claimLease(campaignId);
       const sends = batch.map(async (r: any) => {
         const contact = r.contactId ? contactById.get(r.contactId) : null;
         // Suppression is re-checked close to send time (at most PAGE_SECONDS old): the contact may have unsubscribed or been blocked since the snapshot.
@@ -523,6 +527,12 @@ async function processCampaign(campaignId: number) {
         (e) => { writeError = e; },
       );
 
+      if (!(await leaseCheck)) {
+        await settleWrites();
+        console.log(`[SEND][Campaign ${campaignId}] stopped: paused, deleted or taken over`);
+        return;
+      }
+
       if (accountError) {
         await settleWrites();
         console.error(`[SEND][Campaign ${campaignId}] SES account-level error, pausing campaign: ${accountError.error}`);
@@ -563,8 +573,9 @@ async function processCampaign(campaignId: number) {
   if (stopping) return; // shutting down mid-campaign: it stays "sending" and the next process continues it
 
   const finalSent = await prisma.emailEvent.count({ where: { campaignId, eventType: "sent" } });
-  await prisma.campaign.update({
-    where: { id: campaignId },
+  // Only from "sending": a Pause pressed during the last page must not be turned back into "sent".
+  await prisma.campaign.updateMany({
+    where: { id: campaignId, status: "sending" },
     data: finalSent > 0 ? { status: "sent", sentAt: new Date(), totalRecipients: finalSent } : { status: "draft" },
   });
   console.log(`[SEND][Campaign ${campaignId}] finished, ${sentTotal} sent this run, ${finalSent} total`);

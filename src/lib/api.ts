@@ -160,8 +160,6 @@ export const api = {
       request<any>(`/campaigns/${id}/send`, { method: "POST" }),
     schedule: (id: number, scheduledAt: string) =>
       request<{ success: boolean; scheduledAt: string; warnings: string[] }>(`/campaigns/${id}/schedule`, { method: "POST", body: JSON.stringify({ scheduledAt }) }),
-    reset: (id: number, targetStatus?: string) =>
-      request<any>(`/campaigns/${id}/reset`, { method: "POST", body: JSON.stringify({ targetStatus }) }),
     sendTest: (id: number, testEmail: string, draftData?: any) =>
       request<any>(`/campaigns/${id}/send-test`, {
         method: "POST",
@@ -177,6 +175,9 @@ export const api = {
     duplicate: (id: number) =>
       request<any>(`/campaigns/${id}/duplicate`, { method: "POST" }),
     progress: (id: number) => request<CampaignProgress>(`/campaigns/${id}/progress`),
+    pause: (id: number) => request<{ success: boolean; waiting: number }>(`/campaigns/${id}/pause`, { method: "POST" }),
+    resume: (id: number) =>
+      request<{ success: boolean; remainingToSend: number; warnings: string[] }>(`/campaigns/${id}/resume`, { method: "POST" }),
   },
   companies: {
     list: (params?: { q?: string; page?: number; pageSize?: number }) => {

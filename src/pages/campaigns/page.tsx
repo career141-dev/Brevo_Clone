@@ -30,6 +30,8 @@ import {
   AlertTriangle,
   RefreshCw,
   Clock,
+  PauseCircle,
+  PlayCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -83,6 +85,7 @@ import {
 import { toast } from "sonner";
 import TemplatePickerModal from "@/components/TemplatePickerModal.tsx";
 import SimpleEditor from "@/components/SimpleEditor.tsx";
+import { PauseDialog, useResume } from "./_components/send-controls.tsx";
 
 // The server's pre-send spam checks: the mail still goes, but each warning makes the spam folder more likely.
 function showSpamWarnings(warnings?: string[]) {
@@ -373,17 +376,8 @@ export default function CampaignsPage() {
     },
   });
 
-  const resetCampaignMutation = useMutation({
-    mutationFn: (id: number) => api.campaigns.reset(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
-      queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
-      toast.success("Campaign status updated!");
-    },
-    onError: () => {
-      toast.error("Failed to reset campaign status.");
-    },
-  });
+  const [pauseTarget, setPauseTarget] = useState<{ id: number; name: string } | null>(null);
+  const resume = useResume();
 
   const createSenderMutation = useMutation({
     mutationFn: (data: { name: string; email: string }) => api.senders.create(data),
@@ -816,6 +810,8 @@ export default function CampaignsPage() {
         return <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400">Scheduled</Badge>;
       case "sending":
         return <Badge className="bg-amber-100 text-amber-800 animate-pulse hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-400">Sending</Badge>;
+      case "paused":
+        return <Badge className="bg-orange-100 text-orange-800 hover:bg-orange-100 dark:bg-orange-900/30 dark:text-orange-400">Paused</Badge>;
       case "sent":
         return <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-400">Sent</Badge>;
       default:
@@ -1008,10 +1004,20 @@ export default function CampaignsPage() {
                           {campaign.status === "sending" && (
                             <DropdownMenuItem
                               className="cursor-pointer text-amber-600 focus:text-amber-700 font-medium"
-                              onClick={() => resetCampaignMutation.mutate(campaign.id)}
+                              onClick={() => setPauseTarget({ id: campaign.id, name: campaign.name })}
                             >
-                              <RefreshCw className="size-4 mr-2" />
-                              Reset Status
+                              <PauseCircle className="size-4 mr-2" />
+                              Pause Sending
+                            </DropdownMenuItem>
+                          )}
+                          {campaign.status === "paused" && (
+                            <DropdownMenuItem
+                              className="cursor-pointer text-emerald-600 focus:text-emerald-700 font-medium"
+                              disabled={resume.isPending}
+                              onClick={() => resume.mutate(campaign.id)}
+                            >
+                              <PlayCircle className="size-4 mr-2" />
+                              Resume Sending
                             </DropdownMenuItem>
                           )}
                           <DropdownMenuItem className="cursor-pointer" onClick={() => duplicateCampaignMutation.mutate(campaign.id)}>
@@ -2307,6 +2313,8 @@ export default function CampaignsPage() {
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
+      <PauseDialog target={pauseTarget} onClose={() => setPauseTarget(null)} />
+
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
           <DialogHeader>

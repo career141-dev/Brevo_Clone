@@ -433,6 +433,23 @@ router.get("/api/campaigns/:id/progress", async (req, res) => {
   }
 });
 
+// POST /api/campaigns/:id/pause — stops a send; the worker notices within about a second (its lease renews per chunk).
+// Everyone not yet sent stays queued, and /resume continues from there.
+router.post("/api/campaigns/:id/pause", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
+    const { count } = await prisma.campaign.updateMany({ where: { id: campaignId, status: "sending" }, data: { status: "paused" } });
+    if (count === 0) return res.status(400).json({ error: "This campaign isn't sending, so there is nothing to pause." });
+    const waiting = await prisma.campaignRecipient.count({ where: { campaignId, status: "queued" } });
+    invalidateAnalyticsCache(campaignId);
+    res.json({ success: true, status: "paused", waiting });
+  } catch (err) {
+    console.error("Pause campaign error:", err);
+    res.status(500).json({ error: "Failed to pause campaign" });
+  }
+});
+
 // POST /api/campaigns/:id/reset — Reset stuck campaign status
 router.post("/api/campaigns/:id/reset", async (req, res) => {
   try {
@@ -444,6 +461,7 @@ router.post("/api/campaigns/:id/reset", async (req, res) => {
     });
 
     const targetStatus = req.body?.targetStatus || (sentEventsCount > 0 ? "sent" : "draft");
+    if (!["draft", "sent", "paused"].includes(targetStatus)) return res.status(400).json({ error: "targetStatus must be draft, sent or paused" });
 
     const campaign = await prisma.campaign.update({
       where: { id: campaignId },

@@ -225,3 +225,15 @@ test("a contact blocked after the campaign was queued is skipped at send time", 
   const rec = s.recs.find((r) => r.email === "blocked@x.com");
   assert.deepEqual([rec?.status, rec?.error], ["skipped", "contact is blocked"]);
 });
+
+test("Pause stops the send within a chunk and stays paused; Resume would continue from the queue", async () => {
+  const s = setup(Array.from({ length: 30 }, (_, i) => `p${i}@x.com`));
+  cur = s;
+  const run = runCampaign(1);
+  while (s.sentTo.length < 9) await wait(10); // the first chunk (9 a second) has gone
+  s.campaign.status = "paused"; // what POST /pause does
+  await run;
+  assert.ok(s.sentTo.length <= 18, `at most the chunk already in flight goes after Pause, not the whole page (${s.sentTo.length})`);
+  assert.equal(s.campaign.status, "paused", "finishing must not turn a paused campaign back into sent");
+  assert.equal(s.recs.filter((r) => r.status === "queued").length, 30 - s.sentTo.length, "everyone not sent is still queued");
+});
