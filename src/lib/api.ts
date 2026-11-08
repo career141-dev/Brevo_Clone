@@ -175,6 +175,8 @@ export const api = {
     duplicate: (id: number) =>
       request<any>(`/campaigns/${id}/duplicate`, { method: "POST" }),
     progress: (id: number) => request<CampaignProgress>(`/campaigns/${id}/progress`),
+    estimate: (id: number) =>
+      request<{ recipients: number; alreadySent: number; timing: SendTiming | null }>(`/campaigns/${id}/estimate`),
     pause: (id: number) => request<{ success: boolean; waiting: number }>(`/campaigns/${id}/pause`, { method: "POST" }),
     resume: (id: number) =>
       request<{ success: boolean; remainingToSend: number; warnings: string[] }>(`/campaigns/${id}/resume`, { method: "POST" }),
@@ -334,14 +336,17 @@ export type CampaignProgress = {
   skipped: number;
   total: number;
   lastError: string | null;
+  pauseReason: string | null;
   // Only while sending with emails still queued. Seconds are counted from when the server answered.
-  timing: {
-    rate: number;
-    perDay: number | null;
-    room: number | null; // emails that may still go today
-    finishInSeconds: number | null;
-    resumesInSeconds: number | null;
-    pausesAtMonthlyLimit: boolean;
-    monthlyLeft: number | null;
-  } | null;
+  timing: SendTiming | null;
+};
+
+export type SendTiming = {
+  rate: number;
+  perDay: number | null;
+  room: number | null; // emails that may still go today
+  finishInSeconds: number | null;
+  resumesInSeconds: number | null;
+  pausesAtMonthlyLimit: boolean;
+  monthlyLeft: number | null;
 };

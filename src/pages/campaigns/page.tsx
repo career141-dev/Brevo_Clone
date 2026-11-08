@@ -85,7 +85,17 @@ import {
 import { toast } from "sonner";
 import TemplatePickerModal from "@/components/TemplatePickerModal.tsx";
 import SimpleEditor from "@/components/SimpleEditor.tsx";
-import { PauseDialog, useResume } from "./_components/send-controls.tsx";
+import { PauseDialog, timingSentence, useResume, when } from "./_components/send-controls.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog.tsx";
 
 // The server's pre-send spam checks: the mail still goes, but each warning makes the spam folder more likely.
 function showSpamWarnings(warnings?: string[]) {
@@ -102,6 +112,7 @@ export default function CampaignsPage() {
   const [campaignId, setCampaignId] = useState<number | null>(null);
   // Status of the campaign open in the wizard; Save as Draft only changes it for a draft or a scheduled one.
   const [editingStatus, setEditingStatus] = useState<string | null>(null);
+  const [editingScheduledAt, setEditingScheduledAt] = useState<string | null>(null);
 
   // Step 1: Details
   const [name, setName] = useState("");
@@ -174,15 +185,14 @@ export default function CampaignsPage() {
   // Step 5: Test Email State & Quota Modal State
   const [testEmail, setTestEmail] = useState<string>("");
   const [lastTestSentTo, setLastTestSentTo] = useState<{ email: string; time: string } | null>(null);
-  const [planExceededModalOpen, setPlanExceededModalOpen] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
 
   // Template Picker / Editor State
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"none" | "simple">("none");
 
   // Report Modal State
-  const [reportOpen, setReportOpen] = useState(false);
-  const [reportCampaign, setReportCampaign] = useState<any | null>(null);
 
   // Delete Confirm State
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -231,11 +241,15 @@ export default function CampaignsPage() {
     enabled: wizardOpen && selectedListIds.length > 0,
   });
 
-  const { data: quotaData, isLoading: isLoadingQuota } = useQuery({
-    queryKey: ["ses-quota"],
-    queryFn: () => api.senders.quota(),
-    enabled: wizardOpen,
+  // Step 5 asks the server who Send would reach and how long it takes, by the sender's own rules (excluded lists,
+  // individual contacts, already-sent, the daily limit). It replaced a list-only count and an SES-only "plan limit".
+  const { data: estimate, isLoading: isLoadingEstimate, dataUpdatedAt: estimateAt } = useQuery({
+    queryKey: ["send-estimate", campaignId],
+    queryFn: () => api.campaigns.estimate(campaignId!),
+    enabled: wizardOpen && step === 5 && !!campaignId,
+    staleTime: 0,
   });
+  const sendCount = estimate?.recipients ?? 0;
 
   const lists = listsData?.data ?? [];
 
@@ -347,9 +361,7 @@ export default function CampaignsPage() {
       setDeleteOpen(false);
       setDeletingId(null);
     },
-    onError: () => {
-      toast.error("Failed to delete campaign.");
-    },
+    onError: (err: Error) => toast.error(err.message || "Failed to delete campaign.", { duration: 8000 }),
   });
 
   const bulkDeleteMutation = useMutation({
@@ -357,12 +369,11 @@ export default function CampaignsPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
       queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
-      toast.success(`Deleted ${data.affected} campaigns.`);
+      toast.success(`Deleted ${data.affected} campaign${data.affected === 1 ? "" : "s"}.`);
       setSelectedCampaigns([]);
+      setBulkDeleteOpen(false);
     },
-    onError: () => {
-      toast.error("Failed to delete selected campaigns.");
-    },
+    onError: (err: Error) => toast.error(err.message || "Failed to delete selected campaigns.", { duration: 8000 }),
   });
 
   const duplicateCampaignMutation = useMutation({
@@ -397,6 +408,7 @@ export default function CampaignsPage() {
     setStep(1);
     setCampaignId(null);
     setEditingStatus(null);
+    setEditingScheduledAt(null);
     setName("");
     setSubject("");
     setPreviewText("");
@@ -448,6 +460,7 @@ export default function CampaignsPage() {
     }
     if (fullCampaign.status === "sending") return showProgress(); // the list was out of date
     setEditingStatus(fullCampaign.status ?? null);
+    setEditingScheduledAt(fullCampaign.status === "scheduled" ? fullCampaign.scheduledAt ?? null : null);
 
     setName(fullCampaign.name || "");
     setSubject(fullCampaign.subject || "");
@@ -805,18 +818,13 @@ export default function CampaignsPage() {
     onError: (err: any) => toast.error(err?.message || "Failed to schedule campaign.", { duration: 6000 }),
   });
 
-  const handleSendCampaign = () => {
+  // A sent campaign's Send reaches only people who haven't had it yet (new contacts): that is /resume.
+  const isResend = editingStatus === "sent";
+  const confirmSend = () => {
     if (!campaignId) return;
-
-    const recipientCount = audienceStats?.subscribed ?? 0;
-    const remainingEmails = quotaData?.remaining;
-
-    if (remainingEmails !== undefined && remainingEmails !== null && recipientCount > remainingEmails) {
-      setPlanExceededModalOpen(true);
-      return;
-    }
-
-    sendCampaignMutation.mutate(campaignId);
+    setSendConfirmOpen(false);
+    if (isResend) resume.mutate(campaignId, { onSuccess: () => { setWizardOpen(false); resetWizard(); } });
+    else sendCampaignMutation.mutate(campaignId);
   };
 
   const getStatusBadge = (status: string) => {
@@ -886,7 +894,7 @@ export default function CampaignsPage() {
             <Button 
               variant="destructive" 
               size="sm"
-              onClick={() => bulkDeleteMutation.mutate(selectedCampaigns)}
+              onClick={() => setBulkDeleteOpen(true)}
               disabled={bulkDeleteMutation.isPending}
             >
               {bulkDeleteMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : <Trash2 className="size-4 mr-2" />}
@@ -953,13 +961,14 @@ export default function CampaignsPage() {
                         }}
                       />
                     </td>
-                    <td
-                      className="p-4 cursor-pointer select-none"
-                      onClick={() => handleOpenEdit(campaign)}
-                    >
-                      <div className="font-semibold text-gray-900 dark:text-gray-100 hover:text-emerald-600 transition-colors">
+                    <td className="p-4 select-none">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEdit(campaign)}
+                        className="block text-left font-semibold text-gray-900 dark:text-gray-100 hover:text-emerald-600 transition-colors cursor-pointer"
+                      >
                         {campaign.name}
-                      </div>
+                      </button>
                       <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{campaign.subject}</div>
                     </td>
                     <td className="p-4">
@@ -979,7 +988,7 @@ export default function CampaignsPage() {
                       )}
                     </td>
                     <td className="p-4">
-                      <span className="font-medium">{campaign.totalRecipients || 0}</span>
+                      <span className="font-medium">{(campaign.totalRecipients || 0).toLocaleString()}</span>
                     </td>
                     <td className="p-4 text-muted-foreground text-xs">
                       {campaign.status === "sent" && campaign.sentAt ? (
@@ -991,7 +1000,7 @@ export default function CampaignsPage() {
                     <td className="p-4 text-right">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="size-8 cursor-pointer">
+                          <Button variant="ghost" size="icon" className="size-8 cursor-pointer" aria-label={`Actions for ${campaign.name}`}>
                             <MoreHorizontal className="size-4" />
                           </Button>
                         </DropdownMenuTrigger>
@@ -1002,13 +1011,10 @@ export default function CampaignsPage() {
                               {campaign.status === "draft" ? "Edit Draft" : "Edit / Resend"}
                             </DropdownMenuItem>
                           )}
-                          {campaign.status === "sent" && (
+                          {["sent", "sending", "paused"].includes(campaign.status) && (
                             <DropdownMenuItem
                               className="cursor-pointer font-medium text-emerald-600 focus:text-emerald-700"
-                              onClick={() => {
-                                setReportCampaign(campaign);
-                                setReportOpen(true);
-                              }}
+                              onClick={() => navigate(`/analytics/${campaign.id}`)}
                             >
                               <Eye className="size-4 mr-2" />
                               View Report
@@ -1043,16 +1049,18 @@ export default function CampaignsPage() {
                             <Copy className="size-4 mr-2" />
                             Duplicate
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="cursor-pointer text-destructive focus:text-destructive"
-                            onClick={() => {
-                              setDeletingId(campaign.id);
-                              setDeleteOpen(true);
-                            }}
-                          >
-                            <Trash2 className="size-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
+                          {campaign.status !== "sending" && (
+                            <DropdownMenuItem
+                              className="cursor-pointer text-destructive focus:text-destructive"
+                              onClick={() => {
+                                setDeletingId(campaign.id);
+                                setDeleteOpen(true);
+                              }}
+                            >
+                              <Trash2 className="size-4 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </td>
@@ -1695,13 +1703,9 @@ export default function CampaignsPage() {
                           ? `${individualEmails.length} recipients`
                           : `${isLoadingAudienceStats ? "..." : (audienceStats?.subscribed ?? 0).toLocaleString()} recipients`}
                       </span>
-                      <span className="text-slate-300">|</span>
-                      <span className="text-emerald-600 dark:text-emerald-400">
-                        {isLoadingQuota ? <Loader2 className="inline size-3.5 animate-spin mr-1" /> : (quotaData?.remaining ?? 0).toLocaleString()} remaining emails
-                      </span>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Send to as many recipients as you wish, within your plan limits.
+                      Big lists are fine: whatever doesn't fit today's send limit goes out by itself over the next days.
                     </p>
                   </div>
                 </div>
@@ -1951,6 +1955,7 @@ export default function CampaignsPage() {
                         <button
                           type="button"
                           onClick={() => setTestEmail("")}
+                          aria-label="Clear the test email address"
                           className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs"
                         >
                           <X className="size-3.5" />
@@ -2037,22 +2042,66 @@ export default function CampaignsPage() {
                   <Users className="size-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                   <div className="space-y-1">
                     <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">Target Audience Count</p>
-                    {isLoadingAudienceStats ? (
+                    {isLoadingEstimate ? (
                       <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
                         <Loader2 className="size-3 animate-spin" />
-                        Fetching contact count...
+                        Counting who it goes to...
                       </div>
-                    ) : (
-                      <p className="text-xs text-emerald-700 dark:text-emerald-400">
-                        This campaign will send to <span className="font-extrabold text-sm">{audienceStats?.subscribed ?? 0}</span> subscribed contacts.
+                    ) : sendCount === 0 ? (
+                      <p className="text-xs text-red-700 dark:text-red-400">
+                        {(estimate?.alreadySent ?? 0) > 0
+                          ? "Everyone in this audience has already received it."
+                          : "Nobody to send to: add subscribed contacts or addresses in Step 2."}
                       </p>
+                    ) : (
+                      <>
+                        <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                          {isResend ? "Sends to " : "This campaign will send to "}
+                          <span className="font-extrabold text-sm">{sendCount.toLocaleString()}</span>
+                          {isResend ? ` contact${sendCount === 1 ? "" : "s"} who haven't had it yet.` : ` subscribed contact${sendCount === 1 ? "" : "s"}.`}
+                        </p>
+                        {estimate?.timing && (
+                          <p className="text-xs text-emerald-700 dark:text-emerald-400 flex items-start gap-1">
+                            <Clock className="size-3.5 shrink-0 mt-px" />
+                            {timingSentence(estimate.timing, estimateAt)}
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
 
+                {editingStatus === "scheduled" && editingScheduledAt && (
+                  <div className="bg-blue-50 border border-blue-200 dark:bg-blue-950/20 dark:border-blue-800/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm text-blue-800 dark:text-blue-300">
+                      Scheduled for <strong>{when(new Date(editingScheduledAt))}</strong>. It sends by itself.
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={updateCampaignMutation.isPending}
+                      onClick={() =>
+                        campaignId &&
+                        updateCampaignMutation.mutate(
+                          { id: campaignId, data: { status: "draft" } },
+                          {
+                            onSuccess: () => {
+                              toast.success("Schedule cancelled. It's a draft now.");
+                              setEditingStatus("draft");
+                              setEditingScheduledAt(null);
+                            },
+                          },
+                        )
+                      }
+                    >
+                      Cancel schedule
+                    </Button>
+                  </div>
+                )}
+
                 {/* Pre-send AWS cost estimate */}
-                {!isLoadingAudienceStats && (audienceStats?.subscribed ?? 0) > 0 && (() => {
-                  const recipientCount = audienceStats?.subscribed ?? 0;
+                {!isLoadingEstimate && sendCount > 0 && (() => {
+                  const recipientCount = sendCount;
                   const costUsd = recipientCount * (0.10 / 1000);
                   const lkrRate = campaignExchangeRate?.usd_to_lkr ?? 300;
                   const costLkr = costUsd * lkrRate;
@@ -2075,45 +2124,6 @@ export default function CampaignsPage() {
                   );
                 })()}
 
-                {/* Plan Limit Exceeded Alert Banner */}
-                {!isLoadingAudienceStats && !isLoadingQuota && quotaData?.remaining !== undefined && (audienceStats?.subscribed ?? 0) > quotaData.remaining && (
-                  <div className="bg-red-50 border border-red-300 dark:bg-red-950/40 dark:border-red-800/60 rounded-xl p-4 flex items-start gap-3 shadow-sm">
-                    <AlertTriangle className="size-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
-                    <div className="space-y-2 flex-1">
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-bold text-red-900 dark:text-red-200">
-                          Plan Sending Limit Exceeded
-                        </p>
-                        <Badge variant="destructive" className="text-[10px] uppercase font-bold tracking-wider">
-                          Limit Exceeded
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-red-800 dark:text-red-300 leading-relaxed">
-                        Your campaign target has <strong className="font-extrabold text-red-950 dark:text-red-100">{(audienceStats?.subscribed ?? 0).toLocaleString()}</strong> recipients, but you only have <strong className="font-extrabold text-red-950 dark:text-red-100">{(quotaData.remaining).toLocaleString()}</strong> remaining emails in your plan limit.
-                      </p>
-                      <p className="text-[11px] text-red-700 dark:text-red-400 font-medium">
-                        Exceeds limit by <strong className="font-bold text-red-900 dark:text-red-200">{((audienceStats?.subscribed ?? 0) - quotaData.remaining).toLocaleString()}</strong> contacts.
-                      </p>
-                      <div className="flex items-center gap-2 pt-1">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setStep(2)}
-                          className="h-7 text-xs bg-white text-red-700 border-red-300 hover:bg-red-50 hover:text-red-800"
-                        >
-                          Adjust Recipients (Step 2)
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() => setPlanExceededModalOpen(true)}
-                          className="h-7 text-xs bg-red-600 hover:bg-red-700 text-white"
-                        >
-                          View Limit Warning Popup
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
 
@@ -2168,14 +2178,14 @@ export default function CampaignsPage() {
               <Button
                 variant="outline"
                 onClick={() => campaignId && scheduleCampaignMutation.mutate({ id: campaignId, at: scheduleAt })}
-                disabled={!scheduleAt || !campaignId || scheduleCampaignMutation.isPending || (audienceStats?.subscribed ?? 0) === 0}
+                disabled={!scheduleAt || !campaignId || scheduleCampaignMutation.isPending || isLoadingEstimate || sendCount === 0}
               >
                 {scheduleCampaignMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
                 Schedule
               </Button>
               <Button
-                onClick={handleSendCampaign}
-                disabled={sendCampaignMutation.isPending || (audienceStats?.subscribed ?? 0) === 0}
+                onClick={() => setSendConfirmOpen(true)}
+                disabled={sendCampaignMutation.isPending || resume.isPending || isLoadingEstimate || sendCount === 0}
                 className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm font-semibold"
               >
                 {sendCampaignMutation.isPending ? (
@@ -2186,7 +2196,7 @@ export default function CampaignsPage() {
                 ) : (
                   <>
                     <Send className="size-4 mr-2" />
-                    Send Now
+                    {isResend ? "Send to New Contacts" : "Send Now"}
                   </>
                 )}
               </Button>
@@ -2249,97 +2259,60 @@ export default function CampaignsPage() {
         </SheetContent>
       </Sheet>
 
-      {/* View Report Dialog */}
-      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold">Campaign Delivery Report</DialogTitle>
-            <DialogDescription>
-              Details and stats of historical bulk delivery runs.
-            </DialogDescription>
-          </DialogHeader>
-
-          {reportCampaign && (
-            <div className="space-y-6">
-              {/* Info block */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-muted/30 border border-border/80 rounded-xl p-4">
-                <div className="space-y-0.5">
-                  <span className="text-[10px] font-semibold text-muted-foreground uppercase">Status</span>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="size-2 rounded-full bg-emerald-500" />
-                    <span className="font-semibold text-sm">Sent</span>
-                  </div>
-                </div>
-                <div className="space-y-0.5">
-                  <span className="text-[10px] font-semibold text-muted-foreground uppercase">Sent At</span>
-                  <div className="font-semibold text-sm">
-                    {reportCampaign.sentAt ? format(new Date(reportCampaign.sentAt), "MMM d, yyyy h:mm a") : "—"}
-                  </div>
-                </div>
-                <div className="space-y-0.5">
-                  <span className="text-[10px] font-semibold text-muted-foreground uppercase">Total Delivered</span>
-                  <div className="font-semibold text-sm text-emerald-600">
-                    {reportCampaign.totalRecipients || 0} emails
-                  </div>
-                </div>
-                <div className="space-y-0.5">
-                  <span className="text-[10px] font-semibold text-muted-foreground uppercase">Audience ID</span>
-                  <div className="font-semibold text-sm">
-                    List #{reportCampaign.audienceId || "—"}
-                  </div>
-                </div>
-              </div>
-
-              {/* Delivery Details */}
-              <div className="space-y-3">
-                <h4 className="font-semibold text-sm border-b pb-1">Campaign Details</h4>
-                <div className="grid grid-cols-2 gap-y-2 text-sm">
-                  <div>
-                    <span className="text-xs text-muted-foreground block">Name</span>
-                    <span className="font-medium">{reportCampaign.name}</span>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground block">Subject</span>
-                    <span className="font-medium">{reportCampaign.subject}</span>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground block">From Header</span>
-                    <span className="font-medium">{reportCampaign.fromName} ({reportCampaign.fromEmail})</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Preview content */}
-              {reportCampaign.templateHtml && (
-                <div className="space-y-2">
-                  <h4 className="font-semibold text-sm border-b pb-1">Sent Content Preview</h4>
-                  <div className="border border-border rounded-lg overflow-hidden">
-                    <iframe
-                      srcDoc={reportCampaign.templateHtml}
-                      title="Sent Template Html Content"
-                      className="w-full h-80 border-none bg-white"
-                      sandbox="allow-same-origin"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button onClick={() => setReportOpen(false)}>Close Report</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* Delete Confirmation Dialog */}
       <PauseDialog target={pauseTarget} onClose={() => setPauseTarget(null)} />
+
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedCampaigns.length} campaign{selectedCampaigns.length === 1 ? "" : "s"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              They and their reports (opens, clicks, bounces) are deleted for good. This can't be undone. A campaign that is
+              sending has to be paused first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              disabled={bulkDeleteMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault(); // stay open until the server answers
+                bulkDeleteMutation.mutate(selectedCampaigns);
+              }}
+            >
+              {bulkDeleteMutation.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={sendConfirmOpen} onOpenChange={setSendConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {isResend
+                ? `Send to ${sendCount.toLocaleString()} new contact${sendCount === 1 ? "" : "s"}?`
+                : `Send to ${sendCount.toLocaleString()} ${sendCount === 1 ? "person" : "people"} now?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {estimate?.timing ? timingSentence(estimate.timing, estimateAt) : "It goes out in the background."} You can pause it at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Not yet</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmSend}>Send now</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Are you absolutely sure?</DialogTitle>
+            <DialogTitle>Delete this campaign?</DialogTitle>
             <DialogDescription>
-              This will permanently delete the campaign and cannot be undone.
+              <span className="font-medium text-foreground break-words">{campaigns?.find((c: any) => c.id === deletingId)?.name}</span> and
+              its report (opens, clicks, bounces) are deleted for good. This can't be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">
@@ -2384,66 +2357,6 @@ export default function CampaignsPage() {
           }}
         />
       )}
-      {/* Plan Limit Exceeded Modal */}
-      <Dialog open={planExceededModalOpen} onOpenChange={setPlanExceededModalOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader className="space-y-3 text-center sm:text-left">
-            <div className="size-12 rounded-full bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto sm:mx-0 border border-red-200 dark:border-red-900">
-              <AlertTriangle className="size-6" />
-            </div>
-            <div>
-              <DialogTitle className="text-lg font-bold text-red-900 dark:text-red-200">
-                Plan Limit Exceeded
-              </DialogTitle>
-              <DialogDescription className="text-xs text-muted-foreground mt-1">
-                Send to as many recipients as you wish, within your plan limits. You cannot send this campaign because the selected target audience exceeds your remaining plan limit.
-              </DialogDescription>
-            </div>
-          </DialogHeader>
-
-          <div className="bg-muted/30 border border-border rounded-xl p-4 space-y-2.5 text-xs">
-            <div className="flex justify-between items-center pb-2 border-b border-border">
-              <span className="text-muted-foreground">Target Recipients:</span>
-              <span className="font-bold text-foreground text-sm">{(audienceStats?.subscribed ?? 0).toLocaleString()}</span>
-            </div>
-            <div className="flex justify-between items-center pb-2 border-b border-border">
-              <span className="text-muted-foreground">Remaining Plan Emails:</span>
-              <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm">{(quotaData?.remaining ?? 0).toLocaleString()}</span>
-            </div>
-            <div className="flex justify-between items-center text-red-600 dark:text-red-400 font-semibold">
-              <span>Excess Recipients:</span>
-              <span className="font-bold text-sm">
-                {Math.max(0, (audienceStats?.subscribed ?? 0) - (quotaData?.remaining ?? 0)).toLocaleString()}
-              </span>
-            </div>
-          </div>
-
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            Please adjust your audience selection in Step 2 to fit within your remaining <strong>{(quotaData?.remaining ?? 0).toLocaleString()}</strong> emails, or upgrade your plan limit.
-          </p>
-
-          <DialogFooter className="gap-2 sm:gap-0 flex-col-reverse sm:flex-row">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setPlanExceededModalOpen(false);
-                setStep(2);
-              }}
-            >
-              Adjust Recipients (Step 2)
-            </Button>
-            <Button
-              onClick={() => {
-                setPlanExceededModalOpen(false);
-                navigate("/settings");
-              }}
-              className="bg-red-600 hover:bg-red-700 text-white"
-            >
-              Upgrade Plan
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

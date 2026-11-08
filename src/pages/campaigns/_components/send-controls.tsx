@@ -1,7 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api } from "@/lib/api.ts";
+import { format, isToday, isTomorrow } from "date-fns";
+import { api, type SendTiming } from "@/lib/api.ts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -75,4 +76,38 @@ export function PauseDialog({ target, onClose }: { target: { id: number; name: s
       </AlertDialogContent>
     </AlertDialog>
   );
+}
+
+/** "under a minute" / "about 14 min" / "about 1 day 3 h", ready to follow "Takes" or start a label. */
+export function about(seconds: number) {
+  return seconds < 60 ? "under a minute" : `about ${duration(seconds)}`;
+}
+
+export function duration(seconds: number) {
+  if (seconds < 60) return "less than a minute";
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h} h ${mins % 60} min`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ${h % 24} h`;
+}
+
+export function when(d: Date) {
+  const time = format(d, "h:mm a");
+  if (isToday(d)) return `${time} today`;
+  if (isTomorrow(d)) return `${time} tomorrow`;
+  return format(d, "EEE d MMM, h:mm a");
+}
+
+/** One plain sentence on how long a send of this size takes, from the server's estimate (counted from `from`). */
+export function timingSentence(t: SendTiming, from = Date.now()) {
+  const at = (s: number) => new Date(from + s * 1000);
+  if (t.pausesAtMonthlyLimit) {
+    return `This month's send limit has room for ${(t.monthlyLeft ?? 0).toLocaleString()} more. It pauses there; press Resume after the 1st.`;
+  }
+  if (t.finishInSeconds === null) return "It waits for the send limit, then goes out by itself.";
+  if (t.resumesInSeconds === null) return `Takes ${about(t.finishInSeconds)}, finishing around ${when(at(t.finishInSeconds))}.`;
+  const today = t.room ? `${t.room.toLocaleString()} go today` : "Today's send limit is used up";
+  return `${today}; the rest go out by themselves from ${when(at(t.resumesInSeconds))}, finishing around ${when(at(t.finishInSeconds))}.`;
 }

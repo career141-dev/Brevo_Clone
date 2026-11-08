@@ -3,8 +3,7 @@ import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import { prisma } from "../prisma.js";
 import { sesv2Client } from "../lib/ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "../lib/tracking.js";
-import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize, sendPlan } from "../lib/campaign-sender.js";
-import { estimateFinish } from "../lib/send-limits.js";
+import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize, sendEstimate, sendPlan, sendTiming } from "../lib/campaign-sender.js";
 import { getCached, setCache, invalidateAnalyticsCache } from "../lib/analytics-cache.js";
 import { hostEmbeddedImages } from "../lib/embedded-images.js";
 import { checkEmailContent } from "../lib/content-check.js";
@@ -209,6 +208,9 @@ router.delete("/api/campaigns/bulk", async (req, res) => {
     if (campaignIds.length > 100) {
       return res.status(400).json({ error: "Cannot delete more than 100 campaigns at once" });
     }
+    if (!campaignIds.every((id) => Number.isInteger(id) && id > 0)) return res.status(400).json({ error: "campaignIds must be campaign ids" });
+    const live = await prisma.campaign.count({ where: { id: { in: campaignIds }, status: "sending" } });
+    if (live > 0) return res.status(409).json({ error: `${live} of the selected campaigns ${live === 1 ? "is" : "are"} sending. Pause ${live === 1 ? "it" : "them"} first, then delete.` });
     
     // "sent" rows are what the daily/monthly send limits count (send-limits.ts), so they stay, detached from the
     // campaign; deleting them gave a deleted campaign's emails back to the limits. Everything else goes.
@@ -238,6 +240,7 @@ router.delete("/api/campaigns/:id", async (req, res) => {
       where: { id: campaignId },
     });
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+    if (campaign.status === "sending") return res.status(409).json({ error: "This campaign is sending. Pause it first, then delete it." });
     // "sent" rows stay, detached, because the send limits count them (see the bulk delete above).
     await prisma.emailEvent.updateMany({ where: { campaignId, eventType: "sent" }, data: { campaignId: null } });
     await prisma.emailEvent.deleteMany({
@@ -414,30 +417,28 @@ router.get("/api/campaigns/:id/progress", async (req, res) => {
   try {
     const campaignId = Number(req.params.id);
     if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
-    const [campaign, groups, lastFailure] = await Promise.all([
+    const [campaign, groups, lastFailure, stopReason] = await Promise.all([
       prisma.campaign.findUnique({ where: { id: campaignId }, select: { name: true, subject: true, status: true, scheduledAt: true, sentAt: true } }),
       prisma.campaignRecipient.groupBy({ by: ["status"], where: { campaignId }, _count: { _all: true } }),
       prisma.campaignRecipient.findFirst({ where: { campaignId, status: "failed" }, select: { error: true } }),
+      // AWS's reason, left on still-queued rows when an account-level error paused the send (campaign-sender.ts).
+      prisma.campaignRecipient.findFirst({ where: { campaignId, status: "queued", error: { not: null } }, select: { error: true } }),
     ]);
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const counts: Record<string, number> = { queued: 0, sent: 0, failed: 0, skipped: 0 };
     for (const g of groups) counts[g.status] = g._count._all;
 
-    let timing: Record<string, unknown> | null = null;
-    if (campaign.status === "sending" && counts.queued > 0) {
-      const plan = await sendPlan();
-      const resumesInSeconds = Math.max(0, Math.ceil((plan.resumesAt.getTime() - Date.now()) / 1000));
-      timing = {
-        rate: plan.rate,
-        perDay: plan.perDay,
-        room: plan.room,
-        ...estimateFinish({ queued: counts.queued, rate: plan.rate, room: plan.room, perDay: plan.perDay, resumesInSeconds }),
-        // The worker pauses the campaign when this month's cap runs out; Resume continues it next month.
-        pausesAtMonthlyLimit: plan.monthlyLeft !== null && counts.queued > plan.monthlyLeft,
-        monthlyLeft: plan.monthlyLeft,
-      };
+    const timing = campaign.status === "sending" && counts.queued > 0 ? await sendTiming(counts.queued) : null;
+    // Why a campaign is paused: the worker pauses on its own for these, and used to leave only a log line.
+    let pauseReason: string | null = null;
+    if (campaign.status === "paused") {
+      if (stopReason?.error) pauseReason = `AWS stopped the send: ${stopReason.error}. Fix it in AWS, then press Resume.`;
+      else if (counts.queued + counts.sent === 0 && campaign.scheduledAt) pauseReason = "The scheduled send couldn't start. Open the campaign and press Send to see why.";
+      else if ((await sendPlan()).monthlyLeft === 0) pauseReason = "This month's send limit is used up. Press Resume after the 1st.";
+      else pauseReason = "Paused by a person. Press Resume to continue.";
     }
     res.json({
+      pauseReason,
       ...campaign,
       ...counts,
       total: Object.values(counts).reduce((a, b) => a + b, 0),
@@ -446,6 +447,20 @@ router.get("/api/campaigns/:id/progress", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch progress" });
+  }
+});
+
+// GET /api/campaigns/:id/estimate — before Send: how many it would reach and how long it would take.
+router.get("/api/campaigns/:id/estimate", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
+    const estimate = await sendEstimate(campaignId);
+    if (!estimate) return res.status(404).json({ error: "Campaign not found" });
+    res.json(estimate);
+  } catch (err) {
+    console.error("Send estimate error:", err);
+    res.status(500).json({ error: "Failed to estimate the send" });
   }
 });
 
@@ -594,7 +609,10 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
       }
     }
 
-    const unsubUrl = makeUnsubscribeUrl(cleanTestEmail, campaignId || null);
+    // A test send is not part of the campaign: tracked and tagged under no campaign, its delivery, open and click
+    // counted against the campaign (delivered could exceed sent), and the tester's later real events were then
+    // deduplicated away (QA report 8 Nov, finding 7).
+    const unsubUrl = makeUnsubscribeUrl(cleanTestEmail, null);
 
     let html = personalize(
       template,
@@ -603,7 +621,7 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
     );
 
     // Inject tracking pixel & link rewrite
-    html = injectTracking(html, cleanTestEmail, campaignId || null);
+    html = injectTracking(html, cleanTestEmail, null);
 
     // Resolve Reply-To addresses
     const replyToEmailsSet = new Set<string>();
@@ -653,7 +671,7 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
         Destination: { ToAddresses: [cleanTestEmail] },
         ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
         Content: { Raw: { Data: rawMimeBuffer } },
-        EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
+        EmailTags: [],
       }));
     } else {
       const sesParams: any = {
@@ -671,7 +689,7 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
             ],
           },
         },
-        EmailTags: campaignId ? [{ Name: "campaign_id", Value: campaignId.toString() }] : [],
+        EmailTags: [],
       };
 
       await sesv2Client.send(new SendEmailV2Command(sesParams));

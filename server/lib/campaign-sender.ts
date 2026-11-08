@@ -6,7 +6,7 @@ import { sesClient, sesv2Client } from "./ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "./tracking.js";
 import { hostEmbeddedImages } from "./embedded-images.js";
 import { checkEmailContent } from "./content-check.js";
-import { DAILY_SEND_LIMIT, MONTHLY_SEND_LIMIT, remainingSends, sendUsage } from "./send-limits.js";
+import { DAILY_SEND_LIMIT, MONTHLY_SEND_LIMIT, estimateFinish, remainingSends, sendUsage } from "./send-limits.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -205,6 +205,35 @@ export async function sendPlan(): Promise<SendPlan> {
   return plan;
 }
 
+/** How long `queued` emails take from now under the worker's own rate and caps; shared by /progress and /estimate. */
+export async function sendTiming(queued: number) {
+  const plan = await sendPlan();
+  const resumesInSeconds = Math.max(0, Math.ceil((plan.resumesAt.getTime() - Date.now()) / 1000));
+  return {
+    rate: plan.rate,
+    perDay: plan.perDay,
+    room: plan.room,
+    ...estimateFinish({ queued, rate: plan.rate, room: plan.room, perDay: plan.perDay, resumesInSeconds }),
+    // The worker pauses the campaign when this month's cap runs out; Resume continues it next month.
+    pausesAtMonthlyLimit: plan.monthlyLeft !== null && queued > plan.monthlyLeft,
+    monthlyLeft: plan.monthlyLeft,
+  };
+}
+
+/**
+ * Who pressing Send (or Resume) would reach right now, by the same rules dispatch uses: subscribed, not blocked, minus
+ * excluded lists, skipped-unengaged and anyone who already got this campaign. The wizard counted list members only,
+ * so Individual-contacts campaigns read 0 and could not be sent (QA report 8 Nov, finding 4).
+ */
+export async function sendEstimate(campaignId: number) {
+  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+  if (!campaign) return null;
+  const sentRows = await prisma.emailEvent.findMany({ where: { campaignId, eventType: "sent" }, select: { email: true } });
+  const alreadySent = new Set<string>(sentRows.map((e: any) => e.email.toLowerCase()));
+  const recipients = (await resolveAudience(campaign)).filter((r) => !alreadySent.has(r.email)).length;
+  return { recipients, alreadySent: alreadySent.size, timing: recipients > 0 ? await sendTiming(recipients) : null };
+}
+
 export type DispatchResult =
   | { ok: true; total: number; queued: number; alreadySent: number; alreadyRunning?: boolean; warnings?: string[] }
   | { ok: false; status: number; error: string; details?: string };
@@ -266,7 +295,8 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
       ),
     );
   }
-  await prisma.campaignRecipient.updateMany({ where: { campaignId, status: "failed" }, data: { status: "queued", error: null } });
+  // Also clears the reason an account-level stop left on still-queued rows (processCampaign), so it isn't shown again.
+  await prisma.campaignRecipient.updateMany({ where: { campaignId, status: { in: ["failed", "queued"] } }, data: { status: "queued", error: null } });
 
   const queued = await prisma.campaignRecipient.count({ where: { campaignId, status: "queued" } });
   if (queued === 0) {
@@ -536,6 +566,9 @@ async function processCampaign(campaignId: number) {
       if (accountError) {
         await settleWrites();
         console.error(`[SEND][Campaign ${campaignId}] SES account-level error, pausing campaign: ${accountError.error}`);
+        // The rows stay queued for Resume, carrying AWS's reason so the progress page can say why it paused.
+        const ids = results.filter((x) => x.outcome === "account").map((x) => x.r.id);
+        await prisma.campaignRecipient.updateMany({ where: { id: { in: ids } }, data: { error: String(accountError.error).slice(0, 500) } });
         await prisma.campaign.update({ where: { id: campaignId }, data: { status: "paused" } });
         return;
       }
@@ -549,8 +582,11 @@ async function processCampaign(campaignId: number) {
       }
 
       if (quotaHit) {
-        // Quota rows stay "queued"; force a re-check (and wait) at the top of the loop instead of marking them failed.
-        budget = 0;
+        // Quota rows stay "queued". Wait here: the re-check at the top of the loop reads GetSendQuota, which can still
+        // show room (or be unreadable) while SES refuses, and then fired the next chunk at once, round after round.
+        await settleWrites();
+        console.warn(`[SEND][Campaign ${campaignId}] SES daily quota refused, waiting ${QUOTA_WAIT_MS / 60_000} min`);
+        await sleep(QUOTA_WAIT_MS);
         break;
       }
 

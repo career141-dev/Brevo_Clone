@@ -1,33 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { format, isToday, isTomorrow } from "date-fns";
 import { AlertTriangle, ArrowLeft, BarChart3, CheckCircle2, Clock, Loader2, PauseCircle, PlayCircle, Send } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent } from "@/components/ui/card.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
-import { PauseDialog, useResume } from "./_components/send-controls.tsx";
+import { PauseDialog, about, useResume, when } from "./_components/send-controls.tsx";
 
 const n = (v: number) => v.toLocaleString();
-
-function duration(seconds: number) {
-  if (seconds < 60) return "less than a minute";
-  const mins = Math.round(seconds / 60);
-  if (mins < 60) return `${mins} min`;
-  const h = Math.floor(mins / 60);
-  if (h < 24) return `${h} h ${mins % 60} min`;
-  const d = Math.floor(h / 24);
-  return `${d} day${d === 1 ? "" : "s"} ${h % 24} h`;
-}
-
-function when(d: Date) {
-  const time = format(d, "h:mm a");
-  if (isToday(d)) return `${time} today`;
-  if (isTomorrow(d)) return `${time} tomorrow`;
-  return format(d, "EEE d MMM, h:mm a");
-}
 
 // The page the user lands on after pressing Send: how far it got, how long is left, and when it ends.
 export default function CampaignProgressPage() {
@@ -100,7 +82,7 @@ export default function CampaignProgressPage() {
           {data.status === "sending" && t && (
             <div className="grid gap-3 sm:grid-cols-2">
               <Stat icon={<Clock className="size-4" />} label="Time left">
-                {t.pausesAtMonthlyLimit ? "More than this month allows" : left !== null ? `About ${duration(left)}` : "Waiting for the send limit"}
+                {t.pausesAtMonthlyLimit ? "More than this month allows" : left !== null ? about(left).replace(/^./, (c) => c.toUpperCase()) : "Waiting for the send limit"}
               </Stat>
               <Stat icon={<CheckCircle2 className="size-4" />} label="Expected to finish">
                 {t.pausesAtMonthlyLimit ? "Next month" : finishAt ? when(finishAt) : "Not known yet"}
@@ -128,6 +110,8 @@ export default function CampaignProgressPage() {
               Sending {t ? `about ${t.rate} emails a second` : ""}. You can close this page; sending carries on in the background.
             </p>
           )}
+
+          {data.status === "paused" && data.pauseReason && <Note tone="amber">{data.pauseReason}</Note>}
 
           {data.status === "scheduled" && data.scheduledAt && (
             <Note tone="blue">Scheduled for <strong>{when(new Date(data.scheduledAt))}</strong>. It starts by itself; this page updates when it does.</Note>

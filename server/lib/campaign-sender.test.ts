@@ -24,7 +24,7 @@ function setup(emails: string[], opts: Opts = {}) {
   const sentTo: string[] = [];
 
   const match = (r: Rec, w: any) =>
-    (w.campaignId === undefined || r.campaignId === w.campaignId) && (w.status ? r.status === w.status : true) && (w.id?.in ? w.id.in.includes(r.id) : true);
+    (w.campaignId === undefined || r.campaignId === w.campaignId) && (w.status ? (w.status.in ? w.status.in.includes(r.status) : r.status === w.status) : true) && (w.id?.in ? w.id.in.includes(r.id) : true);
   const prisma = {
     campaign: {
       findUnique: async () => ({ ...campaign }),
@@ -236,4 +236,14 @@ test("Pause stops the send within a chunk and stays paused; Resume would continu
   assert.ok(s.sentTo.length <= 18, `at most the chunk already in flight goes after Pause, not the whole page (${s.sentTo.length})`);
   assert.equal(s.campaign.status, "paused", "finishing must not turn a paused campaign back into sent");
   assert.equal(s.recs.filter((r) => r.status === "queued").length, 30 - s.sentTo.length, "everyone not sent is still queued");
+});
+
+test("an AWS account-level stop pauses the campaign and keeps AWS's reason on the queued rows", async () => {
+  const s = setup(["a@x.com", "b@x.com", "c@x.com"]);
+  cur = s;
+  cur.sesv2Client.send = async () => { throw Object.assign(new Error("Sending is paused for this account"), { name: "SendingPausedException" }); };
+  await runCampaign(1);
+  assert.equal(s.campaign.status, "paused");
+  assert.ok(s.recs.every((r) => r.status === "queued"), "nobody is marked failed; Resume sends them");
+  assert.match(String(s.recs[0].error), /SendingPausedException/, "the progress page reads this as the pause reason");
 });
