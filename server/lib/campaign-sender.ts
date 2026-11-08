@@ -6,7 +6,7 @@ import { sesClient, sesv2Client } from "./ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "./tracking.js";
 import { hostEmbeddedImages } from "./embedded-images.js";
 import { checkEmailContent } from "./content-check.js";
-import { MONTHLY_SEND_LIMIT, remainingSends, sendUsage } from "./send-limits.js";
+import { DAILY_SEND_LIMIT, MONTHLY_SEND_LIMIT, remainingSends, sendUsage } from "./send-limits.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -169,6 +169,40 @@ async function sendRate(): Promise<number> {
   } catch {
     return 10;
   }
+}
+
+export type SendPlan = { rate: number; room: number | null; perDay: number | null; monthlyLeft: number | null; resumesAt: Date };
+let planCache: { at: number; plan: SendPlan } | null = null;
+
+/**
+ * What the progress screen needs to predict a finish: the same rate and caps the worker uses. Cached 15s so several
+ * open progress screens polling every few seconds don't add SES or DB load on top of the worker's own reads.
+ */
+export async function sendPlan(): Promise<SendPlan> {
+  if (planCache && Date.now() - planCache.at < 15_000) return planCache.plan;
+  const dayAgo = new Date(Date.now() - 86_400_000);
+  const [q, usage, oldest] = await Promise.all([
+    sesClient.send(new GetSendQuotaCommand({})).catch(() => null),
+    sendUsage(),
+    prisma.emailEvent.findFirst({ where: { eventType: "sent", timestamp: { gte: dayAgo } }, orderBy: { timestamp: "asc" }, select: { timestamp: true } }),
+  ]);
+  const own = remainingSends(usage);
+  const least = (...v: (number | null)[]) => {
+    const n = v.filter((x): x is number => x !== null);
+    return n.length > 0 ? Math.min(...n) : null;
+  };
+  const sesDay = q && q.Max24HourSend !== undefined && q.Max24HourSend > 0 ? q.Max24HourSend : null;
+  const sesLeft = sesDay === null ? null : Math.max(0, sesDay - (q?.SentLast24Hours ?? 0));
+  const plan: SendPlan = {
+    rate: q ? Math.max(1, Math.min(100, Math.floor((q.MaxSendRate ?? 14) * 0.9))) : 10, // as sendRate()
+    room: least(sesLeft, own.daily),
+    perDay: least(sesDay, DAILY_SEND_LIMIT > 0 ? DAILY_SEND_LIMIT : null),
+    monthlyLeft: own.monthly,
+    // The rolling 24h window frees when its oldest send ages out; nothing sent yet means the first one goes now.
+    resumesAt: new Date((oldest?.timestamp.getTime() ?? Date.now()) + 86_400_000),
+  };
+  planCache = { at: Date.now(), plan };
+  return plan;
 }
 
 export type DispatchResult =

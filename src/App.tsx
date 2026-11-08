@@ -11,6 +11,7 @@ const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 const DashboardPage = lazy(() => import("./pages/dashboard/page.tsx"));
 const ContactsPage = lazy(() => import("./pages/contacts/page.tsx"));
 const CampaignsPage = lazy(() => import("./pages/campaigns/page.tsx"));
+const CampaignProgressPage = lazy(() => import("./pages/campaigns/progress.tsx"));
 const AutomationsPage = lazy(() => import("./pages/automations/page.tsx"));
 const AnalyticsPage = lazy(() => import("./pages/analytics/page.tsx"));
 const AnalyticsDetailPage = lazy(() => import("./pages/analytics/detail.tsx"));
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="/get-started" element={<GetStartedPage />} />
             <Route path="/contacts" element={<ContactsPage />} />
             <Route path="/campaigns" element={<CampaignsPage />} />
+            <Route path="/campaigns/:id/progress" element={<CampaignProgressPage />} />
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/analytics/:id" element={<AnalyticsDetailPage />} />

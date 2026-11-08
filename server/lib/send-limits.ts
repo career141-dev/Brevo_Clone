@@ -38,3 +38,18 @@ export function remainingSends(usage: SendUsage, daily = DAILY_SEND_LIMIT, month
     monthly: monthly > 0 ? Math.max(0, monthly - usage.thisMonth) : null,
   };
 }
+
+/**
+ * When a send of `queued` emails should end. `room` of them go now at `rate` a second; past that the rolling 24h window
+ * frees at `resumesAt` and `perDay` go each day after it. room null = no cap today. Times are seconds from now.
+ * ponytail: assumes yesterday's sends freed up as fast as they went out; sends spread over yesterday make it optimistic.
+ */
+export function estimateFinish(o: { queued: number; rate: number; room: number | null; perDay: number | null; resumesInSeconds: number }) {
+  const { queued, rate, room, perDay, resumesInSeconds } = o;
+  const secs = (n: number) => Math.ceil(n / rate);
+  if (room === null || queued <= room) return { finishInSeconds: secs(queued), resumesInSeconds: null };
+  if (!perDay) return { finishInSeconds: null, resumesInSeconds };
+  const rest = queued - room;
+  const days = Math.ceil(rest / perDay);
+  return { finishInSeconds: resumesInSeconds + (days - 1) * 86_400 + secs(rest - (days - 1) * perDay), resumesInSeconds };
+}

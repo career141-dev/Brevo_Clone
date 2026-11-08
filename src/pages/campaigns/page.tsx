@@ -29,6 +29,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
+  Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -189,11 +190,14 @@ export default function CampaignsPage() {
   const { data: campaigns, isLoading: isLoadingCampaigns } = useQuery({
     queryKey: ["campaigns"],
     queryFn: () => api.campaigns.list(),
+    // Live counts while anything is going out; quiet otherwise.
+    refetchInterval: (q) => (q.state.data?.some((c: any) => c.status === "sending" || c.status === "scheduled") ? 10_000 : false),
   });
 
   const { data: campaignsStats } = useQuery({
     queryKey: ["campaigns-stats"],
     queryFn: () => api.campaigns.stats(),
+    refetchInterval: (q) => ((q.state.data?.sending ?? 0) + (q.state.data?.scheduled ?? 0) > 0 ? 10_000 : false),
   });
 
   const { data: listsData } = useQuery({
@@ -273,13 +277,15 @@ export default function CampaignsPage() {
 
   const sendCampaignMutation = useMutation({
     mutationFn: (id: number) => api.campaigns.send(id),
-    onSuccess: (data: any) => {
+    onSuccess: (data: any, id: number) => {
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
       queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
-      toast.success("Campaign started sending!");
+      toast.success(data?.recipientCount ? `Sending to ${Number(data.recipientCount).toLocaleString()} people.` : "This campaign is already sending.");
       showSpamWarnings(data?.warnings);
       setWizardOpen(false);
       resetWizard();
+      // Straight to the progress page: how far it got, time left and when it finishes.
+      navigate(`/campaigns/${id}/progress`);
     },
     onError: (err: any) => {
       const serverDetails = err?.response?.data?.details;
@@ -944,7 +950,13 @@ export default function CampaignsPage() {
                       <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{campaign.subject}</div>
                     </td>
                     <td className="p-4">
-                      {getStatusBadge(campaign.status)}
+                      {["sending", "paused"].includes(campaign.status) ? (
+                        <button type="button" className="cursor-pointer" aria-label={`See progress of ${campaign.name}`} onClick={() => navigate(`/campaigns/${campaign.id}/progress`)}>
+                          {getStatusBadge(campaign.status)}
+                        </button>
+                      ) : (
+                        getStatusBadge(campaign.status)
+                      )}
                       {campaign.status === "scheduled" && campaign.scheduledAt && (
                         <div className="text-xs text-muted-foreground mt-1">{format(new Date(campaign.scheduledAt), "d MMM, h:mm a")}</div>
                       )}
@@ -985,6 +997,12 @@ export default function CampaignsPage() {
                             >
                               <Eye className="size-4 mr-2" />
                               View Report
+                            </DropdownMenuItem>
+                          )}
+                          {["sending", "paused", "scheduled"].includes(campaign.status) && (
+                            <DropdownMenuItem className="cursor-pointer font-medium" onClick={() => navigate(`/campaigns/${campaign.id}/progress`)}>
+                              <Clock className="size-4 mr-2" />
+                              View Progress
                             </DropdownMenuItem>
                           )}
                           {campaign.status === "sending" && (

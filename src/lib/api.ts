@@ -176,6 +176,7 @@ export const api = {
       }),
     duplicate: (id: number) =>
       request<any>(`/campaigns/${id}/duplicate`, { method: "POST" }),
+    progress: (id: number) => request<CampaignProgress>(`/campaigns/${id}/progress`),
   },
   companies: {
     list: (params?: { q?: string; page?: number; pageSize?: number }) => {
@@ -319,3 +320,27 @@ export async function downloadExport(contactIds: number[], format: "csv" | "json
   a.click();
   URL.revokeObjectURL(url);
 }
+
+export type CampaignProgress = {
+  name: string;
+  subject: string;
+  status: string;
+  scheduledAt: string | null;
+  sentAt: string | null;
+  queued: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  lastError: string | null;
+  // Only while sending with emails still queued. Seconds are counted from when the server answered.
+  timing: {
+    rate: number;
+    perDay: number | null;
+    room: number | null; // emails that may still go today
+    finishInSeconds: number | null;
+    resumesInSeconds: number | null;
+    pausesAtMonthlyLimit: boolean;
+    monthlyLeft: number | null;
+  } | null;
+};

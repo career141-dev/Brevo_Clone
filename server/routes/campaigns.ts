@@ -3,7 +3,8 @@ import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import { prisma } from "../prisma.js";
 import { sesv2Client } from "../lib/ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "../lib/tracking.js";
-import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize } from "../lib/campaign-sender.js";
+import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize, sendPlan } from "../lib/campaign-sender.js";
+import { estimateFinish } from "../lib/send-limits.js";
 import { getCached, setCache, invalidateAnalyticsCache } from "../lib/analytics-cache.js";
 import { hostEmbeddedImages } from "../lib/embedded-images.js";
 import { checkEmailContent } from "../lib/content-check.js";
@@ -391,18 +392,42 @@ router.post("/api/campaigns/:id/schedule", async (req, res) => {
   }
 });
 
-// GET /api/campaigns/:id/progress — live send progress (cheap COUNT ... GROUP BY on campaign_recipients)
+// GET /api/campaigns/:id/progress — live send progress (cheap COUNT ... GROUP BY on campaign_recipients), plus the
+// expected finish while sending. Times are seconds from now, so the browser's clock can't skew them.
 router.get("/api/campaigns/:id/progress", async (req, res) => {
   try {
     const campaignId = Number(req.params.id);
-    const [campaign, groups] = await Promise.all([
-      prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } }),
+    if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
+    const [campaign, groups, lastFailure] = await Promise.all([
+      prisma.campaign.findUnique({ where: { id: campaignId }, select: { name: true, subject: true, status: true, scheduledAt: true, sentAt: true } }),
       prisma.campaignRecipient.groupBy({ by: ["status"], where: { campaignId }, _count: { _all: true } }),
+      prisma.campaignRecipient.findFirst({ where: { campaignId, status: "failed" }, select: { error: true } }),
     ]);
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const counts: Record<string, number> = { queued: 0, sent: 0, failed: 0, skipped: 0 };
     for (const g of groups) counts[g.status] = g._count._all;
-    res.json({ status: campaign.status, ...counts, total: Object.values(counts).reduce((a, b) => a + b, 0) });
+
+    let timing: Record<string, unknown> | null = null;
+    if (campaign.status === "sending" && counts.queued > 0) {
+      const plan = await sendPlan();
+      const resumesInSeconds = Math.max(0, Math.ceil((plan.resumesAt.getTime() - Date.now()) / 1000));
+      timing = {
+        rate: plan.rate,
+        perDay: plan.perDay,
+        room: plan.room,
+        ...estimateFinish({ queued: counts.queued, rate: plan.rate, room: plan.room, perDay: plan.perDay, resumesInSeconds }),
+        // The worker pauses the campaign when this month's cap runs out; Resume continues it next month.
+        pausesAtMonthlyLimit: plan.monthlyLeft !== null && counts.queued > plan.monthlyLeft,
+        monthlyLeft: plan.monthlyLeft,
+      };
+    }
+    res.json({
+      ...campaign,
+      ...counts,
+      total: Object.values(counts).reduce((a, b) => a + b, 0),
+      lastError: lastFailure?.error ?? null,
+      timing,
+    });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch progress" });
   }
