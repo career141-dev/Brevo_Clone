@@ -224,6 +224,17 @@ export const api = {
       const suffix = qs.toString() ? `?${qs}` : "";
       return request<PaginatedResponse<any>>(`/analytics/campaigns/${id}/contact-events${suffix}`);
     },
+    // A plain link sent no Bearer token and ignored VITE_API_URL; fetch it and save the file instead.
+    exportCsv: async (id: number) => {
+      const res = await fetch(`${BASE}/analytics/campaigns/${id}/export`, { headers: await authHeaders() });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Export failed");
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `campaign-${id}-report.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
   },
   senders: {
     list: () => request<{ id: number; name: string; email: string }[]>("/senders"),

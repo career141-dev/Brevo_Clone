@@ -147,8 +147,14 @@ router.get("/api/track/click", async (req, res) => {
     // Tracked links are always http(s); refuse javascript:, data: and the like even from a valid token.
     if (!/^https?:\/\//i.test(url)) return res.status(400).send("Invalid link.");
 
-    // Log the click event (allow multiple clicks)
-    await recordEvent(email.toLowerCase(), campaignId, "clicked", { url, userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null }, false);
+    const who = email.toLowerCase();
+    await Promise.all([
+      // Log the click event (allow multiple clicks)
+      recordEvent(who, campaignId, "clicked", { url, userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null }, false),
+      // A click means the email was opened, even when the pixel was blocked or dropped as an Apple Mail privacy
+      // open; without this click-to-open went over 100%. The open's dedupKey keeps it to one per contact.
+      campaignId ? recordEvent(who, campaignId, "opened") : null,
+    ]);
     return res.redirect(302, url);
   } catch {
     return res.status(400).send("Invalid or expired tracking link.");
