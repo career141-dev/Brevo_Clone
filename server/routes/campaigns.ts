@@ -170,13 +170,29 @@ router.put("/api/campaigns/:id", async (req, res) => {
     }
     if (individualEmails !== undefined) updateData.individualEmails = individualEmails;
     if (skipUnengaged !== undefined) updateData.skipUnengaged = Boolean(skipUnengaged);
-    if (status !== undefined) updateData.status = status;
 
-    const campaign = await prisma.campaign.update({
-      where: { id: Number(req.params.id) },
-      data: updateData,
-    });
-    res.json(campaign);
+    // A live send reads the subject, template, sender and audience as it goes, so an edit mid-send gave part of the
+    // list different content, and Save as Draft's status "draft" stopped the worker and stranded the queue (QA report
+    // 8 Nov, finding 3). Nothing is edited while sending - Pause first. The only status change here is back to draft,
+    // from a draft or a scheduled campaign (that unschedules it); sent stays sent, and Pause/Resume/Send/Schedule
+    // have their own routes. One guarded write, so a campaign that starts sending meanwhile is never touched.
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
+    const changesStatus = status !== undefined;
+    if (changesStatus && status !== "draft") return res.status(400).json({ error: "Use Send, Schedule, Pause or Resume to change a campaign's status." });
+    if (changesStatus) updateData.status = "draft";
+    const editable = changesStatus ? ["draft", "scheduled"] : ["draft", "scheduled", "paused", "sent"];
+    const { count } = await prisma.campaign.updateMany({ where: { id, status: { in: editable } }, data: updateData });
+    if (count === 0) {
+      const current = await prisma.campaign.findUnique({ where: { id }, select: { status: true } });
+      if (!current) return res.status(404).json({ error: "Campaign not found" });
+      return res.status(409).json({
+        error: current.status === "sending"
+          ? "This campaign is sending. Pause it first, then edit it."
+          : `A ${current.status} campaign can't be turned back into a draft.`,
+      });
+    }
+    res.json(await prisma.campaign.findUnique({ where: { id } }));
   } catch (err: any) {
     console.error("Failed to update campaign:", err);
     res.status(500).json({ error: "Failed to update campaign" });

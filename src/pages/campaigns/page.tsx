@@ -100,6 +100,8 @@ export default function CampaignsPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [step, setStep] = useState(1);
   const [campaignId, setCampaignId] = useState<number | null>(null);
+  // Status of the campaign open in the wizard; Save as Draft only changes it for a draft or a scheduled one.
+  const [editingStatus, setEditingStatus] = useState<string | null>(null);
 
   // Step 1: Details
   const [name, setName] = useState("");
@@ -268,7 +270,6 @@ export default function CampaignsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
       queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
-      toast.success("Campaign updated successfully!");
     },
     onError: (err: any) => {
       const serverDetails = err?.response?.data?.details;
@@ -395,6 +396,7 @@ export default function CampaignsPage() {
   const resetWizard = () => {
     setStep(1);
     setCampaignId(null);
+    setEditingStatus(null);
     setName("");
     setSubject("");
     setPreviewText("");
@@ -426,6 +428,14 @@ export default function CampaignsPage() {
   };
 
   const handleOpenEdit = async (campaign: any) => {
+    // A sending campaign isn't edited (the server refuses it too): its progress page has Pause.
+    const showProgress = () => {
+      setWizardOpen(false);
+      resetWizard();
+      toast.info("This campaign is sending. Pause it first if you need to edit it.");
+      navigate(`/campaigns/${campaign.id}/progress`);
+    };
+    if (campaign.status === "sending") return showProgress();
     resetWizard();
     setCampaignId(campaign.id);
     setWizardOpen(true);
@@ -436,6 +446,8 @@ export default function CampaignsPage() {
     } catch (err) {
       console.warn("Failed to fetch fresh campaign details, using list item fallback:", err);
     }
+    if (fullCampaign.status === "sending") return showProgress(); // the list was out of date
+    setEditingStatus(fullCampaign.status ?? null);
 
     setName(fullCampaign.name || "");
     setSubject(fullCampaign.subject || "");
@@ -507,7 +519,9 @@ export default function CampaignsPage() {
       excludeListIds: excludedListIds.length > 0 ? excludedListIds.join(",") : null,
       skipUnengaged,
       templateHtml: selectedTemplateHtml || "",
-      status: "draft",
+      // Only a new, draft or scheduled campaign becomes a draft; a sent or paused one keeps its status (it used to
+      // turn back into a draft, and a sending one stopped).
+      ...(!campaignId || editingStatus === "draft" || editingStatus === "scheduled" ? { status: "draft" } : {}),
     };
 
     if (campaignId) {
@@ -515,7 +529,10 @@ export default function CampaignsPage() {
         { id: campaignId, data: payload },
         {
           onSuccess: () => {
-            toast.success("Draft saved successfully!");
+            toast.success(
+              editingStatus === "scheduled" ? "Saved as a draft. It is no longer scheduled."
+                : editingStatus === "draft" ? "Draft saved." : "Changes saved.",
+            );
             setWizardOpen(false);
             resetWizard();
           },
@@ -979,10 +996,12 @@ export default function CampaignsPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-44">
-                          <DropdownMenuItem className="cursor-pointer font-medium" onClick={() => handleOpenEdit(campaign)}>
-                            <Edit className="size-4 mr-2" />
-                            {campaign.status === "draft" ? "Edit Draft" : "Edit / Resend"}
-                          </DropdownMenuItem>
+                          {campaign.status !== "sending" && (
+                            <DropdownMenuItem className="cursor-pointer font-medium" onClick={() => handleOpenEdit(campaign)}>
+                              <Edit className="size-4 mr-2" />
+                              {campaign.status === "draft" ? "Edit Draft" : "Edit / Resend"}
+                            </DropdownMenuItem>
+                          )}
                           {campaign.status === "sent" && (
                             <DropdownMenuItem
                               className="cursor-pointer font-medium text-emerald-600 focus:text-emerald-700"
@@ -2117,7 +2136,7 @@ export default function CampaignsPage() {
                 className="shadow-sm text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700"
               >
                 <FileText className="size-4 mr-2 text-slate-500" />
-                Save as Draft
+                {editingStatus === "sent" || editingStatus === "paused" ? "Save Changes" : "Save as Draft"}
               </Button>
             </div>
 
