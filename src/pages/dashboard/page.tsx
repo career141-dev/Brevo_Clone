@@ -79,6 +79,12 @@ function DashboardInner() {
     queryKey: ["campaign-stats"],
     queryFn: () => api.campaigns.stats(),
   });
+  // Same query (and cache) as the Analytics page: delivered is counted from SES delivery events per campaign.
+  const { data: campaignAnalytics } = useQuery({
+    queryKey: ["analytics", "campaigns"],
+    queryFn: () => api.analytics.campaigns(),
+  });
+  const delivered = campaignAnalytics?.reduce((sum, c) => sum + (c.stats?.delivered ?? 0), 0) ?? 0;
   const navigate = useNavigate();
 
   const email = user?.emailAddresses?.[0]?.emailAddress ?? "";
@@ -114,8 +120,8 @@ function DashboardInner() {
     },
     {
       label: "Emails Delivered",
-      value: 0,
-      sub: `${campaignStats?.total ?? 0} sent campaigns`,
+      value: delivered,
+      sub: `across ${campaignStats?.sent ?? 0} sent campaigns`,
       icon: Mail,
       color: "text-[#00F59B]",
       bg: "bg-[#D7FEC8] dark:bg-[#00F59B]/15",

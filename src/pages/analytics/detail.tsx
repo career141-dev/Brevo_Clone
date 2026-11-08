@@ -1,5 +1,6 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "@/lib/api.ts";
 import { format } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
@@ -80,7 +81,8 @@ export default function AnalyticsDetailPage() {
     topDomains = [],
     averageTimeToOpen = null,
     averageTimeToClick = null,
-    engagementHeatmap = []
+    engagementHeatmap = [],
+    deviceSample = null
   } = advanced || {};
   
   const formatTime = (seconds: number) => {
@@ -100,7 +102,7 @@ export default function AnalyticsDetailPage() {
   const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"];
 
   const handleExport = () => {
-    window.location.href = `/api/analytics/campaigns/${campaign.id}/export`;
+    api.analytics.exportCsv(campaign.id).catch((err) => toast.error(err.message));
   };
 
   return (
@@ -108,7 +110,7 @@ export default function AnalyticsDetailPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-start gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate("/analytics")} className="mt-0.5 shrink-0">
+          <Button variant="ghost" size="icon" onClick={() => navigate("/analytics")} className="mt-0.5 shrink-0" aria-label="Back to Analytics">
             <ArrowLeft className="size-4" />
           </Button>
           <div>
@@ -121,7 +123,14 @@ export default function AnalyticsDetailPage() {
             <p className="text-sm text-muted-foreground flex items-center gap-2">
               <span>Subject: <strong className="font-medium text-foreground">{campaign.subject}</strong></span>
               <span>•</span>
-              <span>Sent: {campaign.sentAt ? format(new Date(campaign.sentAt), "MMM d, yyyy 'at' h:mm a") : "N/A"}</span>
+              {campaign.status === "sending" ? (
+                <span>
+                  Sending: {stats.sent.toLocaleString()} sent so far ·{" "}
+                  <Link to={`/campaigns/${campaign.id}/progress`} className="font-medium text-primary hover:underline">See progress</Link>
+                </span>
+              ) : (
+                <span>Sent: {campaign.sentAt ? format(new Date(campaign.sentAt), "MMM d, yyyy 'at' h:mm a") : "Not sent yet"}</span>
+              )}
             </p>
           </div>
         </div>
@@ -160,6 +169,7 @@ export default function AnalyticsDetailPage() {
                 <h3 className="text-3xl font-bold">{stats.opened.toLocaleString()}</h3>
                 <span className="text-sm font-medium text-emerald-600">({stats.openRate}%)</span>
               </div>
+              <p className="text-xs text-muted-foreground mt-0.5">A click counts as an open. Apple Mail privacy opens are left out.</p>
             </div>
           </CardContent>
         </Card>
@@ -175,7 +185,9 @@ export default function AnalyticsDetailPage() {
                 <h3 className="text-3xl font-bold">{stats.clicked.toLocaleString()}</h3>
                 <span className="text-sm font-medium text-purple-600">({stats.clickRate}%)</span>
               </div>
-              <p className="text-xs text-muted-foreground mt-0.5">CTR from opens: {stats.clickToOpenRate}%</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {(stats.totalClicks ?? 0).toLocaleString()} clicks in all · {stats.clickToOpenRate}% of people who opened
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -300,9 +312,9 @@ export default function AnalyticsDetailPage() {
                   <div className="space-y-4">
                     {topLinks.map((link: any, i: number) => (
                       <div key={i} className="flex items-center justify-between border-b last:border-0 pb-3 last:pb-0">
-                        <span className="text-sm font-medium truncate pr-4 text-blue-600 hover:underline cursor-pointer" title={link.url} onClick={() => window.open(link.url, '_blank')}>
+                        <a href={link.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium truncate pr-4 text-blue-600 hover:underline" title={link.url}>
                           {link.url}
-                        </span>
+                        </a>
                         <Badge variant="secondary">{link.count} clicks</Badge>
                       </div>
                     ))}
@@ -320,6 +332,9 @@ export default function AnalyticsDetailPage() {
                   <MonitorSmartphone className="size-5 text-purple-500" />
                   Devices & Browsers
                 </CardTitle>
+                {deviceSample?.capped && (
+                  <p className="text-xs text-muted-foreground">Based on the latest {deviceSample.size.toLocaleString()} clicks.</p>
+                )}
               </CardHeader>
               <CardContent className="flex flex-col sm:flex-row items-center justify-around gap-6 py-4">
                 {deviceData.length > 0 ? (
@@ -367,6 +382,7 @@ export default function AnalyticsDetailPage() {
           <Card className="shadow-sm">
             <CardHeader>
               <CardTitle className="text-lg font-semibold">Engagement Timeline</CardTitle>
+              <p className="text-xs text-muted-foreground">Colombo time.</p>
             </CardHeader>
             <CardContent>
               {engagementTimeline.length > 0 ? (
@@ -437,6 +453,7 @@ export default function AnalyticsDetailPage() {
                   <Activity className="size-5 text-orange-500" />
                   24-Hour Engagement Heatmap
                 </CardTitle>
+                <p className="text-xs text-muted-foreground">Colombo time.</p>
               </CardHeader>
               <CardContent>
                 {engagementHeatmap && engagementHeatmap.length > 0 ? (

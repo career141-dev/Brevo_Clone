@@ -7,6 +7,23 @@ import { getCached, setCache } from "../lib/analytics-cache.js";
 export const analyticsRouter = Router();
 const router = analyticsRouter;
 
+// A bad id was a 500 from Prisma; refuse it here once for every /:id route below.
+router.param('id', (_req, res, next, raw) => {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return res.status(400).json({ error: 'Invalid campaign ID' });
+  next();
+});
+
+// The team reads times in Colombo (UTC+05:30, no daylight saving); the server clock is UTC on Railway.
+// Stored timestamps are UTC, so shifting by 330 minutes in SQL gives Colombo wall-clock time.
+const COLOMBO_TIME = Prisma.sql`DATE_ADD(timestamp, INTERVAL 330 MINUTE)`;
+// "2026-11-08 15:00" (Colombo wall clock, from SQL) -> "Nov 8, 3 PM"
+const hourLabel = (h: string) =>
+  new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true, timeZone: 'UTC' })
+    .format(new Date(h.replace(' ', 'T') + ':00Z'));
+// Devices and browsers need user agents parsed in Node, so only the latest rows are read.
+export const UA_SAMPLE = 5000;
+
 // ── Analytics ───────────────────────────────────────────────────────
 
 router.get('/api/analytics/campaigns', async (req, res) => {
@@ -46,6 +63,7 @@ router.get('/api/analytics/campaigns', async (req, res) => {
       const cStats = statsMap[campaign.id] || {};
       
       const recipients = campaign.totalRecipients || 0;
+      const sent = cStats['sent']?.unique || 0;
       const delivered = cStats['delivered']?.unique || 0;
       const opened = cStats['opened']?.unique || 0;
       const clicked = cStats['clicked']?.unique || 0;
@@ -65,10 +83,12 @@ router.get('/api/analytics/campaigns', async (req, res) => {
         createdAt: campaign.createdAt,
         stats: {
           recipients,
+          sent,
           delivered,
           opened,
-          clicked: rawClicks > 0 ? rawClicks : clicked,
-          uniqueClicked: clicked,
+          // Unique clickers, so the number matches the rate beside it; every click is totalClicks.
+          clicked,
+          totalClicks: rawClicks,
           bounced,
           unsubscribed: unsub,
           complained,
@@ -93,7 +113,7 @@ router.get('/api/analytics/campaigns', async (req, res) => {
 
 router.get('/api/analytics/campaigns/:id', async (req, res) => {
   try {
-    const campaignId = parseInt(req.params.id);
+    const campaignId = Number(req.params.id);
     const cacheKey = `analytics:campaign:${campaignId}`;
     const cached = getCached(cacheKey);
     if (cached) return res.json(cached);
@@ -104,9 +124,9 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
     });
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
-    // Totals, domains, links and time-to-open/click are aggregated in SQL; only opens/clicks are loaded as rows
-    // (device/browser/timeline parsing needs them) instead of the campaign's entire event history.
-    const [countRows, domainRows, linkRows, engagementEvents, avgRows, timeline] = await Promise.all([
+    // Everything is aggregated in SQL except devices/browsers, which parse user agents from a capped sample
+    // (every open/click row used to be loaded on each cache miss).
+    const [countRows, domainRows, linkRows, uaRows, heatmapRows, timelineRows, avgRows, timeline] = await Promise.all([
       prisma.$queryRaw<{ eventType: string; uniq: bigint; total: bigint }[]>`
         SELECT eventType, COUNT(DISTINCT email) AS uniq, COUNT(*) AS total
         FROM email_events WHERE campaignId = ${campaignId} GROUP BY eventType`,
@@ -119,11 +139,18 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
         SELECT url, COUNT(*) AS n FROM email_events
         WHERE campaignId = ${campaignId} AND eventType = 'clicked' AND url IS NOT NULL
         GROUP BY url ORDER BY n DESC LIMIT 10`,
-      prisma.emailEvent.findMany({
-        where: { campaignId, eventType: { in: ['opened', 'clicked'] } },
-        select: { eventType: true, email: true, userAgent: true, timestamp: true },
-        orderBy: { timestamp: 'asc' },
-      }),
+      // One row per contact, action and user agent (repeated clicks don't skew the split), latest first.
+      prisma.$queryRaw<{ userAgent: string }[]>`
+        SELECT userAgent FROM email_events
+        WHERE campaignId = ${campaignId} AND eventType IN ('opened', 'clicked') AND userAgent IS NOT NULL
+        GROUP BY eventType, email, userAgent ORDER BY MAX(id) DESC LIMIT ${UA_SAMPLE + 1}`,
+      prisma.$queryRaw<{ h: number; n: bigint }[]>`
+        SELECT HOUR(${COLOMBO_TIME}) AS h, COUNT(*) AS n FROM email_events
+        WHERE campaignId = ${campaignId} AND eventType IN ('opened', 'clicked') GROUP BY h`,
+      // One per contact per action per hour.
+      prisma.$queryRaw<{ h: string; eventType: string; n: bigint }[]>`
+        SELECT DATE_FORMAT(${COLOMBO_TIME}, '%Y-%m-%d %H:00') AS h, eventType, COUNT(DISTINCT email) AS n FROM email_events
+        WHERE campaignId = ${campaignId} AND eventType IN ('opened', 'clicked') GROUP BY h, eventType ORDER BY h`,
       prisma.$queryRaw<{ avgOpen: any; avgClick: any }[]>`
         WITH s AS (SELECT LOWER(email) AS e, MIN(timestamp) AS t FROM email_events WHERE campaignId = ${campaignId} AND eventType = 'sent' GROUP BY LOWER(email)),
              o AS (SELECT LOWER(email) AS e, MIN(timestamp) AS t FROM email_events WHERE campaignId = ${campaignId} AND eventType = 'opened' GROUP BY LOWER(email)),
@@ -159,45 +186,20 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
     const parser = new UAParser();
     const devices = { desktop: 0, mobile: 0, tablet: 0, other: 0 };
     const browsers: Record<string, number> = {};
-    const engagementTimelineMap: Record<string, { time: string; opens: number; clicks: number }> = {};
-    const processedEngagement = new Set<string>();
-    const engagementHeatmap = Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0 }));
-
-    for (const e of engagementEvents) {
-      engagementHeatmap[e.timestamp.getHours()].count++;
-
-      if (e.userAgent) {
-        // Deduplicate UA parsing per user action type so repeated clicks don't skew the split
-        const uaKey = `${e.eventType}:${e.email}:${e.userAgent}`;
-        if (!processedEngagement.has(uaKey)) {
-          processedEngagement.add(uaKey);
-          parser.setUA(e.userAgent);
-          const result = parser.getResult();
-          const deviceType = result.device.type || 'desktop';
-          if (['mobile', 'tablet'].includes(deviceType)) {
-            devices[deviceType as 'mobile' | 'tablet']++;
-          } else if (['smarttv', 'console', 'wearable', 'embedded'].includes(deviceType)) {
-            devices.other++;
-          } else {
-            devices.desktop++;
-          }
-          const browser = result.browser.name || 'Unknown';
-          browsers[browser] = (browsers[browser] || 0) + 1;
-        }
+    const sampleCapped = uaRows.length > UA_SAMPLE;
+    for (const { userAgent } of uaRows.slice(0, UA_SAMPLE)) {
+      parser.setUA(userAgent);
+      const result = parser.getResult();
+      const deviceType = result.device.type || 'desktop';
+      if (['mobile', 'tablet'].includes(deviceType)) {
+        devices[deviceType as 'mobile' | 'tablet']++;
+      } else if (['smarttv', 'console', 'wearable', 'embedded'].includes(deviceType)) {
+        devices.other++;
+      } else {
+        devices.desktop++;
       }
-
-      // Timeline: one entry per user action type per hour
-      const hourString = e.timestamp.toISOString().substring(0, 13) + ':00:00.000Z';
-      const tlKey = `${e.eventType}:${e.email}:${hourString}`;
-      if (!processedEngagement.has(tlKey)) {
-        processedEngagement.add(tlKey);
-        if (!engagementTimelineMap[hourString]) {
-          const timeLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true }).format(new Date(hourString));
-          engagementTimelineMap[hourString] = { time: timeLabel, opens: 0, clicks: 0 };
-        }
-        if (e.eventType === 'opened') engagementTimelineMap[hourString].opens++;
-        if (e.eventType === 'clicked') engagementTimelineMap[hourString].clicks++;
-      }
+      const browser = result.browser.name || 'Unknown';
+      browsers[browser] = (browsers[browser] || 0) + 1;
     }
 
     const topBrowsers = Object.entries(browsers)
@@ -205,9 +207,15 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
-    const engagementTimeline = Object.entries(engagementTimelineMap)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(entry => entry[1]);
+    const engagementHeatmap = Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0 }));
+    for (const r of heatmapRows) engagementHeatmap[Number(r.h)].count = Number(r.n);
+
+    const engagementTimelineMap = new Map<string, { time: string; opens: number; clicks: number }>();
+    for (const r of timelineRows) {
+      if (!engagementTimelineMap.has(r.h)) engagementTimelineMap.set(r.h, { time: hourLabel(r.h), opens: 0, clicks: 0 });
+      engagementTimelineMap.get(r.h)![r.eventType === 'opened' ? 'opens' : 'clicks'] = Number(r.n);
+    }
+    const engagementTimeline = [...engagementTimelineMap.values()]; // SQL already ordered by hour
 
     const avgOpen = avgRows[0]?.avgOpen;
     const avgClick = avgRows[0]?.avgClick;
@@ -216,6 +224,7 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
 
     const unsub = c['unsubscribed'] || 0;
     const recipients = campaign.totalRecipients || 0;
+    const sent = c['sent'] || 0;
     const delivered = c['delivered'] || 0;
     const opened = c['opened'] || 0;
     const clicked = c['clicked'] || 0;
@@ -242,10 +251,12 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
       },
       stats: {
         recipients,
+        sent,
         delivered,
         opened,
-        clicked: rawClicks > 0 ? rawClicks : clicked,
-        uniqueClicked: clicked,
+        // Unique clickers, so the number matches the rate beside it; every click is totalClicks.
+        clicked,
+        totalClicks: rawClicks,
         bounced,
         unsubscribed: unsub,
         complained,
@@ -267,6 +278,7 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
         topLinks,
         devices,
         topBrowsers,
+        deviceSample: { size: Math.min(uaRows.length, UA_SAMPLE), capped: sampleCapped },
         engagementTimeline,
         topDomains,
         averageTimeToOpen,
@@ -285,7 +297,7 @@ router.get('/api/analytics/campaigns/:id', async (req, res) => {
 
 router.get('/api/analytics/campaigns/:id/contact-events', async (req, res) => {
   try {
-    const campaignId = parseInt(req.params.id);
+    const campaignId = Number(req.params.id);
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize as string) || 20));
     const q = (req.query.q as string || "").toLowerCase();
@@ -347,7 +359,7 @@ router.get('/api/analytics/campaigns/:id/contact-events', async (req, res) => {
 
 router.get('/api/analytics/campaigns/:id/export', async (req, res) => {
   try {
-    const campaignId = parseInt(req.params.id);
+    const campaignId = Number(req.params.id);
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
     });

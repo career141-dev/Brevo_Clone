@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api.ts";
 import { formatDistanceToNow, format } from "date-fns";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
@@ -15,7 +15,6 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 export default function AnalyticsPage() {
-  const navigate = useNavigate();
   const { data: campaigns, isLoading } = useQuery({
     queryKey: ["analytics", "campaigns"],
     queryFn: () => api.analytics.campaigns(),
@@ -57,10 +56,11 @@ export default function AnalyticsPage() {
           </Card>
         ) : (
           campaigns.map((c) => (
+            // The name is the link and stretches over the card, so the card is reachable by keyboard and the
+            // progress link can sit inside it (a link inside a link is invalid).
             <Card
               key={c.id}
-              className="cursor-pointer hover:shadow-md transition-shadow group overflow-hidden"
-              onClick={() => navigate(`/analytics/${c.id}`)}
+              className="relative hover:shadow-md transition-shadow group overflow-hidden focus-within:ring-2 focus-within:ring-ring"
             >
               <CardContent className="p-0">
                 <div className="flex flex-col md:flex-row">
@@ -74,11 +74,20 @@ export default function AnalyticsPage() {
                         {c.status}
                       </Badge>
                       <span className="text-xs text-muted-foreground">
-                        {c.sentAt ? format(new Date(c.sentAt), "MMM d, yyyy 'at' h:mm a") : "Not sent yet"}
+                        {c.status === "sending"
+                          ? `Sending: ${c.stats.sent.toLocaleString()} sent so far`
+                          : c.sentAt ? format(new Date(c.sentAt), "MMM d, yyyy 'at' h:mm a") : "Not sent yet"}
                       </span>
+                      {c.status === "sending" && (
+                        <Link to={`/campaigns/${c.id}/progress`} className="relative z-10 text-xs font-medium text-primary hover:underline">
+                          See progress
+                        </Link>
+                      )}
                     </div>
                     <h3 className="text-base font-semibold group-hover:text-primary transition-colors">
-                      {c.name}
+                      <Link to={`/analytics/${c.id}`} className="outline-none after:absolute after:inset-0">
+                        {c.name}
+                      </Link>
                     </h3>
                     <p className="text-sm text-muted-foreground mt-1 line-clamp-1">
                       {c.subject}
