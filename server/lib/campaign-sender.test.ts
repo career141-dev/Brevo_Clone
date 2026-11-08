@@ -84,7 +84,7 @@ let cur: ReturnType<typeof setup>;
 const proxy = (pick: (s: ReturnType<typeof setup>) => any) => new Proxy({}, { get: (_t, k) => pick(cur)[k] });
 mock.module("../prisma.js", { exports: { prisma: proxy((s) => s.prisma) } });
 mock.module("./ses.js", { exports: { sesClient: proxy((s) => s.sesClient), sesv2Client: proxy((s) => s.sesv2Client) } });
-const { runCampaign, dispatchCampaign, isRunning, personalize } = await import("./campaign-sender.js");
+const { runCampaign, dispatchCampaign, isRunning, personalize, takeSendSlot } = await import("./campaign-sender.js");
 
 const idle = async () => { while (isRunning(1)) await new Promise((r) => setTimeout(r, 20)); };
 
@@ -272,4 +272,12 @@ test("a Pause that lands after the last chunk leaves the campaign sent, not paus
   await runCampaign(1);
   assert.equal(s.sentTo.length, 9);
   assert.equal(s.campaign.status, "sent");
+});
+
+test("campaigns sending at once share one speed: a chunk slot per second for the whole process", async () => {
+  // Three chunks from different campaigns asking at the same moment go one second apart, not together.
+  const t0 = Date.now();
+  const at = await Promise.all([1, 2, 3].map(async () => { await takeSendSlot(); return Date.now() - t0; }));
+  at.sort((a, b) => a - b);
+  assert.ok(at[1] - at[0] >= 950 && at[2] - at[1] >= 950, `slots one second apart (${at.join(", ")} ms)`);
 });

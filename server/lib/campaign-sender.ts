@@ -212,11 +212,13 @@ export async function sendTiming(queued: number, campaignId: number) {
     prisma.campaign.count({ where: { status: "sending", id: { not: campaignId } } }),
   ]);
   const resumesInSeconds = Math.max(0, Math.ceil((plan.resumesAt.getTime() - Date.now()) / 1000));
+  // Campaigns sending at once take turns at the one speed (takeSendSlot), so each gets its share.
+  const rate = Math.max(1, Math.floor(plan.rate / (othersSending + 1)));
   return {
-    rate: plan.rate,
+    rate,
     perDay: plan.perDay,
     room: plan.room,
-    ...estimateFinish({ queued, rate: plan.rate, room: plan.room, perDay: plan.perDay, resumesInSeconds }),
+    ...estimateFinish({ queued, rate, room: plan.room, perDay: plan.perDay, resumesInSeconds }),
     // The worker pauses the campaign when this month's cap runs out; Resume continues it next month.
     pausesAtMonthlyLimit: plan.monthlyLeft !== null && queued > plan.monthlyLeft,
     monthlyLeft: plan.monthlyLeft,
@@ -346,6 +348,39 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
 const running = new Set<number>();
 let stopping = false;
 
+// Why and until when a worker is asleep, for /progress: during these waits the time-left countdown passed zero with no
+// word of why. In memory, like `running`: the progress poll is answered by the process that holds the lease.
+const waits = new Map<number, { until: Date; reason: "daily_limit" | "aws_quota" }>();
+export const currentWait = (campaignId: number) => waits.get(campaignId) ?? null;
+async function waitFor(campaignId: number, reason: "daily_limit" | "aws_quota") {
+  waits.set(campaignId, { until: new Date(Date.now() + QUOTA_WAIT_MS), reason });
+  try {
+    await sleep(QUOTA_WAIT_MS);
+  } finally {
+    waits.delete(campaignId);
+  }
+}
+
+// One sending speed for the whole process. Each campaign's worker used to send a full `rate` every second on its
+// own, so two at once asked SES for double and got throttled (QA re-check 8 Nov, N6). Every chunk now takes the next
+// free one-second slot, so all campaigns together stay at one chunk a second and share it in turn.
+// Check-and-take on wake (JS runs one thing at a time, so it can't race): a timer that fires a millisecond early just
+// sleeps again. The second is counted from when the chunk has finished firing (the returned `fired`), not from the
+// grant: building each email signs its links, so a chunk's sends spread over tens of milliseconds.
+let nextSlot = 0;
+export async function takeSendSlot(): Promise<() => void> {
+  for (;;) {
+    const now = Date.now();
+    if (now >= nextSlot) {
+      nextSlot = now + 1000;
+      return () => {
+        nextSlot = Math.max(nextSlot, Date.now() + 1000);
+      };
+    }
+    await sleep(nextSlot - now);
+  }
+}
+
 // During a Railway deploy two containers overlap, and the in-memory `running` set can't see across them. A short lease
 // on the campaign row lets only one process send it; if that process dies, the lease expires and the sweep takes over.
 const WORKER_ID = randomUUID();
@@ -466,7 +501,7 @@ async function processCampaign(campaignId: number) {
       if (budget !== null && budget <= 0) {
         // ponytail: fixed re-check interval; a pause/delete is noticed only after the wait ends.
         console.warn(`[SEND][Campaign ${campaignId}] daily send limit or SES quota used up, re-checking in ${QUOTA_WAIT_MS / 60_000} min`);
-        await sleep(QUOTA_WAIT_MS);
+        await waitFor(campaignId, "daily_limit");
         continue;
       }
     }
@@ -491,6 +526,7 @@ async function processCampaign(campaignId: number) {
 
     for (let i = 0; i < page.length && !stopping; i += rate) {
       const batch = page.slice(i, i + rate);
+      const fired = await takeSendSlot();
       const sends = batch.map(async (r: any) => {
         const contact = r.contactId ? contactById.get(r.contactId) : null;
         // Suppression is re-checked close to send time (at most PAGE_SECONDS old): the contact may have unsubscribed or been blocked since the snapshot.
@@ -528,9 +564,7 @@ async function processCampaign(campaignId: number) {
           return { r, outcome: "failed" as const, error: String(e?.message ?? e).slice(0, 500) };
         }
       });
-      // Every send has fired by here. The 1s window starts now (not at the first send, or before the DB lookups), so two
-      // chunks can never land inside one second and exceed the SES rate.
-      const lastSendAt = Date.now();
+      fired(); // every send of this chunk has fired: the next chunk is a full second after the last one
       const results = await Promise.all(sends);
 
       const sent = results.filter((x) => x.outcome === "sent");
@@ -595,7 +629,7 @@ async function processCampaign(campaignId: number) {
         // show room (or be unreadable) while SES refuses, and then fired the next chunk at once, round after round.
         await settleWrites();
         console.warn(`[SEND][Campaign ${campaignId}] SES daily quota refused, waiting ${QUOTA_WAIT_MS / 60_000} min`);
-        await sleep(QUOTA_WAIT_MS);
+        await waitFor(campaignId, "aws_quota");
         break;
       }
 
@@ -608,13 +642,13 @@ async function processCampaign(campaignId: number) {
       }
       backoff = 0;
 
-      // ponytail: fixed-window limiter (chunk size == rate, one chunk per second); a token bucket would smooth bursts.
-      // The lease is renewed while that second is waited out, and the next chunk only goes once it is known to be ours:
-      // a Pause (or delete) stops the send before the next chunk instead of after a whole page (~120 emails), a page
-      // slower than LEASE_MS can't let a second container re-send rows not yet saved, and a DB error here stops this
-      // worker (the sweep restarts it) instead of an unhandled rejection taking the process down (N5).
-      const elapsed = Date.now() - lastSendAt;
-      const [stillOurs] = await Promise.all([claimLease(campaignId).catch(() => false), elapsed < 1000 ? sleep(1000 - elapsed) : null]);
+      // ponytail: fixed one-second slots (chunk size == rate, takeSendSlot); a token bucket would smooth bursts.
+      // The lease is renewed before the next chunk, while its slot is still a second away, and the next chunk only goes
+      // once it is known to be ours: a Pause (or delete) stops the send before the next chunk instead of after a whole
+      // page (~120 emails), a page slower than LEASE_MS can't let a second container re-send rows not yet saved, and a
+      // DB error here stops this worker (the sweep restarts it) instead of an unhandled rejection taking the process
+      // down (N5).
+      const stillOurs = await claimLease(campaignId).catch(() => false);
       if (!stillOurs) {
         await settleWrites();
         await finishIfNoneLeft(campaignId);

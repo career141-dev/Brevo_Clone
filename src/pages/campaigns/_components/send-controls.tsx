@@ -103,7 +103,7 @@ export function when(d: Date) {
 /** One plain sentence on how long a send of this size takes, from the server's estimate (counted from `from`). */
 export function timingSentence(t: SendTiming, from = Date.now()) {
   const shared = t.othersSending > 0
-    ? ` ${t.othersSending === 1 ? "Another campaign is" : `${t.othersSending} other campaigns are`} sending too, so it will take longer.`
+    ? ` ${t.othersSending === 1 ? "Another campaign is" : `${t.othersSending} other campaigns are`} sending too; this time is for its share of the speed.`
     : "";
   return baseSentence(t, from) + shared;
 }

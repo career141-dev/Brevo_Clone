@@ -50,10 +50,13 @@ export default function CampaignProgressPage() {
 
   const pct = data.total > 0 ? Math.floor((data.sent / data.total) * 100) : 0;
   const t = data.timing;
-  const elapsed = Math.max(0, (now - dataUpdatedAt) / 1000);
-  const finishAt = t?.finishInSeconds != null ? new Date(dataUpdatedAt + t.finishInSeconds * 1000) : null;
+  const waitEnds = data.waiting ? new Date(dataUpdatedAt + data.waiting.inSeconds * 1000) : null;
+  // While the sender sleeps in a wait nothing goes out, so it can't finish before the wait ends plus the rest's sending.
+  const afterWait = waitEnds && t ? waitEnds.getTime() + Math.ceil(data.queued / t.rate) * 1000 : 0;
+  const estimated = t?.finishInSeconds != null ? dataUpdatedAt + t.finishInSeconds * 1000 : null;
+  const finishAt = estimated !== null ? new Date(Math.max(estimated, afterWait)) : null;
   const resumesAt = t?.resumesInSeconds != null ? new Date(dataUpdatedAt + t.resumesInSeconds * 1000) : null;
-  const left = t?.finishInSeconds != null ? Math.max(0, t.finishInSeconds - elapsed) : null;
+  const left = finishAt ? Math.max(0, (finishAt.getTime() - now) / 1000) : null;
 
   return (
     <div className="p-6 max-w-3xl mx-auto space-y-6">
@@ -82,7 +85,10 @@ export default function CampaignProgressPage() {
           {data.status === "sending" && t && (
             <div className="grid gap-3 sm:grid-cols-2">
               <Stat icon={<Clock className="size-4" />} label="Time left">
-                {t.pausesAtMonthlyLimit ? "More than this month allows" : left !== null ? about(left).replace(/^./, (c) => c.toUpperCase()) : "Waiting for the send limit"}
+                {t.pausesAtMonthlyLimit ? "More than this month allows"
+                  : left === null ? "Waiting for the send limit"
+                  : left === 0 ? "A little longer than expected" // the estimate ran out; the next poll gives a new one
+                  : about(left).replace(/^./, (c) => c.toUpperCase())}
               </Stat>
               <Stat icon={<CheckCircle2 className="size-4" />} label="Expected to finish">
                 {t.pausesAtMonthlyLimit ? "Next month" : finishAt ? when(finishAt) : "Not known yet"}
@@ -99,10 +105,19 @@ export default function CampaignProgressPage() {
             </Note>
           )}
 
+          {data.status === "sending" && data.waiting && waitEnds && (
+            <Note tone="amber">
+              {data.waiting.reason === "aws_quota"
+                ? "AWS's own daily sending limit is full for now, so sending is waiting."
+                : "Today's send limit is used up, so sending is waiting."}{" "}
+              It checks again at <strong>{when(waitEnds)}</strong> and carries on by itself.
+            </Note>
+          )}
+
           {data.status === "sending" && t && t.othersSending > 0 && (
             <Note tone="blue">
-              {t.othersSending === 1 ? "Another campaign is" : `${t.othersSending} other campaigns are`} sending at the same time. They share the
-              sending speed and the daily limit, so this will take longer than shown.
+              {t.othersSending === 1 ? "Another campaign is" : `${t.othersSending} other campaigns are`} sending at the same time. They take turns at
+              the sending speed and share the daily limit, so the time shown is for this campaign's share.
             </Note>
           )}
 

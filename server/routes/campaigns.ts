@@ -3,7 +3,7 @@ import { SendEmailCommand as SendEmailV2Command } from "@aws-sdk/client-sesv2";
 import { prisma } from "../prisma.js";
 import { sesv2Client } from "../lib/ses.js";
 import { injectTracking, makeUnsubscribeUrl } from "../lib/tracking.js";
-import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize, sendEstimate, sendPlan, sendTiming } from "../lib/campaign-sender.js";
+import { dispatchCampaign, formatEmailWithDisplayName, normalizeEmailHtml, personalize, currentWait, sendEstimate, sendPlan, sendTiming } from "../lib/campaign-sender.js";
 import { getCached, setCache, invalidateAnalyticsCache } from "../lib/analytics-cache.js";
 import { hostEmbeddedImages } from "../lib/embedded-images.js";
 import { checkEmailContent } from "../lib/content-check.js";
@@ -437,8 +437,10 @@ router.get("/api/campaigns/:id/progress", async (req, res) => {
       else if ((await sendPlan()).monthlyLeft === 0) pauseReason = "This month's send limit is used up. Press Resume after the 1st.";
       else pauseReason = "Paused by a person. Press Resume to continue.";
     }
+    const wait = campaign.status === "sending" ? currentWait(campaignId) : null;
     res.json({
       pauseReason,
+      waiting: wait ? { reason: wait.reason, inSeconds: Math.max(0, Math.ceil((wait.until.getTime() - Date.now()) / 1000)) } : null,
       ...campaign,
       ...counts,
       total: Object.values(counts).reduce((a, b) => a + b, 0),

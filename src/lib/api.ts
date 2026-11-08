@@ -348,6 +348,8 @@ export type CampaignProgress = {
   total: number;
   lastError: string | null;
   pauseReason: string | null;
+  // Set while the sender is asleep waiting for the daily limit or AWS's own quota to free up.
+  waiting: { reason: "daily_limit" | "aws_quota"; inSeconds: number } | null;
   // Only while sending with emails still queued. Seconds are counted from when the server answered.
   timing: SendTiming | null;
 };
