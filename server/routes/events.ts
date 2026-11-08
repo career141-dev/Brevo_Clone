@@ -11,6 +11,9 @@ const router = eventsRouter;
 // ── SES Webhook (SNS event handler — authenticated by SNS message signature) ──
 
 /** Inserts an event; returns false if an identical one-per-(type,campaign,email) event already exists. */
+// ponytail: a fixed window; scanners that wait longer still count. A user-agent list would catch more.
+const SCANNER_WINDOW_MS = 2 * 60_000;
+
 async function recordEvent(email: string, campaignId: number | null, eventType: string, extra: { url?: string; userAgent?: string | null } = {}, once = true) {
   try {
     await prisma.emailEvent.create({
@@ -66,8 +69,9 @@ router.post(
         ? parseInt(msg.mail.tags.campaign_id[0], 10)
         : null;
 
-      // Fallback: find most recent 'sent' event for this email
-      if (!campaignId) {
+      // Fallback: find most recent 'sent' event for this email. Not for a test send: its tester is often on a real list,
+      // and its delivery or bounce was then counted against that campaign (QA re-check 8 Nov, finding 7).
+      if (!campaignId && !msg.mail?.tags?.test) {
         const recent = await prisma.emailEvent.findFirst({
           where: { email, eventType: "sent" },
           orderBy: { timestamp: "desc" },
@@ -148,12 +152,20 @@ router.get("/api/track/click", async (req, res) => {
     if (!/^https?:\/\//i.test(url)) return res.status(400).send("Invalid link.");
 
     const who = email.toLowerCase();
+    // A click means the email was opened, even when the pixel was blocked or dropped as an Apple Mail privacy open;
+    // without this click-to-open went over 100%. The open's dedupKey keeps it to one per contact. Not within
+    // SCANNER_WINDOW_MS of sending: Safe Links and Mimecast follow every link on delivery, and each scanned email
+    // then counted as an open (QA re-check 8 Nov, N4).
+    const impliedOpen = async () => {
+      if (!campaignId) return;
+      const sent = await prisma.emailEvent.findFirst({ where: { campaignId, email: who, eventType: "sent" }, select: { timestamp: true } });
+      if (sent && Date.now() - sent.timestamp.getTime() < SCANNER_WINDOW_MS) return;
+      await recordEvent(who, campaignId, "opened");
+    };
     await Promise.all([
       // Log the click event (allow multiple clicks)
       recordEvent(who, campaignId, "clicked", { url, userAgent: req.headers["user-agent"]?.slice(0, 500) ?? null }, false),
-      // A click means the email was opened, even when the pixel was blocked or dropped as an Apple Mail privacy
-      // open; without this click-to-open went over 100%. The open's dedupKey keeps it to one per contact.
-      campaignId ? recordEvent(who, campaignId, "opened") : null,
+      impliedOpen(),
     ]);
     return res.redirect(302, url);
   } catch {

@@ -333,7 +333,7 @@ export default function AnalyticsDetailPage() {
                   Devices & Browsers
                 </CardTitle>
                 {deviceSample?.capped && (
-                  <p className="text-xs text-muted-foreground">Based on the latest {deviceSample.size.toLocaleString()} clicks.</p>
+                  <p className="text-xs text-muted-foreground">Based on the latest {deviceSample.size.toLocaleString()} opens and clicks.</p>
                 )}
               </CardHeader>
               <CardContent className="flex flex-col sm:flex-row items-center justify-around gap-6 py-4">

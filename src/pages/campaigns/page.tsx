@@ -269,7 +269,6 @@ export default function CampaignsPage() {
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
       queryClient.invalidateQueries({ queryKey: ["campaigns-stats"] });
       setStep(2);
-      toast.success("Campaign details saved!");
     },
     onError: (err: any) => {
       const serverDetails = err?.response?.data?.details;
@@ -1008,7 +1007,7 @@ export default function CampaignsPage() {
                           {campaign.status !== "sending" && (
                             <DropdownMenuItem className="cursor-pointer font-medium" onClick={() => handleOpenEdit(campaign)}>
                               <Edit className="size-4 mr-2" />
-                              {campaign.status === "draft" ? "Edit Draft" : "Edit / Resend"}
+                              {campaign.status === "draft" ? "Edit Draft" : campaign.status === "sent" ? "Edit / Resend" : "Edit"}
                             </DropdownMenuItem>
                           )}
                           {["sent", "sending", "paused"].includes(campaign.status) && (
@@ -2130,8 +2129,8 @@ export default function CampaignsPage() {
           </div>
 
           {/* Footer Navigation */}
-          <div className="p-6 border-t border-border bg-muted/20 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+          <div className="p-6 border-t border-border bg-muted/20 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {step > 1 ? (
                 <Button variant="outline" onClick={() => setStep(step - 1)} className="shadow-sm">
                   <ArrowLeft className="size-4 mr-2" />
@@ -2165,7 +2164,8 @@ export default function CampaignsPage() {
                 )}
               </Button>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+              {(!editingStatus || editingStatus === "draft" || editingStatus === "scheduled") && (<>
               <Input
                 id="schedule-at"
                 type="datetime-local"
@@ -2183,6 +2183,7 @@ export default function CampaignsPage() {
                 {scheduleCampaignMutation.isPending ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
                 Schedule
               </Button>
+              </>)}
               <Button
                 onClick={() => setSendConfirmOpen(true)}
                 disabled={sendCampaignMutation.isPending || resume.isPending || isLoadingEstimate || sendCount === 0}

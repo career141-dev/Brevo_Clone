@@ -74,11 +74,11 @@ export default function AnalyticsPage() {
                         {c.status}
                       </Badge>
                       <span className="text-xs text-muted-foreground">
-                        {c.status === "sending"
-                          ? `Sending: ${c.stats.sent.toLocaleString()} sent so far`
+                        {c.status === "sending" || (c.status === "paused" && c.stats.sent > 0)
+                          ? `${c.status === "sending" ? "Sending" : "Paused"}: ${c.stats.sent.toLocaleString()} sent so far`
                           : c.sentAt ? format(new Date(c.sentAt), "MMM d, yyyy 'at' h:mm a") : "Not sent yet"}
                       </span>
-                      {c.status === "sending" && (
+                      {(c.status === "sending" || c.status === "paused") && (
                         <Link to={`/campaigns/${c.id}/progress`} className="relative z-10 text-xs font-medium text-primary hover:underline">
                           See progress
                         </Link>

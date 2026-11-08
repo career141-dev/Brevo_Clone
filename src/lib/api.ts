@@ -360,4 +360,5 @@ export type SendTiming = {
   resumesInSeconds: number | null;
   pausesAtMonthlyLimit: boolean;
   monthlyLeft: number | null;
+  othersSending: number; // other campaigns sending at the same time share the speed and the day's limit
 };

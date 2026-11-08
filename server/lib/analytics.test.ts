@@ -11,6 +11,7 @@ const events: any[] = [];
 const sqlSeen: string[] = [];
 const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 let uaRows: { userAgent: string }[] = [];
+let sentAt: Date | null = null; // when the fake "sent" event happened, for the link-scanner rule
 
 mock.module("../prisma.js", {
   exports: {
@@ -26,6 +27,7 @@ mock.module("../prisma.js", {
           return data;
         },
         findMany: async () => [],
+        findFirst: async () => (sentAt ? { timestamp: sentAt } : null),
       },
       $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
         const sql = Prisma.sql(strings, ...values).sql;
@@ -83,4 +85,13 @@ test("a click counts as an open once, even when the pixel never loaded", async (
   assert.equal((await click()).status, 302);
   assert.equal(events.filter((e) => e.eventType === "clicked").length, 2, "every click is kept");
   assert.deepEqual(events.filter((e) => e.eventType === "opened").map((e) => e.dedupKey), ["opened:7:a@x.com"]);
+});
+
+test("a click within two minutes of sending is a link scanner: no open is counted", async () => {
+  sentAt = new Date(Date.now() - 30_000);
+  const t = jwt.sign({ email: "b@x.com", campaignId: 7, url: "https://career141.com" }, "test-secret");
+  assert.equal((await fetch(`${base}/api/track/click?t=${t}`, { redirect: "manual" })).status, 302);
+  assert.equal(events.filter((e) => e.eventType === "opened" && e.email === "b@x.com").length, 0);
+  assert.equal(events.filter((e) => e.eventType === "clicked" && e.email === "b@x.com").length, 1, "the click itself is still kept");
+  sentAt = null;
 });

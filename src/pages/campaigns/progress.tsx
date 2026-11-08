@@ -99,9 +99,16 @@ export default function CampaignProgressPage() {
             </Note>
           )}
 
+          {data.status === "sending" && t && t.othersSending > 0 && (
+            <Note tone="blue">
+              {t.othersSending === 1 ? "Another campaign is" : `${t.othersSending} other campaigns are`} sending at the same time. They share the
+              sending speed and the daily limit, so this will take longer than shown.
+            </Note>
+          )}
+
           {data.status === "sending" && t?.pausesAtMonthlyLimit && (
             <Note tone="red">
-              This month's send limit has room for {n(t.monthlyLeft ?? 0)} more. The campaign pauses after that; press Send on it again after the 1st to finish it.
+              This month's send limit has room for {n(t.monthlyLeft ?? 0)} more. The campaign pauses after that; press Resume after the 1st to finish it.
             </Note>
           )}
 
@@ -155,7 +162,7 @@ export default function CampaignProgressPage() {
 
 function Headline({ status, queued, sent }: { status: string; queued: number; sent: number }) {
   if (status === "sending") return <h2 className="flex items-center gap-2 text-lg font-semibold"><Loader2 className="size-5 animate-spin text-amber-500" />Sending</h2>;
-  if (status === "sent") return <h2 className="flex items-center gap-2 text-lg font-semibold"><CheckCircle2 className="size-5 text-emerald-600" />All sent</h2>;
+  if (status === "sent") return <h2 className="flex items-center gap-2 text-lg font-semibold"><CheckCircle2 className="size-5 text-emerald-600" />Finished</h2>;
   if (status === "scheduled") return <h2 className="flex items-center gap-2 text-lg font-semibold"><Clock className="size-5 text-blue-600" />Scheduled</h2>;
   if (status === "paused") return <h2 className="flex items-center gap-2 text-lg font-semibold"><PauseCircle className="size-5 text-amber-600" />Paused, {queued.toLocaleString()} still waiting</h2>;
   // Back in draft after a send started: the first emails all failed (see the error below), or it was stopped.

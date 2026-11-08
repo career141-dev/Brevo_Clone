@@ -206,8 +206,11 @@ export async function sendPlan(): Promise<SendPlan> {
 }
 
 /** How long `queued` emails take from now under the worker's own rate and caps; shared by /progress and /estimate. */
-export async function sendTiming(queued: number) {
-  const plan = await sendPlan();
+export async function sendTiming(queued: number, campaignId: number) {
+  const [plan, othersSending] = await Promise.all([
+    sendPlan(),
+    prisma.campaign.count({ where: { status: "sending", id: { not: campaignId } } }),
+  ]);
   const resumesInSeconds = Math.max(0, Math.ceil((plan.resumesAt.getTime() - Date.now()) / 1000));
   return {
     rate: plan.rate,
@@ -217,6 +220,8 @@ export async function sendTiming(queued: number) {
     // The worker pauses the campaign when this month's cap runs out; Resume continues it next month.
     pausesAtMonthlyLimit: plan.monthlyLeft !== null && queued > plan.monthlyLeft,
     monthlyLeft: plan.monthlyLeft,
+    // The estimate assumes this campaign has the whole rate and day to itself; others sending share both (N6).
+    othersSending,
   };
 }
 
@@ -231,7 +236,7 @@ export async function sendEstimate(campaignId: number) {
   const sentRows = await prisma.emailEvent.findMany({ where: { campaignId, eventType: "sent" }, select: { email: true } });
   const alreadySent = new Set<string>(sentRows.map((e: any) => e.email.toLowerCase()));
   const recipients = (await resolveAudience(campaign)).filter((r) => !alreadySent.has(r.email)).length;
-  return { recipients, alreadySent: alreadySent.size, timing: recipients > 0 ? await sendTiming(recipients) : null };
+  return { recipients, alreadySent: alreadySent.size, timing: recipients > 0 ? await sendTiming(recipients, campaignId) : null };
 }
 
 export type DispatchResult =
@@ -249,7 +254,11 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
   if (!campaign) return fail(404, "Campaign not found");
   if (mode === "send" && campaign.status === "sent") return fail(400, "Campaign already sent");
-  if (running.has(campaignId)) {
+  // Only a campaign that is really sending is "already running". A paused one can still have its worker alive, asleep
+  // in a daily-limit wait; Resume/Send then refused it ("already actively sending") or did nothing and the worker
+  // exited on waking (QA re-check 8 Nov, N2). It goes through the normal path below: the status flips back to sending
+  // and that same worker carries on when it wakes (runCampaign is a no-op while it is alive).
+  if (running.has(campaignId) && campaign.status === "sending") {
     return mode === "resume"
       ? fail(400, "Campaign is already actively sending")
       : { ok: true, total: 0, queued: 0, alreadySent: 0, alreadyRunning: true };
@@ -280,6 +289,16 @@ export async function dispatchCampaign(campaignId: number, mode: "send" | "resum
   // Everyone is queued. The worker paces itself to the SES daily quota and waits for it to refill on its own, instead
   // of capping here and leaving the rest stranded until someone presses /resume.
   const recipients = (await resolveAudience(campaign)).filter((r) => !alreadySentSet.has(r.email));
+
+  // Rows still queued (or failed) from an earlier run whose address has since left the audience - the list was changed
+  // while the campaign was paused, or after a failed start - must not go out: the snapshot below only adds, so the
+  // people removed in Step 2 still got it (QA re-check 8 Nov, N1). Deleted by id, in chunks, to keep queries small.
+  const wanted = new Set(recipients.map((r) => r.email));
+  const pending = await prisma.campaignRecipient.findMany({ where: { campaignId, status: { in: ["queued", "failed"] } }, select: { id: true, email: true } });
+  const stale = pending.filter((r: any) => !wanted.has(String(r.email).toLowerCase())).map((r: any) => r.id);
+  for (let i = 0; i < stale.length; i += 5000) {
+    await prisma.campaignRecipient.deleteMany({ where: { id: { in: stale.slice(i, i + 5000) } } });
+  }
 
   // Snapshot first (idempotent) so a failure here can never leave a half-built audience being sent.
   // 5000-row chunks, 4 at a time, instead of ~90 sequential round trips for a 90k audience.
@@ -430,7 +449,7 @@ async function processCampaign(campaignId: number) {
 
   while (!stopping) {
     await settleWrites();
-    if (!(await claimLease(campaignId))) return; // paused, reset, deleted, or another process took over
+    if (!(await claimLease(campaignId))) return void (await finishIfNoneLeft(campaignId)); // paused, reset, deleted, or taken over
 
     // Re-read before every page, not only when this worker's own count runs out: two campaigns sending at once each
     // started with the whole daily budget and together sent double the limit (6 Nov 2026 review).
@@ -472,10 +491,6 @@ async function processCampaign(campaignId: number) {
 
     for (let i = 0; i < page.length && !stopping; i += rate) {
       const batch = page.slice(i, i + rate);
-      // Renewed with every chunk, alongside the sends so the DB round trip doesn't slow them: a Pause (or delete) now
-      // stops the send within about a second instead of a whole page (~120 emails), and a page slower than LEASE_MS
-      // can no longer let a second container take over and re-send rows not yet saved.
-      const leaseCheck = i === 0 ? Promise.resolve(true) : claimLease(campaignId);
       const sends = batch.map(async (r: any) => {
         const contact = r.contactId ? contactById.get(r.contactId) : null;
         // Suppression is re-checked close to send time (at most PAGE_SECONDS old): the contact may have unsubscribed or been blocked since the snapshot.
@@ -557,12 +572,6 @@ async function processCampaign(campaignId: number) {
         (e) => { writeError = e; },
       );
 
-      if (!(await leaseCheck)) {
-        await settleWrites();
-        console.log(`[SEND][Campaign ${campaignId}] stopped: paused, deleted or taken over`);
-        return;
-      }
-
       if (accountError) {
         await settleWrites();
         console.error(`[SEND][Campaign ${campaignId}] SES account-level error, pausing campaign: ${accountError.error}`);
@@ -600,8 +609,18 @@ async function processCampaign(campaignId: number) {
       backoff = 0;
 
       // ponytail: fixed-window limiter (chunk size == rate, one chunk per second); a token bucket would smooth bursts.
+      // The lease is renewed while that second is waited out, and the next chunk only goes once it is known to be ours:
+      // a Pause (or delete) stops the send before the next chunk instead of after a whole page (~120 emails), a page
+      // slower than LEASE_MS can't let a second container re-send rows not yet saved, and a DB error here stops this
+      // worker (the sweep restarts it) instead of an unhandled rejection taking the process down (N5).
       const elapsed = Date.now() - lastSendAt;
-      if (elapsed < 1000) await sleep(1000 - elapsed);
+      const [stillOurs] = await Promise.all([claimLease(campaignId).catch(() => false), elapsed < 1000 ? sleep(1000 - elapsed) : null]);
+      if (!stillOurs) {
+        await settleWrites();
+        await finishIfNoneLeft(campaignId);
+        console.log(`[SEND][Campaign ${campaignId}] stopped: paused, deleted or taken over`);
+        return;
+      }
     }
   }
 
@@ -615,6 +634,17 @@ async function processCampaign(campaignId: number) {
     data: finalSent > 0 ? { status: "sent", sentAt: new Date(), totalRecipients: finalSent } : { status: "draft" },
   });
   console.log(`[SEND][Campaign ${campaignId}] finished, ${sentTotal} sent this run, ${finalSent} total`);
+}
+
+/**
+ * A Pause pressed while the last chunk was going out left a "paused" campaign with nobody waiting, no Resume button and
+ * no sent date (QA re-check 8 Nov, N3): if nothing is queued any more, it is simply sent.
+ */
+async function finishIfNoneLeft(campaignId: number) {
+  if ((await prisma.campaignRecipient.count({ where: { campaignId, status: "queued" } })) > 0) return;
+  const sent = await prisma.emailEvent.count({ where: { campaignId, eventType: "sent" } });
+  if (sent === 0) return;
+  await prisma.campaign.updateMany({ where: { id: campaignId, status: "paused" }, data: { status: "sent", sentAt: new Date(), totalRecipients: sent } });
 }
 
 export const isRunning = (campaignId: number) => running.has(campaignId);

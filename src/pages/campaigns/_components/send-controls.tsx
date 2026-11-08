@@ -102,6 +102,13 @@ export function when(d: Date) {
 
 /** One plain sentence on how long a send of this size takes, from the server's estimate (counted from `from`). */
 export function timingSentence(t: SendTiming, from = Date.now()) {
+  const shared = t.othersSending > 0
+    ? ` ${t.othersSending === 1 ? "Another campaign is" : `${t.othersSending} other campaigns are`} sending too, so it will take longer.`
+    : "";
+  return baseSentence(t, from) + shared;
+}
+
+function baseSentence(t: SendTiming, from: number) {
   const at = (s: number) => new Date(from + s * 1000);
   if (t.pausesAtMonthlyLimit) {
     return `This month's send limit has room for ${(t.monthlyLeft ?? 0).toLocaleString()} more. It pauses there; press Resume after the 1st.`;

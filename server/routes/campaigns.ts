@@ -53,7 +53,7 @@ router.get("/api/campaigns", async (req, res) => {
 router.get("/api/campaigns/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid campaign ID" });
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
 
     const campaign = await prisma.campaign.findUnique({
       where: { id },
@@ -360,7 +360,7 @@ function createRawMimeEmail({
 router.post("/api/campaigns/:id/send", async (req, res) => {
   try {
     const campaignId = Number(req.params.id);
-    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+    if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
 
     const result = await dispatchCampaign(campaignId, "send");
     if (!result.ok) {
@@ -380,7 +380,7 @@ router.post("/api/campaigns/:id/send", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Send campaign error:", err);
-    res.status(500).json({ error: "Failed to send campaign", details: err.message });
+    res.status(500).json({ error: "Failed to send campaign" });
   }
 });
 
@@ -390,7 +390,7 @@ router.post("/api/campaigns/:id/schedule", async (req, res) => {
   try {
     const campaignId = Number(req.params.id);
     const when = new Date(req.body?.scheduledAt);
-    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+    if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
     if (isNaN(when.getTime())) return res.status(400).json({ error: "Pick a date and time." });
     if (when.getTime() < Date.now() + 60_000) return res.status(400).json({ error: "Pick a time at least a minute from now." });
     if (when.getTime() > Date.now() + 90 * 86400_000) return res.status(400).json({ error: "Pick a time within the next 90 days." });
@@ -407,7 +407,7 @@ router.post("/api/campaigns/:id/schedule", async (req, res) => {
     res.json({ success: true, scheduledAt: when.toISOString(), warnings: check.warnings });
   } catch (err: any) {
     console.error("Schedule campaign error:", err);
-    res.status(500).json({ error: "Failed to schedule campaign", details: err.message });
+    res.status(500).json({ error: "Failed to schedule campaign" });
   }
 });
 
@@ -428,7 +428,7 @@ router.get("/api/campaigns/:id/progress", async (req, res) => {
     const counts: Record<string, number> = { queued: 0, sent: 0, failed: 0, skipped: 0 };
     for (const g of groups) counts[g.status] = g._count._all;
 
-    const timing = campaign.status === "sending" && counts.queued > 0 ? await sendTiming(counts.queued) : null;
+    const timing = campaign.status === "sending" && counts.queued > 0 ? await sendTiming(counts.queued, campaignId) : null;
     // Why a campaign is paused: the worker pauses on its own for these, and used to leave only a log line.
     let pauseReason: string | null = null;
     if (campaign.status === "paused") {
@@ -485,7 +485,7 @@ router.post("/api/campaigns/:id/pause", async (req, res) => {
 router.post("/api/campaigns/:id/reset", async (req, res) => {
   try {
     const campaignId = Number(req.params.id);
-    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+    if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
 
     const sentEventsCount = await prisma.emailEvent.count({
       where: { campaignId, eventType: "sent" },
@@ -514,7 +514,7 @@ router.post("/api/campaigns/:id/reset", async (req, res) => {
 router.post("/api/campaigns/:id/resume", async (req, res) => {
   try {
     const campaignId = Number(req.params.id);
-    if (isNaN(campaignId)) return res.status(400).json({ error: "Invalid campaign ID" });
+    if (!Number.isInteger(campaignId) || campaignId <= 0) return res.status(400).json({ error: "Invalid campaign ID" });
 
     const result = await dispatchCampaign(campaignId, "resume");
     if (!result.ok) {
@@ -534,7 +534,7 @@ router.post("/api/campaigns/:id/resume", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Resume campaign error:", err);
-    res.status(500).json({ error: "Failed to resume campaign", details: err.message });
+    res.status(500).json({ error: "Failed to resume campaign" });
   }
 });
 
@@ -671,7 +671,7 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
         Destination: { ToAddresses: [cleanTestEmail] },
         ReplyToAddresses: replyToAddresses.length > 0 ? replyToAddresses : undefined,
         Content: { Raw: { Data: rawMimeBuffer } },
-        EmailTags: [],
+        EmailTags: [{ Name: "test", Value: "1" }], // events.ts files this under no campaign
       }));
     } else {
       const sesParams: any = {
@@ -689,7 +689,7 @@ router.post("/api/campaigns/:id/send-test", async (req, res) => {
             ],
           },
         },
-        EmailTags: [],
+        EmailTags: [{ Name: "test", Value: "1" }], // events.ts files this under no campaign
       };
 
       await sesv2Client.send(new SendEmailV2Command(sesParams));

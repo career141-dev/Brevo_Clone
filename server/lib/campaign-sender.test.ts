@@ -49,6 +49,11 @@ function setup(emails: string[], opts: Opts = {}) {
       findMany: async ({ where, take }: any) => recs.filter((r) => match(r, where)).slice(0, take),
       updateMany: async ({ where, data }: any) => recs.filter((r) => match(r, where)).forEach((r) => Object.assign(r, data)),
       count: async ({ where }: any) => recs.filter((r) => match(r, where)).length,
+      deleteMany: async ({ where }: any) => {
+        const gone = recs.filter((r) => match(r, where));
+        for (const r of gone) recs.splice(recs.indexOf(r), 1);
+        return { count: gone.length };
+      },
       createMany: async ({ data }: any) => {
         for (const d of data) if (!recs.some((r) => r.email === d.email)) recs.push({ id: nextId++, campaignId: d.campaignId, contactId: d.contactId, email: d.email, status: "queued", error: null });
       },
@@ -246,4 +251,25 @@ test("an AWS account-level stop pauses the campaign and keeps AWS's reason on th
   assert.equal(s.campaign.status, "paused");
   assert.ok(s.recs.every((r) => r.status === "queued"), "nobody is marked failed; Resume sends them");
   assert.match(String(s.recs[0].error), /SendingPausedException/, "the progress page reads this as the pause reason");
+});
+
+test("after the list is changed while paused, the people taken off it are not sent to", async () => {
+  // Paused with a, b, c still queued; Step 2 now has only c and d.
+  const s = setup(["a@x.com", "b@x.com", "c@x.com"], { audience: ["c@x.com", "d@x.com"] });
+  s.campaign.status = "paused";
+  cur = s;
+  const r = await dispatchCampaign(1, "resume");
+  assert.deepEqual(r.ok && r.queued, 2);
+  await idle();
+  assert.deepEqual(s.sentTo.sort(), ["c@x.com", "d@x.com"], "a and b were removed from the audience");
+});
+
+test("a Pause that lands after the last chunk leaves the campaign sent, not paused with nobody waiting", async () => {
+  const s = setup(Array.from({ length: 9 }, (_, i) => `z${i}@x.com`)); // exactly one chunk
+  cur = s;
+  const send = cur.sesv2Client.send;
+  cur.sesv2Client.send = async (cmd: any) => { s.campaign.status = "paused"; return send(cmd); }; // Pause pressed mid-chunk
+  await runCampaign(1);
+  assert.equal(s.sentTo.length, 9);
+  assert.equal(s.campaign.status, "sent");
 });
