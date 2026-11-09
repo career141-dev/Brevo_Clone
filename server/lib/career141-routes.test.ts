@@ -40,6 +40,7 @@ const { career141Router } = await import("../routes/career141.js");
 const ID = "k57search_0001";
 const seen: { method: string; url: string; auth?: string; body?: any }[] = [];
 let state = { status: "done", rule: { label: "Junior developers" } };
+let stopAnswer = (send: (s: number, b: unknown) => void) => send(200, { id: ID, status: "done" });
 const pages: Record<string, any> = {
   "": { rows: [{ email: "a@x.com", name: "Ana Silva", title: "Developer", level: "Junior / Associate", kind: "current" }], nextCursor: "c2" },
   c2: { rows: [{ email: "old@x.com", name: "Old Timer", title: "Programmer", kind: "previous" }], nextCursor: null },
@@ -64,6 +65,7 @@ const ta = http.createServer(async (req, res) => {
     return res.end("Name,Email\nAna,a@x.com\n");
   }
   if (url.pathname === `${base}/${ID}/run`) return send(409, { error: "Another search is running." });
+  if (url.pathname === `${base}/${ID}/stop`) return stopAnswer(send);
   send(404, { error: "Unknown" });
 });
 
@@ -144,6 +146,20 @@ test("a narrowed save keeps only chosen people CAREER141 found, in a list of its
   assert.ok(!db.contacts.has("stranger@evil.com"));
   assert.equal((await post(`/discover/${ID}/save`, { emails: [] })).status, 400);
   assert.equal((await post(`/discover/${ID}/save`, { emails: "a@x.com" })).status, 400);
+});
+
+test("stop goes to CAREER141; an older CAREER141 without Stop is said plainly", async () => {
+  const ok = await post(`/discover/${ID}/stop`, {});
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { id: ID, status: "done" });
+  assert.equal(seen.at(-1)!.method, "POST");
+  assert.match(seen.at(-1)!.url, /\/stop$/);
+  stopAnswer = (send) => send(404, { error: "Not found" });
+  const old = await post(`/discover/${ID}/stop`, {});
+  assert.equal(old.status, 501);
+  assert.match((await old.json()).error, /needs an update/);
+  stopAnswer = (send) => send(409, { error: "This search has not started, so there is nothing to stop." });
+  assert.equal((await post(`/discover/${ID}/stop`, {})).status, 409);
 });
 
 test("save waits for a finished search", async () => {

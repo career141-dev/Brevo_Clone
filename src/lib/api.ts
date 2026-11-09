@@ -220,6 +220,7 @@ export const api = {
     run: (id: string, rule: Career141Rule) =>
       request<{ id: string; status: string }>(`/career141/discover/${id}/run`, { method: "POST", body: JSON.stringify({ rule }) }),
     status: (id: string) => request<Career141Search>(`/career141/discover/${id}`),
+    stop: (id: string) => request<{ id: string; status: string }>(`/career141/discover/${id}/stop`, { method: "POST" }),
     rows: (id: string, cursor?: string | null) =>
       request<{ rows: Career141Row[]; nextCursor: string | null }>(`/career141/discover/${id}/rows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     /** Every person found, or only `emails` (what the page's filters show). */
@@ -412,6 +413,7 @@ export type Career141Search = {
   readBy: "model" | "words";
   rule: Career141Rule;
   startedAt?: number | null;
+  stopped?: boolean; // a person pressed Stop: done with what was found so far
 };
 
 export type Career141Row = {

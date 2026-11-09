@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, Clock, Download, ListPlus, Loader2, Plus, RotateCcw, Search, Sparkles, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, Clock, Download, ListPlus, Loader2, Plus, RotateCcw, Search, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Career141Row, type Career141Rule, type Career141Search } from "@/lib/api.ts";
 import { filterRows, isFiltered, levelCounts, NO_FILTER, rowsToCsv, type RowFilter } from "@/lib/career141-filter.ts";
@@ -256,7 +256,9 @@ export default function Career141Page() {
         />
       )}
 
-      {s?.status === "running" && <Running search={s} onStartAgain={startAgain} />}
+      {s?.status === "running" && (
+        <Running search={s} onStartAgain={startAgain} onStopped={() => qc.invalidateQueries({ queryKey: ["career141", id] })} />
+      )}
 
       {s?.status === "failed" && (
         <Card className="p-5 space-y-3">
@@ -478,8 +480,10 @@ function RuleCard({ draft, onChange, onRun, error }: {
   );
 }
 
-function Running({ search, onStartAgain }: { search: Career141Search; onStartAgain: () => void }) {
+function Running({ search, onStartAgain, onStopped }: { search: Career141Search; onStartAgain: () => void; onStopped: () => void }) {
   const sec = useElapsed(search.startedAt);
+  // Stop: enough people already. CAREER141 keeps everyone found so far and the results open below (9 Nov, owner).
+  const stop = useMutation({ mutationFn: () => api.career141.stop(search.id), onSuccess: onStopped });
   const pct = Math.min(99, Math.round((search.scanned / ABOUT) * 100));
   // A search that stops moving says so rather than spinning for an hour (9 Nov). CAREER141 itself marks a search
   // that has not moved for ten minutes as failed.
@@ -504,6 +508,14 @@ function Running({ search, onStartAgain }: { search: Career141Search; onStartAga
             : "Starting to check people…"}
         </p>
       </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="outline" onClick={() => stop.mutate()} disabled={stop.isPending || stop.isSuccess}>
+          {stop.isPending || stop.isSuccess ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+          {search.found > 0 ? `Stop here and use these ${search.found.toLocaleString()} people` : "Stop the search"}
+        </Button>
+        <span className="text-xs text-muted-foreground">Have enough? Stop now and work with who is found so far.</span>
+      </div>
+      {stop.error && <Notice tone="error">{stop.error.message}</Notice>}
       {stalled ? (
         <div className="space-y-2">
           <Notice tone="warn">
@@ -593,7 +605,10 @@ function Results({ search }: { search: Career141Search }) {
             {search.found.toLocaleString()} {search.found === 1 ? "person" : "people"} found for {search.rule.label}
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Checked {search.scanned.toLocaleString()} people. Narrow the list below, then save it for a campaign.
+            {search.stopped
+              ? `You stopped the search after checking ${search.scanned.toLocaleString()} people. These are everyone found up to then.`
+              : `Checked ${search.scanned.toLocaleString()} people.`}{" "}
+            Narrow the list below, then save it for a campaign.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -619,7 +634,7 @@ function Results({ search }: { search: Career141Search }) {
           Brevo keep their status, so anyone unsubscribed stays unsubscribed. Pick this list when you create the campaign.
         </p>
       )}
-      {search.meaning && (/could not|failed|not run|unavailable/i.test(search.meaning)
+      {search.meaning && !search.stopped && (/could not|failed|not run|unavailable/i.test(search.meaning)
         ? <Notice tone="warn">{search.meaning}</Notice>
         : <p className="text-sm text-muted-foreground">Also: {search.meaning}, marked "Found by meaning, check".</p>)}
 

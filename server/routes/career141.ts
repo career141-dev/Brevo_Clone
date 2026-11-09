@@ -100,6 +100,21 @@ export function career141Router(access: Career141Access) {
   router.post("/api/career141/discover/:id/run", (req, res) =>
     forward(res, `/${req.params.id}/run`, { method: "POST", body: req.body?.rule ? { rule: req.body.rule } : {} }));
 
+  // Stop: CAREER141 keeps everyone found so far as a finished search and ends the scan (9 Nov).
+  router.post("/api/career141/discover/:id/stop", async (req, res) => {
+    try {
+      const a = await answer(await call(`/${req.params.id}/stop`, { method: "POST", body: {} }));
+      // A CAREER141 that predates Stop answers 404 for the route; say so rather than "not found".
+      if (a.status === 404 && a.body.error === "Not found") {
+        return res.status(501).json({ error: "CAREER141 needs an update before Stop works. The search carries on and will finish by itself." });
+      }
+      res.status(a.status).json(a.body);
+    } catch (err) {
+      console.error("[CAREER141] stop failed:", why(err));
+      res.status(502).json({ error: "Could not reach CAREER141. Try again in a minute." });
+    }
+  });
+
   router.get("/api/career141/discover/:id", (req, res) => forward(res, `/${req.params.id}`));
 
   router.get("/api/career141/discover/:id/rows", (req, res) => {
