@@ -214,7 +214,7 @@ export const api = {
     linkLists: (apiKey: string) => runBrevoJob<{ contactsLinked: number; listsFound: number }>("/brevo/link-lists", apiKey),
   },
   career141: {
-    access: () => request<{ connected: boolean; allowed: boolean }>("/career141"),
+    access: () => request<{ connected: boolean }>("/career141"),
     read: (query: string) =>
       request<{ id: string; readBy: "model" | "words"; rule: Career141Rule }>("/career141/discover", { method: "POST", body: JSON.stringify({ query }) }),
     run: (id: string, rule: Career141Rule) =>

@@ -69,7 +69,13 @@ export default function Career141Page() {
     setParams({});
   };
 
-  const blocked = access.data && (!access.data.connected || !access.data.allowed);
+  // Why the page cannot be used yet, said before anyone types (9 Nov: a failed check used to show nothing at all,
+  // so the page looked ready until Read failed).
+  const blocked = access.error
+    ? `Could not reach the server: ${access.error.message}. Refresh the page or sign in again.`
+    : access.data && !access.data.connected
+      ? "CAREER141 is not connected yet. An admin needs to set CAREER141_API_URL and CAREER141_CONTACTS_TOKEN on the server."
+      : null;
   const s = search.data;
 
   return (
@@ -82,13 +88,7 @@ export default function Career141Page() {
         </p>
       </div>
 
-      {blocked && (
-        <Notice tone="warn">
-          {!access.data!.allowed
-            ? "Only named people may use Find in CAREER141. Ask an admin to add you."
-            : "CAREER141 is not connected yet. An admin needs to set its address and key on the server."}
-        </Notice>
-      )}
+      {blocked && <Notice tone="warn">{blocked}</Notice>}
 
       {!id && (
         <Card className="p-5 space-y-4">

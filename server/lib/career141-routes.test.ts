@@ -67,10 +67,9 @@ const ta = http.createServer(async (req, res) => {
   send(404, { error: "Unknown" });
 });
 
-let allowed = true;
 const app = express();
 app.use(express.json());
-app.use(career141Router({ allowed: () => allowed, requesterEmail: async () => "signed.in@career141.com" }));
+app.use(career141Router({ requesterEmail: async () => "signed.in@career141.com" }));
 const listen = (s: http.Server) => new Promise<number>((r) => s.listen(0, "127.0.0.1", () => r((s.address() as AddressInfo).port)));
 const brevo = http.createServer(app);
 const [taPort, port] = await Promise.all([listen(ta), listen(brevo)]);
@@ -143,15 +142,13 @@ test("save waits for a finished search", async () => {
   state = { ...state, status: "done" };
 });
 
-test("closed to people not named, and says when CAREER141 is not connected", async () => {
-  allowed = false;
-  assert.equal((await post("/discover", { query: "Find all Junior Developers" })).status, 403);
-  assert.deepEqual(await (await call("")).json(), { connected: true, allowed: false });
-  allowed = true;
+test("says when CAREER141 is not connected", async () => {
+  assert.deepEqual(await (await call("")).json(), { connected: true });
   const token = process.env.CAREER141_CONTACTS_TOKEN;
   delete process.env.CAREER141_CONTACTS_TOKEN;
   const r = await call(`/discover/${ID}`);
   assert.equal(r.status, 503);
   assert.equal((await r.json()).error, "CAREER141 is not connected.");
+  assert.deepEqual(await (await call("")).json(), { connected: false });
   process.env.CAREER141_CONTACTS_TOKEN = token;
 });

@@ -16,9 +16,8 @@ const settings = () => ({
   token: cleanEnv(process.env.CAREER141_CONTACTS_TOKEN),
 });
 
-/** Who may use the page and who is asking, decided by the sign-in code in index.ts. */
+/** Who is asking, read from the sign-in in index.ts. Anyone the app lets in may use the page (owner, 9 Nov 2026). */
 export type Career141Access = {
-  allowed: (req: Request) => boolean;
   requesterEmail: (req: Request) => Promise<string | null>;
 };
 
@@ -74,16 +73,13 @@ async function allRows(id: string): Promise<Career141Row[]> {
 export function career141Router(access: Career141Access) {
   const router = Router();
 
-  // What the page needs before anything is typed: is CAREER141 connected, and may this person use it.
-  router.get("/api/career141", (req, res) => {
+  // What the page needs before anything is typed: is CAREER141 connected.
+  router.get("/api/career141", (_req, res) => {
     const { base, token } = settings();
-    res.json({ connected: Boolean(base && token), allowed: access.allowed(req) });
+    res.json({ connected: Boolean(base && token) });
   });
 
-  router.use("/api/career141", (req, res, next) => {
-    if (!access.allowed(req)) {
-      return res.status(403).json({ error: "Only named people may use Find in CAREER141. Ask an admin to add you." });
-    }
+  router.use("/api/career141", (_req, res, next) => {
     const { base, token } = settings();
     if (!base || !token) return res.status(503).json({ error: "CAREER141 is not connected." });
     next();

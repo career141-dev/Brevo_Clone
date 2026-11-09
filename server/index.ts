@@ -142,13 +142,10 @@ app.use(eventsRouter);
 app.use(sendersRouter);
 app.use(billingRouter);
 
-// Find in CAREER141 reads candidates' contact details, so it is narrower than the rest of the app: only the people
-// named in ALLOWED_USER_IDS may use it, not everyone with a company email (owner, 9 Nov 2026). An empty list closes
-// the page rather than stopping the server, so a missing setting can never take campaign sending down with it.
-// Without sign-in (a local machine only: deployed instances refuse to start) the one fixed user may use it.
-if (CLERK_ENABLED && !ALLOWED_USER_IDS.length) console.warn("[CAREER141] ALLOWED_USER_IDS is empty: Find in CAREER141 is closed to everyone.");
+// Find in CAREER141: anyone the sign-in check above lets in may use it, with no list of its own (owner, 9 Nov 2026).
+// Who asked is sent to CAREER141 with every search, read from the sign-in. Without sign-in (a local machine only:
+// deployed instances refuse to start) CAREER141_DEV_REQUESTED_BY stands in.
 app.use(career141Router({
-  allowed: (req) => !CLERK_ENABLED || ALLOWED_USER_IDS.includes(getAuth(req).userId ?? ""),
   requesterEmail: async (req) => {
     if (!CLERK_ENABLED) return cleanEnv(process.env.CAREER141_DEV_REQUESTED_BY) || null;
     const user = await clerkApi!.users.getUser(getAuth(req).userId!);
