@@ -1,10 +1,9 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../prisma.js";
 import { cleanCandidates } from "../lib/candidates.js";
+import { fillList } from "../lib/list-fill.js";
 
 const router = Router();
-
-const CHUNK = 1000;
 
 // POST /api/contacts/import-list — create (or reuse) a job-role list and fill it with candidates
 router.post("/import-list", async (req: Request, res: Response) => {
@@ -29,30 +28,13 @@ router.post("/import-list", async (req: Request, res: Response) => {
     let list = await prisma.list.findFirst({ where: { name, type: "list" } });
     if (!list) list = await prisma.list.create({ data: { name, folderId: Number(folderId), type: "list" } });
 
-    let created = 0;
-    const links: { contactId: number; listId: number }[] = [];
-    for (let i = 0; i < clean.length; i += CHUNK) {
-      const chunk = clean.slice(i, i + CHUNK);
-      const r = await prisma.contact.createMany({
-        data: chunk.map((c) => ({ ...c, source: "excel-import" })),
-        skipDuplicates: true,
-      });
-      created += r.count;
-      const rows = await prisma.contact.findMany({
-        where: { email: { in: chunk.map((c) => c.email) } },
-        select: { id: true },
-      });
-      links.push(...rows.map((c: { id: number }) => ({ contactId: c.id, listId: list.id })));
-    }
-    for (let i = 0; i < links.length; i += CHUNK) {
-      await prisma.contactList.createMany({ data: links.slice(i, i + CHUNK), skipDuplicates: true });
-    }
+    const { created, existing } = await fillList(list.id, clean.map((c) => ({ ...c, source: "excel-import" })));
 
     res.json({
       listId: list.id,
       listName: list.name,
       created,
-      existing: clean.length - created,
+      existing,
       skipped,
       total: contacts.length,
     });

@@ -11,6 +11,7 @@ import { ALLOWED_EMAIL_DOMAINS, isAllowedUser, type EmailRecord } from "./lib/ac
 import { resumeSendingCampaigns, sendDueScheduledCampaigns, stopSending } from "./lib/campaign-sender.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { billingRouter } from "./routes/billing.js";
+import { career141Router } from "./routes/career141.js";
 import { brevoRouter } from "./routes/brevo.js";
 import { campaignsRouter } from "./routes/campaigns.js";
 import { crmRouter } from "./routes/crm.js";
@@ -140,6 +141,21 @@ app.use(brevoRouter);
 app.use(eventsRouter);
 app.use(sendersRouter);
 app.use(billingRouter);
+
+// Find in CAREER141 reads candidates' contact details, so it is narrower than the rest of the app: only the people
+// named in ALLOWED_USER_IDS may use it, not everyone with a company email (owner, 9 Nov 2026). An empty list closes
+// the page rather than stopping the server, so a missing setting can never take campaign sending down with it.
+// Without sign-in (a local machine only: deployed instances refuse to start) the one fixed user may use it.
+if (CLERK_ENABLED && !ALLOWED_USER_IDS.length) console.warn("[CAREER141] ALLOWED_USER_IDS is empty: Find in CAREER141 is closed to everyone.");
+app.use(career141Router({
+  allowed: (req) => !CLERK_ENABLED || ALLOWED_USER_IDS.includes(getAuth(req).userId ?? ""),
+  requesterEmail: async (req) => {
+    if (!CLERK_ENABLED) return cleanEnv(process.env.CAREER141_DEV_REQUESTED_BY) || null;
+    const user = await clerkApi!.users.getUser(getAuth(req).userId!);
+    const primary = user.emailAddresses.find((e) => e.id === user.primaryEmailAddressId) ?? user.emailAddresses[0];
+    return primary?.emailAddress ?? null;
+  },
+}));
 
 // Public health check for uptime monitors and Railway: outside /api so sign-in doesn't apply; says nothing private.
 app.get("/health", async (_req, res) => {
