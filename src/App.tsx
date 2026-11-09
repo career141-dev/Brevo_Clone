@@ -21,6 +21,7 @@ const CrmSegmentsPage = lazy(() => import("./pages/crm/segments/page.tsx"));
 const CrmCompaniesPage = lazy(() => import("./pages/crm/companies/page.tsx"));
 const CrmTemplatesPage = lazy(() => import("./pages/crm/templates/page.tsx"));
 const GetStartedPage = lazy(() => import("./pages/get-started/page.tsx"));
+const Career141Page = lazy(() => import("./pages/career141/page.tsx"));
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/get-started" element={<GetStartedPage />} />
             <Route path="/contacts" element={<ContactsPage />} />
+            <Route path="/career141" element={<Career141Page />} />
             <Route path="/campaigns" element={<CampaignsPage />} />
             <Route path="/campaigns/:id/progress" element={<CampaignProgressPage />} />
             <Route path="/automations" element={<AutomationsPage />} />

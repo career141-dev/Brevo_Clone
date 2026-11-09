@@ -68,6 +68,7 @@ const CRM_TREE: CrmTreeItem[] = [
       { to: "/contacts", label: "Contacts" },
       { to: "/crm/lists", label: "Lists" },
       { to: "/crm/segments", label: "Segments" },
+      { to: "/career141", label: "Find in CAREER141" },
     ],
   },
   {
@@ -161,7 +162,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
   const { pathname } = useLocation();
   const [crmOpen, setCrmOpen] = useState(
     pathname.startsWith("/crm") ||
-    pathname === "/contacts" ||
+    pathname === "/contacts" || pathname === "/career141" ||
     pathname === "/campaigns" ||
     pathname === "/analytics"
   );
@@ -248,14 +249,14 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCrmOpen(!crmOpen); } }}
             className={cn(
               "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer",
-              crmOpen || pathname.startsWith("/crm") || pathname === "/contacts" || pathname === "/campaigns" || pathname === "/analytics"
+              crmOpen || pathname.startsWith("/crm") || pathname === "/contacts" || pathname === "/career141" || pathname === "/campaigns" || pathname === "/analytics"
                 ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
                 : "text-sidebar-foreground/65 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
             )}
           >
             <Database className={cn(
               "size-4 shrink-0 transition-colors",
-              crmOpen || pathname.startsWith("/crm") || pathname === "/contacts" || pathname === "/campaigns" || pathname === "/analytics"
+              crmOpen || pathname.startsWith("/crm") || pathname === "/contacts" || pathname === "/career141" || pathname === "/campaigns" || pathname === "/analytics"
                 ? "text-green-600"
                 : "text-sidebar-foreground/50"
             )} />

@@ -213,6 +213,28 @@ export const api = {
       runBrevoJob<{ imported: number; skipped: number; total: number; listsImported: number; contactsLinked: number }>("/brevo/import", apiKey),
     linkLists: (apiKey: string) => runBrevoJob<{ contactsLinked: number; listsFound: number }>("/brevo/link-lists", apiKey),
   },
+  career141: {
+    access: () => request<{ connected: boolean; allowed: boolean }>("/career141"),
+    read: (query: string) =>
+      request<{ id: string; readBy: "model" | "words"; rule: Career141Rule }>("/career141/discover", { method: "POST", body: JSON.stringify({ query }) }),
+    run: (id: string, rule: Career141Rule) =>
+      request<{ id: string; status: string }>(`/career141/discover/${id}/run`, { method: "POST", body: JSON.stringify({ rule }) }),
+    status: (id: string) => request<Career141Search>(`/career141/discover/${id}`),
+    rows: (id: string, cursor?: string | null) =>
+      request<{ rows: Career141Row[]; nextCursor: string | null }>(`/career141/discover/${id}/rows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    save: (id: string) =>
+      request<{ listId: number; listName: string; added: number; alreadyHad: number }>(`/career141/discover/${id}/save`, { method: "POST" }),
+    /** The CSV needs the sign-in token, so it is fetched and handed to the browser as a file rather than linked. */
+    download: async (id: string) => {
+      const res = await fetch(`${BASE}/career141/discover/${id}/csv`, { headers: await authHeaders() });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Download failed (${res.status})`);
+      const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "career141-contacts.csv";
+      const url = URL.createObjectURL(await res.blob());
+      const a = Object.assign(document.createElement("a"), { href: url, download: name });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    },
+  },
   analytics: {
     campaigns: () => request<any[]>("/analytics/campaigns"),
     campaignDetail: (id: number) => request<any>(`/analytics/campaigns/${id}`),
@@ -363,4 +385,39 @@ export type SendTiming = {
   pausesAtMonthlyLimit: boolean;
   monthlyLeft: number | null;
   othersSending: number; // other campaigns sending at the same time share the speed and the day's limit
+};
+
+/** Find in CAREER141: the shapes of ta-system docs/CONTACT-DISCOVERY-API.md. */
+export type Career141Rule = {
+  label: string;
+  titles: string[];
+  exclude: string[];
+  levels: number[];
+  skills: string[];
+  includePastRoles: boolean;
+};
+
+export type Career141Search = {
+  id: string;
+  status: "read" | "running" | "done" | "failed";
+  scanned: number;
+  found: number;
+  meaning: string | null;
+  error: string | null;
+  query: string;
+  readBy: "model" | "words";
+  rule: Career141Rule;
+};
+
+export type Career141Row = {
+  email: string;
+  name?: string;
+  phone?: string;
+  title?: string;
+  level?: string;
+  employer?: string;
+  location?: string;
+  linkedinUrl?: string;
+  kind: "current" | "previous" | "meaning";
+  matchedBy?: string;
 };
