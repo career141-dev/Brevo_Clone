@@ -407,6 +407,7 @@ export type Career141Search = {
   query: string;
   readBy: "model" | "words";
   rule: Career141Rule;
+  startedAt?: number | null;
 };
 
 export type Career141Row = {

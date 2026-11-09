@@ -34,6 +34,9 @@ export default function Career141Page() {
   const id = params.get("id");
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState<{ rule: Career141Rule; readBy: "model" | "words" } | null>(null);
+  // Run was pressed: keep asking CAREER141 until it says "running" (9 Nov: polling only while "running" left the
+  // page frozen on the rule card when the first answer after Run still said "read").
+  const [started, setStarted] = useState(false);
   const qc = useQueryClient();
 
   const access = useQuery({ queryKey: ["career141-access"], queryFn: api.career141.access });
@@ -41,7 +44,11 @@ export default function Career141Page() {
     queryKey: ["career141", id],
     queryFn: () => api.career141.status(id!),
     enabled: Boolean(id),
-    refetchInterval: (q) => (q.state.data?.status === "running" ? 4000 : false),
+    refetchInterval: (q) => {
+      const st = q.state.data?.status;
+      if (st === "running") return 3000;
+      return started && st === "read" ? 1500 : false;
+    },
   });
 
   // Coming back to a search that was read but not run: edit the rule it was read into.
@@ -58,11 +65,15 @@ export default function Career141Page() {
   });
   const run = useMutation({
     mutationFn: () => api.career141.run(id!, draft!.rule),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["career141", id] }),
+    onSuccess: () => {
+      setStarted(true);
+      qc.invalidateQueries({ queryKey: ["career141", id] });
+    },
   });
 
   const startAgain = () => {
     setDraft(null);
+    setStarted(false);
     setQuery("");
     read.reset();
     run.reset();
@@ -128,12 +139,17 @@ export default function Career141Page() {
               </button>
             ))}
           </div>
-          {read.isPending && <p className="text-sm text-muted-foreground">Reading your request…</p>}
+          {read.isPending && (
+            <Working
+              title="Reading your request"
+              detail="CAREER141 is working out which job titles and levels you mean. This usually takes 10 to 30 seconds."
+            />
+          )}
           {read.error && <Notice tone="error">{read.error.message}</Notice>}
         </Card>
       )}
 
-      {id && search.isLoading && <p className="text-sm text-muted-foreground">Loading the search…</p>}
+      {id && search.isLoading && <Working title="Loading the search" />}
       {id && search.error && (
         <Card className="p-5 space-y-3">
           <Notice tone="error">{search.error.message}</Notice>
@@ -147,7 +163,11 @@ export default function Career141Page() {
         </p>
       )}
 
-      {s?.status === "read" && draft && (
+      {s?.status === "read" && (run.isPending || started) && (
+        <Working title="Starting the search" detail="CAREER141 is getting ready to check every candidate. The count starts in a moment." />
+      )}
+
+      {s?.status === "read" && draft && !run.isPending && !started && (
         <RuleCard
           draft={draft}
           onChange={(rule) => setDraft({ ...draft, rule })}
@@ -186,6 +206,45 @@ function Notice({ tone, children }: { tone: "warn" | "error"; children: React.Re
       <AlertTriangle className="size-4 mt-0.5 shrink-0" />
       <span>{children}</span>
     </div>
+  );
+}
+
+/** Seconds since `since` (or since this showed), ticking every second, so a wait always visibly moves. */
+function useElapsed(since?: number | null) {
+  const [start] = useState(() => since ?? Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return Math.max(0, Math.round((now - (since ?? start)) / 1000));
+}
+
+const clock = (sec: number) => (sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)} min ${sec % 60}s`);
+
+/** A bar that moves when there is no number to show yet. */
+function MovingBar() {
+  return (
+    <div className="relative h-2 w-full overflow-hidden rounded-full bg-primary/15" role="progressbar" aria-busy="true">
+      <style>{"@keyframes c141-slide{0%{left:-35%}100%{left:100%}}"}</style>
+      <div className="absolute inset-y-0 w-1/3 rounded-full bg-primary" style={{ animation: "c141-slide 1.3s ease-in-out infinite" }} />
+    </div>
+  );
+}
+
+/** Any wait: what is happening, a moving bar, and a clock that keeps counting. */
+function Working({ title, detail }: { title: string; detail?: string }) {
+  const sec = useElapsed();
+  return (
+    <Card className="p-5 space-y-3" aria-live="polite">
+      <div className="flex items-center gap-2 font-medium">
+        <Loader2 className="size-4 animate-spin text-primary" />
+        {title}…
+        <span className="ml-auto text-xs font-normal text-muted-foreground tabular-nums">{clock(sec)}</span>
+      </div>
+      <MovingBar />
+      {detail && <p className="text-sm text-muted-foreground">{detail}</p>}
+    </Card>
   );
 }
 
@@ -305,16 +364,29 @@ function RuleCard({ draft, onChange, onRun, running, error, onStartAgain }: {
 }
 
 function Running({ search }: { search: Career141Search }) {
+  const sec = useElapsed(search.startedAt);
+  const pct = Math.min(99, Math.round((search.scanned / ABOUT) * 100));
   return (
     <Card className="p-5 space-y-3" aria-live="polite">
       <div className="flex items-center gap-2 font-medium">
-        <Loader2 className="size-4 animate-spin" />
+        <Loader2 className="size-4 animate-spin text-primary" />
         Searching for {search.rule.label}
+        <span className="ml-auto text-xs font-normal text-muted-foreground tabular-nums">{clock(sec)}</span>
       </div>
-      <Progress value={Math.min(100, (search.scanned / ABOUT) * 100)} />
-      <p className="text-sm text-muted-foreground">
-        Checked {search.scanned.toLocaleString()} of about {ABOUT.toLocaleString()} people · {search.found.toLocaleString()} found.
-        This takes a few minutes. You can leave this page and come back.
+      {search.scanned > 0 ? <Progress value={pct} /> : <MovingBar />}
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+        <p className="text-2xl font-semibold tabular-nums">
+          {search.found.toLocaleString()} <span className="text-sm font-normal text-muted-foreground">found so far</span>
+        </p>
+        <p className="text-sm text-muted-foreground tabular-nums">
+          {search.scanned > 0
+            ? `Checked ${search.scanned.toLocaleString()} of about ${ABOUT.toLocaleString()} people (${pct}%)`
+            : "Starting to check people…"}
+        </p>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        A full search takes a few minutes and updates every few seconds. You can leave this page and come back:
+        the search keeps running.
       </p>
     </Card>
   );
@@ -373,6 +445,10 @@ function Results({ search, onStartAgain }: { search: Career141Search; onStartAga
         </div>
       </div>
 
+      {save.isPending && (
+        <Working title="Saving everyone into a list" detail="Reading every page of people from CAREER141 and adding them to Brevo. Large lists take a minute." />
+      )}
+      {download.isPending && <Working title="Preparing the Excel file" detail="CAREER141 is building the file with every person in it." />}
       {saved && (
         <p className="text-sm" role="status">
           Saved to <Link to="/crm/lists" className="font-medium underline">{saved.listName}</Link>.
