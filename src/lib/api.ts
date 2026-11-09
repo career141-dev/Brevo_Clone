@@ -222,8 +222,12 @@ export const api = {
     status: (id: string) => request<Career141Search>(`/career141/discover/${id}`),
     rows: (id: string, cursor?: string | null) =>
       request<{ rows: Career141Row[]; nextCursor: string | null }>(`/career141/discover/${id}/rows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
-    save: (id: string) =>
-      request<{ listId: number; listName: string; added: number; alreadyHad: number }>(`/career141/discover/${id}/save`, { method: "POST" }),
+    /** Every person found, or only `emails` (what the page's filters show). */
+    save: (id: string, emails?: string[]) =>
+      request<{ listId: number; listName: string; added: number; alreadyHad: number }>(`/career141/discover/${id}/save`, {
+        method: "POST",
+        body: JSON.stringify(emails ? { emails } : {}),
+      }),
     /** The CSV needs the sign-in token, so it is fetched and handed to the browser as a file rather than linked. */
     download: async (id: string) => {
       const res = await fetch(`${BASE}/career141/discover/${id}/csv`, { headers: await authHeaders() });

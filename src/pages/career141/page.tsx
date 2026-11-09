@@ -1,20 +1,20 @@
 /**
  * Find in CAREER141 (9 Nov 2026). Ask CAREER141 (the TA System) for people by job: it reads the request into a rule,
- * a person checks the rule and presses Run, CAREER141 checks every candidate, and the people come back here to read,
- * download or save as a list. Nothing on this page sends anything to anyone. One page, no pop-ups: the search id sits
- * in the address (?id=), so a scan that takes a few minutes survives a refresh or a trip to another page.
+ * a person checks the rule and presses Run, CAREER141 checks every candidate, and the people come back here to narrow,
+ * download or save as a list for a campaign. Nothing on this page sends anything to anyone. One page, no pop-ups: the
+ * search id sits in the address (?id=), so a scan that takes a few minutes survives a refresh or a trip elsewhere.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Download, ListPlus, Loader2, Plus, RotateCcw, Search, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, Clock, Download, ListPlus, Loader2, Plus, RotateCcw, Search, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Career141Row, type Career141Rule, type Career141Search } from "@/lib/api.ts";
+import { filterRows, isFiltered, levelCounts, NO_FILTER, rowsToCsv, type RowFilter } from "@/lib/career141-filter.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
 import { Checkbox } from "@/components/ui/checkbox.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { Label } from "@/components/ui/label.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { Switch } from "@/components/ui/switch.tsx";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table.tsx";
@@ -25,9 +25,36 @@ const LEVELS = [
   "Intern / Trainee", "Junior / Associate", "Mid-level", "Senior", "Lead / Assistant Manager",
   "Manager", "Senior Manager / Head", "AGM / DGM", "GM / VP", "Director / C-suite",
 ];
-const EXAMPLES = ["Junior Developers", "Sales Managers", "Customer Experience Managers", "Finance professionals"];
-// ponytail: CAREER141 does not say how many candidates it holds, so the bar is against the known size (~78,000).
-const ABOUT = 78_000;
+// One tap reads these straight away.
+const SUGGESTIONS = [
+  "Junior Developers", "Senior Developers", "Sales Managers", "Sales Executives",
+  "Customer Experience Managers", "Finance professionals", "Marketing professionals", "HR professionals",
+];
+// ponytail: CAREER141 does not say how many candidates it holds; 92,292 were checked on 9 Nov. Only the bar uses it.
+const ABOUT = 92_300;
+const STALL_MS = 3 * 60_000;
+const PAGE = 50;
+
+// ── Recent searches: this browser only, a convenience; CAREER141 keeps a search for 7 days ──
+type Recent = { id: string; query: string; at: number };
+const RECENT_KEY = "career141-recent";
+function loadRecent(): Recent[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]") as Recent[];
+    return list.filter((r) => r && r.id && Date.now() - r.at < 7 * 86_400_000);
+  } catch {
+    return [];
+  }
+}
+function rememberSearch(r: Recent) {
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify([r, ...loadRecent().filter((x) => x.id !== r.id)].slice(0, 6)));
+  } catch { /* private window: no recent list, nothing else changes */ }
+}
+const ago = (at: number) => {
+  const m = Math.round((Date.now() - at) / 60_000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+};
 
 export default function Career141Page() {
   const [params, setParams] = useSearchParams();
@@ -37,6 +64,7 @@ export default function Career141Page() {
   // Run was pressed: keep asking CAREER141 until it says "running" (9 Nov: polling only while "running" left the
   // page frozen on the rule card when the first answer after Run still said "read").
   const [started, setStarted] = useState(false);
+  const [recent] = useState(loadRecent);
   const qc = useQueryClient();
 
   const access = useQuery({ queryKey: ["career141-access"], queryFn: api.career141.access });
@@ -44,6 +72,7 @@ export default function Career141Page() {
     queryKey: ["career141", id],
     queryFn: () => api.career141.status(id!),
     enabled: Boolean(id),
+    retry: 3,
     refetchInterval: (q) => {
       const st = q.state.data?.status;
       if (st === "running") return 3000;
@@ -58,7 +87,8 @@ export default function Career141Page() {
 
   const read = useMutation({
     mutationFn: (q: string) => api.career141.read(q),
-    onSuccess: (r) => {
+    onSuccess: (r, q) => {
+      rememberSearch({ id: r.id, query: q, at: Date.now() });
       setDraft({ rule: r.rule, readBy: r.readBy });
       setParams({ id: r.id });
     },
@@ -71,6 +101,12 @@ export default function Career141Page() {
     },
   });
 
+  const ask = (q: string) => {
+    const text = q.trim();
+    if (!text || read.isPending) return;
+    setQuery(text);
+    read.mutate(text);
+  };
   const startAgain = () => {
     setDraft(null);
     setStarted(false);
@@ -90,78 +126,122 @@ export default function Career141Page() {
   const s = search.data;
 
   return (
-    <div className="px-6 py-6 max-w-6xl mx-auto space-y-6">
+    <div className="px-4 sm:px-6 py-6 max-w-6xl mx-auto space-y-5">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Find in CAREER141</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Ask for people by job. CAREER141 checks every candidate and gives you the ones who fit, with their email.
-          This page only builds lists. It sends nothing to anyone.
+          Find people for a campaign by the job they do. CAREER141 checks every candidate it holds and gives you the
+          ones who fit, with their email. This page only builds lists. It sends nothing to anyone.
         </p>
       </div>
 
       {blocked && <Notice tone="warn">{blocked}</Notice>}
 
       {!id && (
-        <Card className="p-5 space-y-4">
+        <Card className="p-5 sm:p-6 space-y-5">
           <form
-            className="space-y-3"
+            className="space-y-2"
             onSubmit={(e) => {
               e.preventDefault();
-              if (query.trim()) read.mutate(query.trim());
+              ask(query);
             }}
           >
-            <Label htmlFor="c141-query" className="text-base">Who do you want to find?</Label>
-            <div className="flex gap-2">
-              <Input
-                id="c141-query"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="For example: Find all Junior Developers"
-                maxLength={500}
-                disabled={Boolean(blocked)}
-              />
-              <Button type="submit" disabled={!query.trim() || read.isPending || Boolean(blocked)}>
-                {read.isPending ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
-                Read
+            <label htmlFor="c141-query" className="text-base font-semibold">Who do you want to find?</label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-5 text-muted-foreground" />
+                <Input
+                  id="c141-query"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Describe the people, e.g. Junior software developers in Colombo"
+                  maxLength={500}
+                  disabled={Boolean(blocked) || read.isPending}
+                  className="h-12 pl-11 text-base"
+                  autoFocus
+                />
+              </div>
+              <Button type="submit" className="h-12 px-6 text-base" disabled={!query.trim() || read.isPending || Boolean(blocked)}>
+                {read.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                Find people
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Write it as you would to a colleague: the job, the level, anything they must have. You check what CAREER141
+              understood before anything is searched.
+            </p>
           </form>
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Try:</span>
-            {EXAMPLES.map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                onClick={() => setQuery(`Find all ${ex}`)}
-                className="rounded-full border px-3 py-1 hover:bg-accent transition-colors"
-              >
-                {ex}
-              </button>
-            ))}
-          </div>
-          {read.isPending && (
+
+          {read.isPending ? (
             <Working
-              title="Reading your request"
-              detail="CAREER141 is working out which job titles and levels you mean. This usually takes 10 to 30 seconds."
+              title={`Reading "${query}"`}
+              detail="CAREER141 is working out which job titles and levels you mean. This usually takes 5 to 30 seconds."
             />
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Popular searches</p>
+              <div className="flex flex-wrap gap-2">
+                {SUGGESTIONS.map((ex) => (
+                  <button
+                    key={ex}
+                    type="button"
+                    disabled={Boolean(blocked)}
+                    onClick={() => ask(`Find all ${ex}`)}
+                    className="rounded-full border px-3.5 py-1.5 text-sm hover:bg-accent hover:border-primary/40 transition-colors disabled:opacity-50"
+                  >
+                    {ex}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           {read.error && <Notice tone="error">{read.error.message}</Notice>}
+
+          {recent.length > 0 && !read.isPending && (
+            <div className="space-y-2 border-t pt-4">
+              <p className="text-sm font-medium">Your recent searches</p>
+              <ul className="divide-y rounded-lg border">
+                {recent.map((r) => (
+                  <li key={r.id}>
+                    <button
+                      type="button"
+                      onClick={() => setParams({ id: r.id })}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-accent"
+                    >
+                      <Clock className="size-4 text-muted-foreground shrink-0" />
+                      <span className="flex-1 truncate">{r.query}</span>
+                      <span className="text-xs text-muted-foreground">{ago(r.at)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </Card>
       )}
 
       {id && search.isLoading && <Working title="Loading the search" />}
-      {id && search.error && (
+      {id && search.error && !s && (
         <Card className="p-5 space-y-3">
-          <Notice tone="error">{search.error.message}</Notice>
+          <Notice tone="error">
+            {search.error.message}. A search is kept for 7 days; an older one is gone. Start again to search afresh.
+          </Notice>
           <Button variant="outline" onClick={startAgain}><RotateCcw className="size-4" />Start again</Button>
         </Card>
       )}
 
       {s && (
-        <p className="text-sm text-muted-foreground">
-          You asked: <span className="text-foreground font-medium">{s.query}</span>
-        </p>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <span>You asked:</span>
+          <span className="text-foreground font-medium">{s.query}</span>
+          {s.status !== "running" && (
+            <Button size="sm" variant="ghost" className="ml-auto" onClick={startAgain}>
+              <RotateCcw className="size-4" />New search
+            </Button>
+          )}
+        </div>
       )}
+      {s && search.error && <Notice tone="warn">Lost contact with the server for a moment. Trying again…</Notice>}
 
       {s?.status === "read" && (run.isPending || started) && (
         <Working title="Starting the search" detail="CAREER141 is getting ready to check every candidate. The count starts in a moment." />
@@ -172,13 +252,11 @@ export default function Career141Page() {
           draft={draft}
           onChange={(rule) => setDraft({ ...draft, rule })}
           onRun={() => run.mutate()}
-          running={run.isPending}
           error={run.error?.message}
-          onStartAgain={startAgain}
         />
       )}
 
-      {s?.status === "running" && <Running search={s} />}
+      {s?.status === "running" && <Running search={s} onStartAgain={startAgain} />}
 
       {s?.status === "failed" && (
         <Card className="p-5 space-y-3">
@@ -187,7 +265,7 @@ export default function Career141Page() {
         </Card>
       )}
 
-      {s?.status === "done" && <Results search={s} onStartAgain={startAgain} />}
+      {s?.status === "done" && <Results search={s} />}
     </div>
   );
 }
@@ -239,7 +317,7 @@ function Working({ title, detail }: { title: string; detail?: string }) {
     <Card className="p-5 space-y-3" aria-live="polite">
       <div className="flex items-center gap-2 font-medium">
         <Loader2 className="size-4 animate-spin text-primary" />
-        {title}…
+        <span className="truncate">{title}…</span>
         <span className="ml-auto text-xs font-normal text-muted-foreground tabular-nums">{clock(sec)}</span>
       </div>
       <MovingBar />
@@ -248,124 +326,166 @@ function Working({ title, detail }: { title: string; detail?: string }) {
   );
 }
 
-/** Words as removable chips, plus a box to add one. */
-function ChipEditor({ label, values, onChange, placeholder, tone }: {
-  label: string;
+/** Words as removable chips with a small box to add one. Long lists show the first few and a "+N more". */
+function ChipEditor({ values, onChange, placeholder, tone, show = 12 }: {
   values: string[];
   onChange: (v: string[]) => void;
   placeholder: string;
   tone?: "exclude";
+  show?: number;
 }) {
   const [adding, setAdding] = useState("");
+  const [all, setAll] = useState(false);
   const add = () => {
     const v = adding.trim().toLowerCase();
     if (v && !values.includes(v)) onChange([...values, v]);
     setAdding("");
   };
+  const visible = all ? values : values.slice(0, show);
   return (
-    <div className="space-y-2">
-      <p className="text-sm font-medium">{label}</p>
-      <div className="flex flex-wrap gap-2">
-        {values.length === 0 && <span className="text-sm text-muted-foreground">None</span>}
-        {values.map((v) => (
-          <span
-            key={v}
-            className={cn(
-              "inline-flex items-center gap-1 rounded-full border pl-3 pr-1 py-0.5 text-sm",
-              tone === "exclude" ? "bg-muted line-through decoration-muted-foreground/60" : "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800",
-            )}
+    <div className="flex flex-wrap items-center gap-1.5">
+      {visible.map((v) => (
+        <span
+          key={v}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border pl-2.5 pr-1 py-0.5 text-sm",
+            tone === "exclude" ? "bg-muted text-muted-foreground" : "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800",
+          )}
+        >
+          {v}
+          <button
+            type="button"
+            aria-label={`Remove ${v}`}
+            onClick={() => onChange(values.filter((x) => x !== v))}
+            className="rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-white/10"
           >
-            {v}
-            <button
-              type="button"
-              aria-label={`Remove ${v}`}
-              onClick={() => onChange(values.filter((x) => x !== v))}
-              className="rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-white/10"
-            >
-              <X className="size-3" />
-            </button>
-          </span>
-        ))}
-      </div>
-      <div className="flex gap-2 max-w-sm">
+            <X className="size-3" />
+          </button>
+        </span>
+      ))}
+      {values.length > show && (
+        <button type="button" onClick={() => setAll(!all)} className="text-sm font-medium text-primary hover:underline px-1">
+          {all ? "Show fewer" : `+${values.length - show} more`}
+        </button>
+      )}
+      <span className="inline-flex items-center gap-1">
         <Input
           value={adding}
           onChange={(e) => setAdding(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
           placeholder={placeholder}
           maxLength={60}
-          className="h-8"
+          className="h-7 w-36 text-sm"
+          aria-label={placeholder}
         />
-        <Button type="button" size="sm" variant="outline" onClick={add} disabled={!adding.trim()}>
-          <Plus className="size-4" />Add
-        </Button>
-      </div>
+        {adding.trim() && (
+          <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={add}><Plus className="size-4" />Add</Button>
+        )}
+      </span>
     </div>
   );
 }
 
-function RuleCard({ draft, onChange, onRun, running, error, onStartAgain }: {
+/** A section the page keeps folded: its title and a one-line summary, opened only when someone wants to change it. */
+function Fold({ title, summary, children }: { title: string; summary: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-lg border">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm">
+        <span className="font-medium">{title}</span>
+        <span className="truncate text-muted-foreground">{summary}</span>
+        <ChevronDown className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="border-t px-3 py-3">{children}</div>
+    </details>
+  );
+}
+
+function RuleCard({ draft, onChange, onRun, error }: {
   draft: { rule: Career141Rule; readBy: "model" | "words" };
   onChange: (r: Career141Rule) => void;
   onRun: () => void;
-  running: boolean;
   error?: string;
-  onStartAgain: () => void;
 }) {
   const { rule, readBy } = draft;
   const toggleLevel = (n: number) =>
     onChange({ ...rule, levels: rule.levels.includes(n) ? rule.levels.filter((x) => x !== n) : [...rule.levels, n].sort((a, b) => a - b) });
   return (
-    <Card className="p-5 space-y-5">
+    <Card className="p-5 sm:p-6 space-y-5">
       <div>
         <h2 className="text-lg font-semibold">Here is what I will search for. Does this look right?</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Nothing is searched until you press Run. Change anything first if you need to.
+          Nothing is searched until you press Run. Remove a title that does not fit, or add one that is missing.
         </p>
       </div>
       {readBy === "words" && <Notice tone="warn">Read without AI. Check the titles.</Notice>}
 
-      <ChipEditor label="Job titles to look for" values={rule.titles} onChange={(titles) => onChange({ ...rule, titles })} placeholder="Add a title" />
-      <ChipEditor label="Leave out titles with these words" values={rule.exclude} onChange={(exclude) => onChange({ ...rule, exclude })} placeholder="Add a word" tone="exclude" />
-      <ChipEditor label="Must have these skills" values={rule.skills} onChange={(skills) => onChange({ ...rule, skills })} placeholder="Add a skill" />
+      <section className="space-y-2">
+        <p className="text-sm font-medium">Job titles <span className="font-normal text-muted-foreground">({rule.titles.length})</span></p>
+        <ChipEditor values={rule.titles} onChange={(titles) => onChange({ ...rule, titles })} placeholder="Add a title" />
+      </section>
+
+      <section className="space-y-2">
+        <p className="text-sm font-medium">
+          Level <span className="font-normal text-muted-foreground">{rule.levels.length ? `(${rule.levels.length} chosen)` : "(every level)"}</span>
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {LEVELS.map((name, n) => {
+            const on = rule.levels.includes(n);
+            return (
+              <button
+                key={n}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggleLevel(n)}
+                className={cn(
+                  "rounded-full border px-3 py-1 text-sm transition-colors",
+                  on ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent",
+                )}
+              >
+                {name}
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="space-y-2">
-        <p className="text-sm font-medium">Levels</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
-          {LEVELS.map((name, n) => (
-            <label key={n} className="flex items-center gap-2 text-sm cursor-pointer">
-              <Checkbox checked={rule.levels.includes(n)} onCheckedChange={() => toggleLevel(n)} />
-              {name}
-            </label>
-          ))}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {rule.levels.length ? "Only the ticked levels." : "None ticked: every level."}
-        </p>
+        <Fold
+          title="Leave out"
+          summary={rule.exclude.length ? `${rule.exclude.length} words, like ${rule.exclude.slice(0, 2).join(", ")}` : "nothing"}
+        >
+          <p className="text-xs text-muted-foreground mb-2">A title with any of these words is not counted, e.g. "business developer" for developers.</p>
+          <ChipEditor values={rule.exclude} onChange={(exclude) => onChange({ ...rule, exclude })} placeholder="Add a word" tone="exclude" />
+        </Fold>
+        <Fold title="Must-have skills" summary={rule.skills.length ? rule.skills.join(", ") : "none: any skills"}>
+          <p className="text-xs text-muted-foreground mb-2">Only people whose CV lists every one of these.</p>
+          <ChipEditor values={rule.skills} onChange={(skills) => onChange({ ...rule, skills })} placeholder="Add a skill" />
+        </Fold>
       </div>
 
-      <label className="flex items-center gap-3 text-sm cursor-pointer">
+      <label className="flex items-center gap-3 text-sm cursor-pointer w-fit">
         <Switch checked={rule.includePastRoles} onCheckedChange={(v) => onChange({ ...rule, includePastRoles: v })} />
-        Include people who held this job before
+        Also people who did this job before
       </label>
 
       {error && <Notice tone="error">{error}</Notice>}
       {rule.titles.length === 0 && <p className="text-sm text-muted-foreground">Add at least one job title to run the search.</p>}
 
-      <div className="flex gap-2">
-        <Button onClick={onRun} disabled={running || rule.titles.length === 0}>
-          {running ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
-          Run
-        </Button>
-        <Button variant="outline" onClick={onStartAgain}><RotateCcw className="size-4" />Start again</Button>
-      </div>
+      <Button size="lg" onClick={onRun} disabled={rule.titles.length === 0}>
+        <Search className="size-4" />Run the search
+      </Button>
     </Card>
   );
 }
 
-function Running({ search }: { search: Career141Search }) {
+function Running({ search, onStartAgain }: { search: Career141Search; onStartAgain: () => void }) {
   const sec = useElapsed(search.startedAt);
   const pct = Math.min(99, Math.round((search.scanned / ABOUT) * 100));
+  // A search that stops moving says so rather than spinning for an hour (9 Nov). CAREER141 itself marks a search
+  // that has not moved for ten minutes as failed.
+  const last = useRef({ scanned: search.scanned, at: Date.now() });
+  if (search.scanned !== last.current.scanned) last.current = { scanned: search.scanned, at: Date.now() };
+  const stalled = Date.now() - last.current.at > STALL_MS;
   return (
     <Card className="p-5 space-y-3" aria-live="polite">
       <div className="flex items-center gap-2 font-medium">
@@ -384,10 +504,20 @@ function Running({ search }: { search: Career141Search }) {
             : "Starting to check people…"}
         </p>
       </div>
-      <p className="text-xs text-muted-foreground">
-        A full search takes a few minutes and updates every few seconds. You can leave this page and come back:
-        the search keeps running.
-      </p>
+      {stalled ? (
+        <div className="space-y-2">
+          <Notice tone="warn">
+            No progress for {Math.round((Date.now() - last.current.at) / 60_000)} minutes. CAREER141 may have stopped this
+            search; it gives up on a stuck one after 10 minutes. You can start again.
+          </Notice>
+          <Button variant="outline" onClick={onStartAgain}><RotateCcw className="size-4" />Start again</Button>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          A full search takes about 4 minutes and updates every few seconds. You can leave this page and come back: the
+          search keeps running, and it is under Your recent searches.
+        </p>
+      )}
     </Card>
   );
 }
@@ -398,22 +528,53 @@ const FOUND_AS: Record<Career141Row["kind"], string> = {
   meaning: "Found by meaning, check",
 };
 
-function Results({ search, onStartAgain }: { search: Career141Search; onStartAgain: () => void }) {
-  const [cursors, setCursors] = useState<(string | null)[]>([null]);
-  const [hideMeaning, setHideMeaning] = useState(false);
-  const [saved, setSaved] = useState<{ listName: string; added: number; alreadyHad: number } | null>(null);
-  const cursor = cursors[cursors.length - 1];
+const selectClass = "h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
-  const rows = useQuery({
-    queryKey: ["career141-rows", search.id, cursor],
-    queryFn: () => api.career141.rows(search.id, cursor),
+function Results({ search }: { search: Career141Search }) {
+  const [filter, setFilter] = useState<RowFilter>(NO_FILTER);
+  const [page, setPage] = useState(0);
+  const [loaded, setLoaded] = useState(0);
+  const [saved, setSaved] = useState<{ listName: string; added: number; alreadyHad: number } | null>(null);
+
+  // Every person, read once, so the filters below narrow the whole list rather than one page of it.
+  const all = useQuery({
+    queryKey: ["career141-all", search.id],
+    staleTime: Infinity,
+    queryFn: async () => {
+      const rows: Career141Row[] = [];
+      let cursor: string | null = null;
+      for (let guard = 0; guard < 1000; guard++) {
+        const p = await api.career141.rows(search.id, cursor);
+        rows.push(...p.rows);
+        setLoaded(rows.length);
+        if (!p.nextCursor) break;
+        cursor = p.nextCursor;
+      }
+      return rows;
+    },
   });
+  const rows = useMemo(() => all.data ?? [], [all.data]);
+  const shown = useMemo(() => filterRows(rows, filter), [rows, filter]);
+  const levels = useMemo(() => levelCounts(rows, LEVELS), [rows]);
+  const narrowed = isFiltered(filter);
+  const pages = Math.max(1, Math.ceil(shown.length / PAGE));
+  const set = (patch: Partial<RowFilter>) => {
+    setFilter((f) => ({ ...f, ...patch }));
+    setPage(0);
+  };
+
   const download = useMutation({
-    mutationFn: () => api.career141.download(search.id),
+    mutationFn: async () => {
+      if (!narrowed) return api.career141.download(search.id); // CAREER141's own file, counted there
+      const url = URL.createObjectURL(new Blob([rowsToCsv(shown)], { type: "text/csv;charset=utf-8" }));
+      const name = `Contacts - ${search.rule.label} (${shown.length} chosen) - ${new Date().toISOString().slice(0, 10)}.csv`;
+      Object.assign(document.createElement("a"), { href: url, download: name }).click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    },
     onError: (e) => toast.error(e.message),
   });
   const save = useMutation({
-    mutationFn: () => api.career141.save(search.id),
+    mutationFn: () => api.career141.save(search.id, narrowed ? shown.map((r) => r.email) : undefined),
     onSuccess: (r) => {
       setSaved(r);
       toast.success(`Saved to ${r.listName}`);
@@ -421,7 +582,8 @@ function Results({ search, onStartAgain }: { search: Career141Search; onStartAga
     onError: (e) => toast.error(e.message),
   });
 
-  const shown = (rows.data?.rows ?? []).filter((r) => !hideMeaning || r.kind !== "meaning");
+  const count = narrowed ? shown.length : search.found;
+  const word = count === 1 ? "person" : "people";
 
   return (
     <Card className="p-5 space-y-4">
@@ -430,104 +592,133 @@ function Results({ search, onStartAgain }: { search: Career141Search; onStartAga
           <h2 className="text-lg font-semibold">
             {search.found.toLocaleString()} {search.found === 1 ? "person" : "people"} found for {search.rule.label}
           </h2>
-          <p className="text-sm text-muted-foreground mt-1">Checked {search.scanned.toLocaleString()} people.</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Checked {search.scanned.toLocaleString()} people. Narrow the list below, then save it for a campaign.
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => download.mutate()} disabled={download.isPending || search.found === 0}>
+          <Button variant="outline" onClick={() => download.mutate()} disabled={download.isPending || count === 0 || !all.data}>
             {download.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-            Download Excel
+            Download {count.toLocaleString()} (Excel)
           </Button>
-          <Button onClick={() => save.mutate()} disabled={save.isPending || search.found === 0}>
+          <Button onClick={() => save.mutate()} disabled={save.isPending || count === 0 || !all.data}>
             {save.isPending ? <Loader2 className="size-4 animate-spin" /> : <ListPlus className="size-4" />}
-            Save as list
+            Save {count.toLocaleString()} {word} as a list
           </Button>
-          <Button variant="ghost" onClick={onStartAgain}><RotateCcw className="size-4" />Start again</Button>
         </div>
       </div>
 
       {save.isPending && (
-        <Working title="Saving everyone into a list" detail="Reading every page of people from CAREER141 and adding them to Brevo. Large lists take a minute." />
+        <Working title={`Saving ${count.toLocaleString()} ${word} into a list`} detail="Adding them to Brevo. Large lists take a minute." />
       )}
-      {download.isPending && <Working title="Preparing the Excel file" detail="CAREER141 is building the file with every person in it." />}
+      {download.isPending && <Working title="Preparing the Excel file" />}
       {saved && (
-        <p className="text-sm" role="status">
-          Saved to <Link to="/crm/lists" className="font-medium underline">{saved.listName}</Link>.
-          Added {saved.added.toLocaleString()}, already had {saved.alreadyHad.toLocaleString()}.
-          People who were already here keep their status, so anyone unsubscribed stays unsubscribed.
+        <p className="text-sm rounded-lg border border-green-200 bg-green-50 px-3 py-2 dark:border-green-800 dark:bg-green-950" role="status">
+          Saved to <Link to="/crm/lists" className="font-medium underline">{saved.listName}</Link>: added{" "}
+          {saved.added.toLocaleString()}, already had {saved.alreadyHad.toLocaleString()}. People who were already in
+          Brevo keep their status, so anyone unsubscribed stays unsubscribed. Pick this list when you create the campaign.
         </p>
       )}
-      {search.meaning && <Notice tone="warn">{search.meaning}</Notice>}
+      {search.meaning && (/could not|failed|not run|unavailable/i.test(search.meaning)
+        ? <Notice tone="warn">{search.meaning}</Notice>
+        : <p className="text-sm text-muted-foreground">Also: {search.meaning}, marked "Found by meaning, check".</p>)}
 
-      <label className="flex items-center gap-3 text-sm cursor-pointer w-fit">
-        <Switch checked={hideMeaning} onCheckedChange={setHideMeaning} />
-        Hide people found by meaning
-      </label>
-
-      {rows.error && <Notice tone="error">{rows.error.message}</Notice>}
-      <div className="rounded-lg border overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Email</TableHead>
-              <TableHead>Title</TableHead>
-              <TableHead>Level</TableHead>
-              <TableHead>Employer</TableHead>
-              <TableHead>Found as</TableHead>
-              <TableHead>Why</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.isLoading && (
-              <TableRow><TableCell colSpan={7} className="text-muted-foreground">Loading…</TableCell></TableRow>
-            )}
-            {!rows.isLoading && shown.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={7} className="text-muted-foreground">
-                  {search.found === 0 ? "Nobody matched. Start again and widen the titles or levels." : "Nobody on this page. Turn off the filter or go to the next page."}
-                </TableCell>
-              </TableRow>
-            )}
-            {shown.map((r) => (
-              <TableRow key={r.email}>
-                <TableCell className="font-medium">{r.name ?? "-"}</TableCell>
-                <TableCell>{r.email}</TableCell>
-                <TableCell>{r.title ?? "-"}</TableCell>
-                <TableCell>{r.level ?? "-"}</TableCell>
-                <TableCell>{r.employer ?? "-"}</TableCell>
-                <TableCell>
-                  <span className={cn(
-                    "inline-block rounded-full px-2 py-0.5 text-xs whitespace-nowrap",
-                    r.kind === "meaning"
-                      ? "bg-amber-100 text-amber-900 dark:bg-amber-900 dark:text-amber-100"
-                      : "bg-muted text-foreground",
-                  )}>
-                    {FOUND_AS[r.kind] ?? r.kind}
-                  </span>
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground max-w-64">{r.matchedBy ?? ""}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-muted-foreground">Page {cursors.length} · up to 500 people a page</span>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" disabled={cursors.length === 1} onClick={() => setCursors(cursors.slice(0, -1))}>
-            Previous
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!rows.data?.nextCursor}
-            onClick={() => setCursors([...cursors, rows.data!.nextCursor])}
-          >
-            Next
-          </Button>
+      {/* The filters: one row, everything optional. */}
+      <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3 md:flex-row md:items-center">
+        <div className="relative flex-1">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+          <Input
+            value={filter.text}
+            onChange={(e) => set({ text: e.target.value })}
+            placeholder="Search name, email, title or employer"
+            className="h-9 pl-8 bg-background"
+            aria-label="Search the people found"
+          />
         </div>
+        <select className={selectClass} value={filter.level} onChange={(e) => set({ level: e.target.value })} aria-label="Level">
+          <option value="">Every level</option>
+          {levels.map(([l, n]) => <option key={l} value={l}>{l} ({n.toLocaleString()})</option>)}
+        </select>
+        <select className={selectClass} value={filter.kind} onChange={(e) => set({ kind: e.target.value as RowFilter["kind"] })} aria-label="Found as">
+          <option value="">Any match</option>
+          <option value="current">Current role</option>
+          <option value="previous">Previous role</option>
+          <option value="meaning">By meaning</option>
+        </select>
+        <label className="flex items-center gap-2 text-sm whitespace-nowrap cursor-pointer px-1">
+          <Checkbox checked={filter.hasPhone} onCheckedChange={(v) => set({ hasPhone: v === true })} />
+          Has a phone
+        </label>
+        {narrowed && (
+          <Button variant="ghost" size="sm" onClick={() => set(NO_FILTER)}><X className="size-4" />Clear</Button>
+        )}
       </div>
+
+      {all.isLoading && <Working title={`Loading the people found (${loaded.toLocaleString()} of ${search.found.toLocaleString()})`} />}
+      {all.error && <Notice tone="error">{all.error.message}</Notice>}
+
+      {all.data && (
+        <>
+          <p className="text-sm text-muted-foreground">
+            {narrowed
+              ? `Showing ${shown.length.toLocaleString()} of ${rows.length.toLocaleString()} people.`
+              : `Showing all ${rows.length.toLocaleString()} people.`}
+          </p>
+          <div className="rounded-lg border overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Title</TableHead>
+                  <TableHead>Level</TableHead>
+                  <TableHead>Employer</TableHead>
+                  <TableHead>Found as</TableHead>
+                  <TableHead>Why</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {shown.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-muted-foreground">
+                      {rows.length === 0 ? "Nobody matched. Start a new search with more titles or levels." : "Nobody fits these filters. Clear one to see more."}
+                    </TableCell>
+                  </TableRow>
+                )}
+                {shown.slice(page * PAGE, page * PAGE + PAGE).map((r) => (
+                  <TableRow key={r.email}>
+                    <TableCell className="font-medium">{r.name ?? "-"}</TableCell>
+                    <TableCell>{r.email}</TableCell>
+                    <TableCell>{r.title ?? "-"}</TableCell>
+                    <TableCell className="whitespace-nowrap">{r.level ?? "-"}</TableCell>
+                    <TableCell>{r.employer ?? "-"}</TableCell>
+                    <TableCell>
+                      <span className={cn(
+                        "inline-block rounded-full px-2 py-0.5 text-xs whitespace-nowrap",
+                        r.kind === "meaning"
+                          ? "bg-amber-100 text-amber-900 dark:bg-amber-900 dark:text-amber-100"
+                          : "bg-muted text-foreground",
+                      )}>
+                        {FOUND_AS[r.kind] ?? r.kind}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground max-w-64">{r.matchedBy ?? ""}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {pages > 1 && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Page {page + 1} of {pages}</span>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button>
+                <Button size="sm" variant="outline" disabled={page + 1 >= pages} onClick={() => setPage(page + 1)}>Next</Button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </Card>
   );
 }

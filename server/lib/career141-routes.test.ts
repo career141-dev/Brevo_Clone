@@ -135,6 +135,17 @@ test("save reads every page into one list; people already here keep their status
   assert.equal(again.added, 0);
 });
 
+test("a narrowed save keeps only chosen people CAREER141 found, in a list of its own", async () => {
+  const r = await post(`/discover/${ID}/save`, { emails: ["OLD@x.com", "stranger@evil.com"] });
+  assert.equal(r.status, 200);
+  const out = await r.json();
+  assert.match(out.listName, /^Junior developers \(1 chosen\) - CAREER141 /);
+  assert.equal(out.added + out.alreadyHad, 1);
+  assert.ok(!db.contacts.has("stranger@evil.com"));
+  assert.equal((await post(`/discover/${ID}/save`, { emails: [] })).status, 400);
+  assert.equal((await post(`/discover/${ID}/save`, { emails: "a@x.com" })).status, 400);
+});
+
 test("save waits for a finished search", async () => {
   state = { ...state, status: "running" };
   const r = await post(`/discover/${ID}/save`, {});

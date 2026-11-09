@@ -126,21 +126,29 @@ export function career141Router(access: Career141Access) {
     }
   });
 
-  // Save as list: every row of a finished search into one Brevo list. Emails already here keep their status.
+  // Save as list: the rows of a finished search into one Brevo list. Emails already here keep their status.
+  // With `emails` (the page's filters), only those people, and only if CAREER141 found them: the browser can narrow
+  // the list but never add anyone to it.
   // ponytail: runs inside the request; fine for tens of thousands of rows, a background job if lists grow past that.
   router.post("/api/career141/discover/:id/save", async (req, res) => {
     const id = req.params.id;
+    const raw = req.body?.emails;
+    if (raw !== undefined && (!Array.isArray(raw) || raw.length === 0 || raw.length > 200_000 || raw.some((e) => typeof e !== "string"))) {
+      return res.status(400).json({ error: "Choose at least one person to save." });
+    }
+    const chosen = raw ? new Set((raw as string[]).map((e) => e.trim().toLowerCase())) : null;
     try {
       const st = await answer(await call(`/${id}`));
       if (st.status !== 200) return res.status(st.status).json(st.body);
       const search = st.body as { status?: string; rule?: { label?: string } };
       if (search.status !== "done") return res.status(409).json({ error: "Wait until the search has finished." });
 
-      const contacts = career141Contacts(await allRows(id));
+      const contacts = career141Contacts(await allRows(id)).filter((c) => !chosen || chosen.has(c.email));
       if (contacts.length === 0) return res.status(400).json({ error: "The search found nobody with an email to save." });
 
       const folder = (await prisma.folder.findFirst({ where: { name: "CAREER141" } })) ?? (await prisma.folder.create({ data: { name: "CAREER141" } }));
-      const name = listNameFor(search.rule?.label);
+      // A narrowed save gets its own list, so it never mixes into the whole search's list.
+      const name = listNameFor(chosen ? `${search.rule?.label ?? "Search"} (${contacts.length} chosen)` : search.rule?.label);
       // The same search saved twice on one day fills the same list rather than making a second one.
       const list = (await prisma.list.findFirst({ where: { name, type: "list" } })) ??
         (await prisma.list.create({ data: { name, folderId: folder.id, type: "list" } }));
