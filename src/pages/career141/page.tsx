@@ -5,15 +5,18 @@
  * search id sits in the address (?id=), so a scan that takes a few minutes survives a refresh or a trip elsewhere.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, Clock, Download, ListPlus, Loader2, Plus, RotateCcw, Search, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
-import { api, errorStatus, type Career141Row, type Career141Rule, type Career141Search } from "@/lib/api.ts";
+import { api, errorStatus, type Career141Row, type Career141Rule, type Career141Saved, type Career141Search } from "@/lib/api.ts";
 import { filterRows, isFiltered, levelCounts, NO_FILTER, rowsToCsv, type RowFilter } from "@/lib/career141-filter.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
 import { Checkbox } from "@/components/ui/checkbox.tsx";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog.tsx";
+import { Label } from "@/components/ui/label.tsx";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { Switch } from "@/components/ui/switch.tsx";
@@ -570,13 +573,215 @@ const FOUND_AS: Record<Career141Row["kind"], string> = {
   meaning: "Found by meaning, check",
 };
 
+/** Brevo's own way to open a list: its contacts, filtered to that list (as the Lists page's "View"). */
+const listLink = (r: { listId: number; listName: string }) => `/contacts?listId=${r.listId}&listName=${encodeURIComponent(r.listName)}`;
+
+/**
+ * Where to save (10 Nov, owner): a folder first, then one of its lists or a new one named here. Nothing is saved until
+ * Save. Every person the search and filters keep goes in, not only the page on screen; a list keeps the people it
+ * had and skips anyone already in it. Folders and lists are Brevo's own (GET /api/folders, /api/lists?folderId=).
+ */
+function SaveDialog({ open, onOpenChange, searchId, defaultName, count, emails, onSaved }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  searchId: string;
+  defaultName: string;
+  count: number;
+  emails?: string[];
+  onSaved: (r: Career141Saved) => void;
+}) {
+  const qc = useQueryClient();
+  const [folderId, setFolderId] = useState("");
+  const [choice, setChoice] = useState<number | "new" | null>(null);
+  const [name, setName] = useState(defaultName);
+  const [find, setFind] = useState("");
+  const [newFolder, setNewFolder] = useState<string | null>(null);
+
+  const folders = useQuery({ queryKey: ["folders"], queryFn: () => api.folders.list(), enabled: open });
+  const lists = useQuery({
+    queryKey: ["lists", "in-folder", folderId],
+    queryFn: () => api.lists.list({ folderId: Number(folderId), type: "list", pageSize: 1000 }),
+    enabled: open && Boolean(folderId),
+  });
+  const inFolder = (lists.data?.data ?? []) as { id: number; name: string; contactCount: number }[];
+  const needle = find.trim().toLowerCase();
+  const shown = needle ? inFolder.filter((l) => l.name.toLowerCase().includes(needle)) : inFolder;
+
+  // An empty folder can only take a new list, so that is already chosen.
+  useEffect(() => {
+    if (lists.data && inFolder.length === 0 && choice === null) setChoice("new");
+  }, [lists.data, inFolder.length, choice]);
+
+  const makeFolder = useMutation({
+    mutationFn: (n: string) => api.folders.create({ name: n }),
+    onSuccess: (f: { id: number }) => {
+      qc.invalidateQueries({ queryKey: ["folders"] });
+      setFolderId(String(f.id));
+      setChoice("new");
+      setNewFolder(null);
+    },
+  });
+  const save = useMutation({
+    mutationFn: () =>
+      api.career141.save(
+        searchId,
+        choice === "new" ? { newList: { name: name.trim(), folderId: Number(folderId) } } : { listId: choice as number },
+        emails,
+      ),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["lists"] });
+      qc.invalidateQueries({ queryKey: ["folders"] });
+      onSaved(r);
+      onOpenChange(false);
+      reset();
+    },
+  });
+  function reset() {
+    setFolderId("");
+    setChoice(null);
+    setName(defaultName);
+    setFind("");
+    setNewFolder(null);
+    save.reset();
+    makeFolder.reset();
+  }
+
+  const ready = Boolean(folderId) && (choice === "new" ? name.trim().length > 0 && name.trim().length <= 191 : choice !== null);
+  const word = count === 1 ? "person" : "people";
+  const labelClass = "text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+  const noFolders = folders.data !== undefined && folders.data.length === 0;
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (save.isPending) return; // a save under way finishes first; closing would hide its answer
+        if (!o) reset();
+        onOpenChange(o);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Save {count.toLocaleString()} {word} to a list</DialogTitle>
+          <DialogDescription>
+            Everyone your search and filters found, across every page, not only the ones on screen. Anyone already in
+            the list is skipped, and people already in Brevo keep their status.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label className={labelClass}>Folder</Label>
+            {folders.isLoading ? (
+              <p className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="size-4 animate-spin" />Loading folders…</p>
+            ) : newFolder !== null || noFolders ? (
+              <div className="flex gap-2">
+                <Input
+                  autoFocus
+                  value={newFolder ?? ""}
+                  onChange={(e) => setNewFolder(e.target.value)}
+                  placeholder="New folder name"
+                  maxLength={255}
+                  className="h-10 text-sm"
+                  aria-label="New folder name"
+                />
+                <Button type="button" className="h-10" disabled={!newFolder?.trim() || makeFolder.isPending} onClick={() => makeFolder.mutate(newFolder!.trim())}>
+                  {makeFolder.isPending ? <Loader2 className="size-4 animate-spin" /> : "Create"}
+                </Button>
+                {!noFolders && (
+                  <Button type="button" variant="ghost" className="h-10" onClick={() => setNewFolder(null)}>Cancel</Button>
+                )}
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <Select value={folderId} onValueChange={(v) => { setFolderId(v); setChoice(null); setFind(""); }}>
+                  <SelectTrigger className="h-10 text-sm flex-1" aria-label="Folder"><SelectValue placeholder="Choose a folder" /></SelectTrigger>
+                  <SelectContent>
+                    {(folders.data ?? []).map((f: { id: number; name: string; _count?: { lists: number } }) => (
+                      <SelectItem key={f.id} value={String(f.id)}>
+                        {f.name}{f._count ? ` (${f._count.lists} ${f._count.lists === 1 ? "list" : "lists"})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button type="button" variant="outline" className="h-10" onClick={() => setNewFolder("")}><Plus className="size-4" />New folder</Button>
+              </div>
+            )}
+            {makeFolder.error && <p className="text-xs text-red-500">{makeFolder.error.message}</p>}
+            {folders.error && <p className="text-xs text-red-500">{folders.error.message}</p>}
+          </div>
+
+          {folderId && (
+            <div className="space-y-2">
+              <Label className={labelClass}>List</Label>
+              {lists.isLoading ? (
+                <p className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="size-4 animate-spin" />Loading lists…</p>
+              ) : (
+                <>
+                  {inFolder.length > 6 && (
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                      <Input value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a list in this folder" className="h-9 pl-8 text-sm" />
+                    </div>
+                  )}
+                  <div role="radiogroup" aria-label="List" className="max-h-60 overflow-y-auto rounded-lg border divide-y">
+                    <label className={cn("flex items-center gap-3 px-3 py-2.5 cursor-pointer text-sm hover:bg-muted/60", choice === "new" && "bg-primary/10")}>
+                      <input type="radio" name="c141-list" className="accent-primary" checked={choice === "new"} onChange={() => setChoice("new")} />
+                      <Plus className="size-4 text-muted-foreground" />
+                      <span className="font-medium">New list</span>
+                    </label>
+                    {shown.map((l) => (
+                      <label key={l.id} className={cn("flex items-center gap-3 px-3 py-2.5 cursor-pointer text-sm hover:bg-muted/60", choice === l.id && "bg-primary/10")}>
+                        <input type="radio" name="c141-list" className="accent-primary" checked={choice === l.id} onChange={() => setChoice(l.id)} />
+                        <span className="flex-1 truncate">{l.name}</span>
+                        <span className="text-xs text-muted-foreground tabular-nums">{l.contactCount.toLocaleString()} {l.contactCount === 1 ? "contact" : "contacts"}</span>
+                      </label>
+                    ))}
+                    {inFolder.length === 0 && <p className="px-3 py-2.5 text-sm text-muted-foreground">No lists in this folder yet.</p>}
+                    {inFolder.length > 0 && shown.length === 0 && <p className="px-3 py-2.5 text-sm text-muted-foreground">No list matches that.</p>}
+                  </div>
+                  {choice === "new" && (
+                    <div className="space-y-1.5 pt-1">
+                      <Label htmlFor="c141-new-list" className={labelClass}>New list name</Label>
+                      <Input id="c141-new-list" value={name} onChange={(e) => setName(e.target.value)} maxLength={191} className="h-10 text-sm" />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {save.error && <Notice tone="error">{save.error.message}</Notice>}
+          {save.isPending && (
+            <p className="text-sm text-muted-foreground flex items-center gap-2" aria-live="polite">
+              <Loader2 className="size-4 animate-spin" />Saving {count.toLocaleString()} {word}… large lists take a minute.
+            </p>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-3 border-t pt-4">
+          <Button type="button" variant="outline" className="h-10 text-sm" disabled={save.isPending} onClick={() => { reset(); onOpenChange(false); }}>
+            Cancel
+          </Button>
+          <Button type="button" className="h-10 text-sm min-w-[100px]" disabled={!ready || save.isPending} onClick={() => save.mutate()}>
+            {save.isPending ? <Loader2 className="size-4 animate-spin" /> : <ListPlus className="size-4" />}
+            Save {count.toLocaleString()} {word}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 const selectClass = "h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
 function Results({ search }: { search: Career141Search }) {
   const [filter, setFilter] = useState<RowFilter>(NO_FILTER);
   const [page, setPage] = useState(0);
   const [loaded, setLoaded] = useState(0);
-  const [saved, setSaved] = useState<{ listName: string; added: number; alreadyHad: number } | null>(null);
+  const [saved, setSaved] = useState<Career141Saved | null>(null);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const navigate = useNavigate();
 
   // Every person, read once, so the filters below narrow the whole list rather than one page of it.
   const all = useQuery({
@@ -615,14 +820,13 @@ function Results({ search }: { search: Career141Search }) {
     },
     onError: (e) => toast.error(e.message),
   });
-  const save = useMutation({
-    mutationFn: () => api.career141.save(search.id, narrowed ? shown.map((r) => r.email) : undefined),
-    onSuccess: (r) => {
-      setSaved(r);
-      toast.success(`Saved to ${r.listName}`);
-    },
-    onError: (e) => toast.error(e.message),
-  });
+  const onSaved = (r: Career141Saved) => {
+    setSaved(r);
+    toast.success(`Saved ${r.saved.toLocaleString()} ${r.saved === 1 ? "person" : "people"} to ${r.listName}`, {
+      action: { label: "View list", onClick: () => navigate(listLink(r)) },
+      duration: 10_000,
+    });
+  };
 
   const count = narrowed ? shown.length : search.found;
   const word = count === 1 ? "person" : "people";
@@ -646,23 +850,34 @@ function Results({ search }: { search: Career141Search }) {
             {download.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
             Download {count.toLocaleString()} (Excel)
           </Button>
-          <Button onClick={() => save.mutate()} disabled={save.isPending || count === 0 || !all.data}>
-            {save.isPending ? <Loader2 className="size-4 animate-spin" /> : <ListPlus className="size-4" />}
+          <Button onClick={() => setSaveOpen(true)} disabled={count === 0 || !all.data}>
+            <ListPlus className="size-4" />
             Save {count.toLocaleString()} {word} as a list
           </Button>
         </div>
       </div>
 
-      {save.isPending && (
-        <Working title={`Saving ${count.toLocaleString()} ${word} into a list`} detail="Adding them to Brevo. Large lists take a minute." />
-      )}
+      <SaveDialog
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        searchId={search.id}
+        defaultName={`${search.rule.label} - ${new Date().toISOString().slice(0, 10)}`}
+        count={count}
+        // Every person the search and filters keep, across every page, not the 50 on screen.
+        emails={narrowed ? shown.map((r) => r.email) : undefined}
+        onSaved={onSaved}
+      />
       {download.isPending && <Working title="Preparing the Excel file" />}
       {saved && (
-        <p className="text-sm rounded-lg border border-green-200 bg-green-50 px-3 py-2 dark:border-green-800 dark:bg-green-950" role="status">
-          Saved to <Link to="/crm/lists" className="font-medium underline">{saved.listName}</Link>: added{" "}
-          {saved.added.toLocaleString()}, already had {saved.alreadyHad.toLocaleString()}. People who were already in
-          Brevo keep their status, so anyone unsubscribed stays unsubscribed. Pick this list when you create the campaign.
-        </p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm rounded-lg border border-green-200 bg-green-50 px-3 py-2 dark:border-green-800 dark:bg-green-950" role="status">
+          <span className="flex-1 min-w-60">
+            Saved {saved.saved.toLocaleString()} {saved.saved === 1 ? "person" : "people"} to <span className="font-medium">{saved.listName}</span>:{" "}
+            {saved.addedToList.toLocaleString()} added
+            {saved.alreadyInList > 0 && `, ${saved.alreadyInList.toLocaleString()} already in it and skipped`}.
+            {" "}People already in Brevo keep their status, so anyone unsubscribed stays unsubscribed.
+          </span>
+          <Button asChild size="sm" variant="outline"><Link to={listLink(saved)}>View list</Link></Button>
+        </div>
       )}
       {search.meaning && !search.stopped && (/could not|failed|not run|unavailable/i.test(search.meaning)
         ? <Notice tone="warn">{search.meaning}</Notice>

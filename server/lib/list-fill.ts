@@ -20,8 +20,10 @@ export async function fillList(listId: number, contacts: { email: string }[]) {
     });
     links.push(...rows.map((c: { id: number }) => ({ contactId: c.id, listId })));
   }
+  // `linked` counts people new to this list: anyone already in it is skipped and stays as they were.
+  let linked = 0;
   for (let i = 0; i < links.length; i += CHUNK) {
-    await prisma.contactList.createMany({ data: links.slice(i, i + CHUNK), skipDuplicates: true });
+    linked += (await prisma.contactList.createMany({ data: links.slice(i, i + CHUNK), skipDuplicates: true })).count;
   }
-  return { created, existing: contacts.length - created };
+  return { created, existing: contacts.length - created, linked };
 }

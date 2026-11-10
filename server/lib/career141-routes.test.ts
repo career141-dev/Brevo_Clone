@@ -6,19 +6,21 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 
 // ── the database: contacts by email, lists, links ──
+// One folder holding one list that already has a member (id 50), as a real Brevo would.
 const db = {
   contacts: new Map<string, { id: number; email: string; status: string; [k: string]: unknown }>(),
-  lists: [] as { id: number; name: string; folderId: number; type: string }[],
-  folders: [] as { id: number; name: string }[],
-  links: new Set<string>(),
+  lists: [{ id: 1, name: "Engineers", folderId: 1, type: "list" }] as { id: number; name: string; folderId: number; type: string }[],
+  folders: [{ id: 1, name: "Campaigns" }] as { id: number; name: string }[],
+  links: new Set<string>(["50:1"]),
 };
 const prisma = {
   folder: {
-    findFirst: async ({ where }: any) => db.folders.find((f) => f.name === where.name) ?? null,
-    create: async ({ data }: any) => { const f = { id: db.folders.length + 1, ...data }; db.folders.push(f); return f; },
+    findUnique: async ({ where }: any) => db.folders.find((f) => f.id === where.id) ?? null,
   },
   list: {
-    findFirst: async ({ where }: any) => db.lists.find((l) => l.name === where.name) ?? null,
+    findUnique: async ({ where }: any) => db.lists.find((l) => l.id === where.id) ?? null,
+    findFirst: async ({ where }: any) =>
+      db.lists.find((l) => l.name === where.name && l.folderId === where.folderId && l.type === where.type) ?? null,
     create: async ({ data }: any) => { const l = { id: db.lists.length + 1, ...data }; db.lists.push(l); return l; },
   },
   contact: {
@@ -30,7 +32,11 @@ const prisma = {
     findMany: async ({ where }: any) => where.email.in.map((e: string) => db.contacts.get(e)).filter(Boolean),
   },
   contactList: {
-    createMany: async ({ data }: any) => { for (const l of data) db.links.add(`${l.contactId}:${l.listId}`); return { count: data.length }; },
+    createMany: async ({ data }: any) => {
+      let count = 0;
+      for (const l of data) { const k = `${l.contactId}:${l.listId}`; if (!db.links.has(k)) { db.links.add(k); count++; } }
+      return { count };
+    },
   },
 };
 mock.module("../prisma.js", { exports: { prisma } });
@@ -117,35 +123,60 @@ test("the CSV streams through with CAREER141's file name", async () => {
   assert.equal(await r.text(), "Name,Email\nAna,a@x.com\n");
 });
 
-test("save reads every page into one list; people already here keep their status", async () => {
+test("save into a NEW list: every page read, named by the person, in their folder; Brevo statuses kept", async () => {
   db.contacts.set("a@x.com", { id: 99, email: "a@x.com", status: "unsubscribed" });
-  const r = await post(`/discover/${ID}/save`, {});
+  const r = await post(`/discover/${ID}/save`, { newList: { name: "  Junior devs Nov  ", folderId: 1 } });
   assert.equal(r.status, 200);
   const out = await r.json();
-  assert.equal(out.added, 1);
-  assert.equal(out.alreadyHad, 1);
-  assert.match(out.listName, /^Junior developers - CAREER141 \d{4}-\d{2}-\d{2}$/);
+  assert.equal(out.listName, "Junior devs Nov");
+  assert.equal(db.lists.find((l) => l.id === out.listId)!.folderId, 1);
+  assert.equal(out.saved, 2); // both pages of rows
+  assert.equal(out.addedToList, 2);
+  assert.equal(out.alreadyInList, 0);
+  assert.equal(out.newToBrevo, 1);
   assert.equal(db.contacts.get("a@x.com")!.status, "unsubscribed");
   const added = db.contacts.get("old@x.com")!;
   assert.equal(added.source, "career141");
   assert.equal(added.designation, "Programmer");
   assert.ok(db.links.has(`99:${out.listId}`) && db.links.has(`${added.id}:${out.listId}`));
-  assert.equal(db.folders[0].name, "CAREER141");
-  // The same search saved again the same day fills the same list.
-  const again = await (await post(`/discover/${ID}/save`, {})).json();
-  assert.equal(again.listId, out.listId);
-  assert.equal(again.added, 0);
+  // The same name again in that folder would mix two lists: refused, with words.
+  const twice = await post(`/discover/${ID}/save`, { newList: { name: "Junior devs Nov", folderId: 1 } });
+  assert.equal(twice.status, 409);
+  assert.match((await twice.json()).error, /already a list in this folder/);
 });
 
-test("a narrowed save keeps only chosen people CAREER141 found, in a list of its own", async () => {
-  const r = await post(`/discover/${ID}/save`, { emails: ["OLD@x.com", "stranger@evil.com"] });
+test("save into an EXISTING list keeps its people and skips anyone already in it", async () => {
+  const oldId = db.contacts.get("old@x.com")!.id;
+  db.links.add(`${oldId}:1`); // already in Engineers
+  const r = await post(`/discover/${ID}/save`, { listId: 1 });
   assert.equal(r.status, 200);
   const out = await r.json();
-  assert.match(out.listName, /^Junior developers \(1 chosen\) - CAREER141 /);
-  assert.equal(out.added + out.alreadyHad, 1);
+  assert.equal(out.listName, "Engineers");
+  assert.equal(out.saved, 2);
+  assert.equal(out.addedToList, 1);
+  assert.equal(out.alreadyInList, 1);
+  assert.equal(out.newToBrevo, 0);
+  assert.ok(db.links.has("50:1")); // the member it had before is still there
+});
+
+test("a narrowed save keeps only chosen people CAREER141 found", async () => {
+  const r = await post(`/discover/${ID}/save`, { listId: 1, emails: ["OLD@x.com", "stranger@evil.com"] });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).saved, 1);
   assert.ok(!db.contacts.has("stranger@evil.com"));
-  assert.equal((await post(`/discover/${ID}/save`, { emails: [] })).status, 400);
-  assert.equal((await post(`/discover/${ID}/save`, { emails: "a@x.com" })).status, 400);
+  assert.equal((await post(`/discover/${ID}/save`, { listId: 1, emails: [] })).status, 400);
+  assert.equal((await post(`/discover/${ID}/save`, { listId: 1, emails: "a@x.com" })).status, 400);
+});
+
+test("save needs exactly one place to go, and a place that exists", async () => {
+  const bad = async (body: unknown, status: number) => assert.equal((await post(`/discover/${ID}/save`, body)).status, status, JSON.stringify(body));
+  await bad({}, 400);
+  await bad({ listId: 1, newList: { name: "X", folderId: 1 } }, 400);
+  await bad({ newList: { name: "", folderId: 1 } }, 400);
+  await bad({ newList: { name: "X" } }, 400);
+  await bad({ newList: { name: "x".repeat(192), folderId: 1 } }, 400);
+  await bad({ newList: { name: "X", folderId: 99 } }, 400);
+  await bad({ listId: 999 }, 404);
 });
 
 test("stop goes to CAREER141; an older CAREER141 without Stop is said plainly", async () => {
@@ -164,7 +195,7 @@ test("stop goes to CAREER141; an older CAREER141 without Stop is said plainly", 
 
 test("save waits for a finished search", async () => {
   state = { ...state, status: "running" };
-  const r = await post(`/discover/${ID}/save`, {});
+  const r = await post(`/discover/${ID}/save`, { listId: 1 });
   assert.equal(r.status, 409);
   state = { ...state, status: "done" };
 });

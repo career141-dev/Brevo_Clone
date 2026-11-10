@@ -7,7 +7,7 @@
 import { Readable } from "node:stream";
 import { Router, type Request, type Response } from "express";
 import { prisma } from "../prisma.js";
-import { career141Contacts, listNameFor, SEARCH_ID, type Career141Row } from "../lib/career141.js";
+import { career141Contacts, SEARCH_ID, type Career141Row } from "../lib/career141.js";
 import { fillList } from "../lib/list-fill.js";
 
 const cleanEnv = (v?: string) => (v ?? "").replace(/["']/g, "").trim();
@@ -141,7 +141,9 @@ export function career141Router(access: Career141Access) {
     }
   });
 
-  // Save as list: the rows of a finished search into one Brevo list. Emails already here keep their status.
+  // Save as list: the rows of a finished search into the list the person chose (10 Nov, owner: ask where, never
+  // name it for them) - an existing list (`listId`; its people stay, anyone already in it is skipped) or a new one
+  // (`newList: { name, folderId }`). Emails already in Brevo keep their status.
   // With `emails` (the page's filters), only those people, and only if CAREER141 found them: the browser can narrow
   // the list but never add anyone to it.
   // ponytail: runs inside the request; fine for tens of thousands of rows, a background job if lists grow past that.
@@ -152,6 +154,15 @@ export function career141Router(access: Career141Access) {
       return res.status(400).json({ error: "Choose at least one person to save." });
     }
     const chosen = raw ? new Set((raw as string[]).map((e) => e.trim().toLowerCase())) : null;
+    const listId = Number(req.body?.listId);
+    const fresh = req.body?.newList as { name?: unknown; folderId?: unknown } | undefined;
+    const newName = typeof fresh?.name === "string" ? fresh.name.trim() : "";
+    const folderId = Number(fresh?.folderId);
+    if (Number.isInteger(listId) && listId > 0 ? fresh : !fresh) {
+      return res.status(400).json({ error: "Choose a list to save into, or name a new one." });
+    }
+    if (fresh && (!newName || newName.length > 191)) return res.status(400).json({ error: "Give the new list a name of up to 191 characters." });
+    if (fresh && !(Number.isInteger(folderId) && folderId > 0)) return res.status(400).json({ error: "Choose a folder for the new list." });
     try {
       const st = await answer(await call(`/${id}`));
       if (st.status !== 200) return res.status(st.status).json(st.body);
@@ -161,14 +172,25 @@ export function career141Router(access: Career141Access) {
       const contacts = career141Contacts(await allRows(id)).filter((c) => !chosen || chosen.has(c.email));
       if (contacts.length === 0) return res.status(400).json({ error: "The search found nobody with an email to save." });
 
-      const folder = (await prisma.folder.findFirst({ where: { name: "CAREER141" } })) ?? (await prisma.folder.create({ data: { name: "CAREER141" } }));
-      // A narrowed save gets its own list, so it never mixes into the whole search's list.
-      const name = listNameFor(chosen ? `${search.rule?.label ?? "Search"} (${contacts.length} chosen)` : search.rule?.label);
-      // The same search saved twice on one day fills the same list rather than making a second one.
-      const list = (await prisma.list.findFirst({ where: { name, type: "list" } })) ??
-        (await prisma.list.create({ data: { name, folderId: folder.id, type: "list" } }));
-      const { created, existing } = await fillList(list.id, contacts);
-      res.json({ listId: list.id, listName: list.name, added: created, alreadyHad: existing });
+      let list: { id: number; name: string };
+      if (fresh) {
+        const folder = await prisma.folder.findUnique({ where: { id: folderId } });
+        if (!folder) return res.status(400).json({ error: "That folder no longer exists. Choose another." });
+        // A new name that is already in this folder would quietly mix two lists; say so instead.
+        if (await prisma.list.findFirst({ where: { name: newName, folderId, type: "list" } })) {
+          return res.status(409).json({ error: `"${newName}" is already a list in this folder. Choose it from the lists instead, or use another name.` });
+        }
+        list = await prisma.list.create({ data: { name: newName, folderId, type: "list" } });
+      } else {
+        const found = await prisma.list.findUnique({ where: { id: listId } });
+        if (!found || found.type !== "list") return res.status(404).json({ error: "That list no longer exists. Choose another." });
+        list = found;
+      }
+      const { created, linked } = await fillList(list.id, contacts);
+      res.json({
+        listId: list.id, listName: list.name, saved: contacts.length,
+        addedToList: linked, alreadyInList: contacts.length - linked, newToBrevo: created,
+      });
     } catch (err) {
       if (err instanceof Refused) return res.status(err.a.status).json(err.a.body);
       console.error("[CAREER141] save failed:", why(err));

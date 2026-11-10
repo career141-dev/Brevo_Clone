@@ -234,11 +234,11 @@ export const api = {
     stop: (id: string) => request<{ id: string; status: string }>(`/career141/discover/${id}/stop`, { method: "POST", timeoutMs: 20_000 }),
     rows: (id: string, cursor?: string | null) =>
       request<{ rows: Career141Row[]; nextCursor: string | null }>(`/career141/discover/${id}/rows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { timeoutMs: 30_000 }),
-    /** Every person found, or only `emails` (what the page's filters show). */
-    save: (id: string, emails?: string[]) =>
-      request<{ listId: number; listName: string; added: number; alreadyHad: number }>(`/career141/discover/${id}/save`, {
+    /** Into the list the person chose, or a new one they named; every person found, or only `emails` (the filters). */
+    save: (id: string, to: { listId: number } | { newList: { name: string; folderId: number } }, emails?: string[]) =>
+      request<Career141Saved>(`/career141/discover/${id}/save`, {
         method: "POST",
-        body: JSON.stringify(emails ? { emails } : {}),
+        body: JSON.stringify({ ...to, ...(emails ? { emails } : {}) }),
         timeoutMs: 130_000,
       }),
     /** The CSV needs the sign-in token, so it is fetched and handed to the browser as a file rather than linked. */
@@ -440,4 +440,14 @@ export type Career141Row = {
   linkedinUrl?: string;
   kind: "current" | "previous" | "meaning";
   matchedBy?: string;
+};
+
+/** What Save as list answers: how many went in, how many the list already had, how many were new to Brevo. */
+export type Career141Saved = {
+  listId: number;
+  listName: string;
+  saved: number;
+  addedToList: number;
+  alreadyInList: number;
+  newToBrevo: number;
 };

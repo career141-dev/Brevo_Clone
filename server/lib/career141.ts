@@ -45,9 +45,3 @@ export function career141Contacts(rows: Career141Row[]) {
     };
   });
 }
-
-/** "Junior developers - CAREER141 2026-11-09": the list a saved search becomes. */
-export function listNameFor(label: unknown, day = new Date()) {
-  const base = (typeof label === "string" && label.trim() ? label.trim() : "Search").slice(0, 150);
-  return `${base} - CAREER141 ${day.toISOString().slice(0, 10)}`;
-}

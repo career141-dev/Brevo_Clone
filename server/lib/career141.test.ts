@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { career141Contacts, listNameFor, SEARCH_ID } from "./career141.ts";
+import { career141Contacts, SEARCH_ID } from "./career141.ts";
 
 test("maps a CAREER141 row onto the contact columns", () => {
   const [c] = career141Contacts([{
@@ -34,9 +34,4 @@ test("long values are cut to fit the column", () => {
 test("only plain ids are forwarded", () => {
   assert.ok(SEARCH_ID.test("k57abc_DEF-123"));
   for (const bad of ["short", "../../tables/users", "k57abc def123", "x".repeat(65)]) assert.ok(!SEARCH_ID.test(bad), bad);
-});
-
-test("the list is named after the rule and the day", () => {
-  assert.equal(listNameFor("Junior developers", new Date("2026-11-09T10:00:00Z")), "Junior developers - CAREER141 2026-11-09");
-  assert.equal(listNameFor("", new Date("2026-11-09T10:00:00Z")), "Search - CAREER141 2026-11-09");
 });
