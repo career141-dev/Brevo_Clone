@@ -9,7 +9,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, Clock, Download, ListPlus, Loader2, Plus, RotateCcw, Search, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
-import { api, type Career141Row, type Career141Rule, type Career141Search } from "@/lib/api.ts";
+import { api, errorStatus, type Career141Row, type Career141Rule, type Career141Search } from "@/lib/api.ts";
 import { filterRows, isFiltered, levelCounts, NO_FILTER, rowsToCsv, type RowFilter } from "@/lib/career141-filter.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -33,6 +33,7 @@ const SUGGESTIONS = [
 // ponytail: CAREER141 does not say how many candidates it holds; 92,292 were checked on 9 Nov. Only the bar uses it.
 const ABOUT = 92_300;
 const STALL_MS = 3 * 60_000;
+const isGone = (e: unknown) => e != null && [400, 404].includes(errorStatus(e));
 const PAGE = 50;
 
 // ── Recent searches: this browser only, a convenience; CAREER141 keeps a search for 7 days ──
@@ -67,18 +68,38 @@ export default function Career141Page() {
   const [recent] = useState(loadRecent);
   const qc = useQueryClient();
 
-  const access = useQuery({ queryKey: ["career141-access"], queryFn: api.career141.access });
+  // Only a search CAREER141 says it does not have (404, or an id it refuses, 400) is gone. A timeout, a lost
+  // connection, or a 401 while the sign-in is still loading after a refresh is tried again, and the id stays in the
+  // address (10 Nov: a refresh said "gone" for a search that was running, and one hung request froze the count).
+  const access = useQuery({
+    queryKey: ["career141-access"],
+    queryFn: api.career141.access,
+    retry: (n, e) => !isGone(e) && n < 30,
+    retryDelay: 2000,
+  });
   const search = useQuery({
     queryKey: ["career141", id],
     queryFn: () => api.career141.status(id!),
     enabled: Boolean(id),
-    retry: 3,
+    retry: (_n, e) => !isGone(e),
+    retryDelay: (n) => Math.min(2000 * (n + 1), 10_000),
+    refetchIntervalInBackground: true,
+    // Keeps asking while the last status it saw was "running", errors or not.
     refetchInterval: (q) => {
       const st = q.state.data?.status;
       if (st === "running") return 3000;
       return started && st === "read" ? 1500 : false;
     },
   });
+  const reconnecting = Boolean(id) && search.failureCount > 0 && !isGone(search.failureReason);
+
+  // The poll that sees "done" fetches once more, so the final count shows without a refresh.
+  const lastStatus = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const now = search.data?.status;
+    if (lastStatus.current === "running" && now === "done") qc.invalidateQueries({ queryKey: ["career141", id] });
+    lastStatus.current = now;
+  }, [search.data?.status, id, qc]);
 
   // Coming back to a search that was read but not run: edit the rule it was read into.
   useEffect(() => {
@@ -220,11 +241,14 @@ export default function Career141Page() {
         </Card>
       )}
 
-      {id && search.isLoading && <Working title="Loading the search" />}
-      {id && search.error && !s && (
+      {id && !s && reconnecting && (
+        <Working title="Reconnecting to the server" detail="Your search is safe in CAREER141. Trying again every few seconds." />
+      )}
+      {id && search.isLoading && !reconnecting && <Working title="Loading the search" />}
+      {id && search.error && !s && isGone(search.error) && (
         <Card className="p-5 space-y-3">
           <Notice tone="error">
-            {search.error.message}. A search is kept for 7 days; an older one is gone. Start again to search afresh.
+            {search.error.message.replace(/\.+$/, "")}. A search is kept for 7 days; an older one is gone. Start again to search afresh.
           </Notice>
           <Button variant="outline" onClick={startAgain}><RotateCcw className="size-4" />Start again</Button>
         </Card>
@@ -241,7 +265,7 @@ export default function Career141Page() {
           )}
         </div>
       )}
-      {s && search.error && <Notice tone="warn">Lost contact with the server for a moment. Trying again…</Notice>}
+      {s && reconnecting && <Notice tone="warn">Reconnecting to the server… Your search keeps running in CAREER141.</Notice>}
 
       {s?.status === "read" && (run.isPending || started) && (
         <Working title="Starting the search" detail="CAREER141 is getting ready to check every candidate. The count starts in a moment." />
@@ -257,7 +281,7 @@ export default function Career141Page() {
       )}
 
       {s?.status === "running" && (
-        <Running search={s} onStartAgain={startAgain} onStopped={() => qc.invalidateQueries({ queryKey: ["career141", id] })} />
+        <Running search={s} reconnecting={reconnecting} onStartAgain={startAgain} onStopped={() => qc.invalidateQueries({ queryKey: ["career141", id] })} />
       )}
 
       {s?.status === "failed" && (
@@ -480,7 +504,12 @@ function RuleCard({ draft, onChange, onRun, error }: {
   );
 }
 
-function Running({ search, onStartAgain, onStopped }: { search: Career141Search; onStartAgain: () => void; onStopped: () => void }) {
+function Running({ search, reconnecting, onStartAgain, onStopped }: {
+  search: Career141Search;
+  reconnecting: boolean;
+  onStartAgain: () => void;
+  onStopped: () => void;
+}) {
   const sec = useElapsed(search.startedAt);
   // Stop: enough people already. CAREER141 keeps everyone found so far and the results open below (9 Nov, owner).
   const stop = useMutation({ mutationFn: () => api.career141.stop(search.id), onSuccess: onStopped });
@@ -489,7 +518,8 @@ function Running({ search, onStartAgain, onStopped }: { search: Career141Search;
   // that has not moved for ten minutes as failed.
   const last = useRef({ scanned: search.scanned, at: Date.now() });
   if (search.scanned !== last.current.scanned) last.current = { scanned: search.scanned, at: Date.now() };
-  const stalled = Date.now() - last.current.at > STALL_MS;
+  // While the page cannot reach the server the count cannot move; that is not CAREER141 stopping.
+  const stalled = !reconnecting && Date.now() - last.current.at > STALL_MS;
   return (
     <Card className="p-5 space-y-3" aria-live="polite">
       <div className="flex items-center gap-2 font-medium">

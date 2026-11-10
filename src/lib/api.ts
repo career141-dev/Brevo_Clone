@@ -13,28 +13,39 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(await authHeaders()), ...init?.headers },
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    // A refused account used to see an empty app with zeros everywhere; say why, once per page load.
-    // Only the sign-in refusal carries `reason`; other 403s (e.g. AWS cost access) must not tell people to sign out.
-    if (res.status === 403 && body.reason && !refusalShown) {
-      refusalShown = true;
-      toast.error(`You're signed in, but ${body.reason ?? "this account can't use the app"}. Sign out and use your company email.`, { duration: 15000 });
-    }
-    const errorMessage = body.details
-      ? `${body.error || 'Error'}: ${body.details}`
-      : (body.error ?? `Request failed (${res.status})`);
-    const err = new Error(errorMessage);
-    (err as any).response = { data: body };
-    throw err;
+/**
+ * `timeoutMs`: give up instead of waiting forever. 10 Nov: one request hung on a bad connection and Find in CAREER141's
+ * progress froze at 38% while the search itself finished. Errors carry `status` (0 = no answer: timeout or network).
+ */
+async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs, ...rest } = init ?? {};
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()), ...rest.headers };
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { ...rest, headers, ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}) });
+    if (res.ok) return (await res.json()) as T;
+  } catch (e) {
+    const slow = (e as Error)?.name === "TimeoutError";
+    throw Object.assign(new Error(slow ? "The server took too long to answer." : "Could not reach the server."), { status: 0 });
   }
-  return res.json();
+  const body = await res.json().catch(() => ({}));
+  // A refused account used to see an empty app with zeros everywhere; say why, once per page load.
+  // Only the sign-in refusal carries `reason`; other 403s (e.g. AWS cost access) must not tell people to sign out.
+  if (res.status === 403 && body.reason && !refusalShown) {
+    refusalShown = true;
+    toast.error(`You're signed in, but ${body.reason ?? "this account can't use the app"}. Sign out and use your company email.`, { duration: 15000 });
+  }
+  const errorMessage = body.details
+    ? `${body.error || 'Error'}: ${body.details}`
+    : (body.error ?? `Request failed (${res.status})`);
+  throw Object.assign(new Error(errorMessage), { response: { data: body }, status: res.status });
 }
+
+/** The HTTP status an api error carries: 0 when nothing answered (timeout or network), else the server's code. */
+export const errorStatus = (e: unknown): number => {
+  const s = (e as { status?: unknown } | null)?.status;
+  return typeof s === "number" ? s : 0;
+};
 
 /** Brevo imports run on the server in the background: start the job, then poll until it finishes. */
 async function runBrevoJob<T>(path: string, apiKey: string): Promise<T> {
@@ -214,24 +225,26 @@ export const api = {
     linkLists: (apiKey: string) => runBrevoJob<{ contactsLinked: number; listsFound: number }>("/brevo/link-lists", apiKey),
   },
   career141: {
-    access: () => request<{ connected: boolean }>("/career141"),
+    access: () => request<{ connected: boolean }>("/career141", { timeoutMs: 20_000 }),
     read: (query: string) =>
-      request<{ id: string; readBy: "model" | "words"; rule: Career141Rule }>("/career141/discover", { method: "POST", body: JSON.stringify({ query }) }),
+      request<{ id: string; readBy: "model" | "words"; rule: Career141Rule }>("/career141/discover", { method: "POST", body: JSON.stringify({ query }), timeoutMs: 70_000 }),
     run: (id: string, rule: Career141Rule) =>
-      request<{ id: string; status: string }>(`/career141/discover/${id}/run`, { method: "POST", body: JSON.stringify({ rule }) }),
-    status: (id: string) => request<Career141Search>(`/career141/discover/${id}`),
-    stop: (id: string) => request<{ id: string; status: string }>(`/career141/discover/${id}/stop`, { method: "POST" }),
+      request<{ id: string; status: string }>(`/career141/discover/${id}/run`, { method: "POST", body: JSON.stringify({ rule }), timeoutMs: 20_000 }),
+    status: (id: string) => request<Career141Search>(`/career141/discover/${id}`, { timeoutMs: 20_000 }),
+    stop: (id: string) => request<{ id: string; status: string }>(`/career141/discover/${id}/stop`, { method: "POST", timeoutMs: 20_000 }),
     rows: (id: string, cursor?: string | null) =>
-      request<{ rows: Career141Row[]; nextCursor: string | null }>(`/career141/discover/${id}/rows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+      request<{ rows: Career141Row[]; nextCursor: string | null }>(`/career141/discover/${id}/rows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { timeoutMs: 30_000 }),
     /** Every person found, or only `emails` (what the page's filters show). */
     save: (id: string, emails?: string[]) =>
       request<{ listId: number; listName: string; added: number; alreadyHad: number }>(`/career141/discover/${id}/save`, {
         method: "POST",
         body: JSON.stringify(emails ? { emails } : {}),
+        timeoutMs: 130_000,
       }),
     /** The CSV needs the sign-in token, so it is fetched and handed to the browser as a file rather than linked. */
     download: async (id: string) => {
-      const res = await fetch(`${BASE}/career141/discover/${id}/csv`, { headers: await authHeaders() });
+      const res = await fetch(`${BASE}/career141/discover/${id}/csv`, { headers: await authHeaders(), signal: AbortSignal.timeout(130_000) })
+        .catch((e: Error) => { throw new Error(e?.name === "TimeoutError" ? "The file took too long. Try again." : "Could not reach the server."); });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Download failed (${res.status})`);
       const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "career141-contacts.csv";
       const url = URL.createObjectURL(await res.blob());
