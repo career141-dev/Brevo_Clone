@@ -7,9 +7,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, Clock, Download, ListPlus, Loader2, Plus, RotateCcw, Search, Sparkles, Square, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, Clock, Download, ListPlus, Loader2, Megaphone, Pencil, Plus, RotateCcw, Search, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
-import { api, errorStatus, type Career141Row, type Career141Rule, type Career141Saved, type Career141Search } from "@/lib/api.ts";
+import { api, errorStatus, type Career141LeftOut, type Career141Row, type Career141Rule, type Career141Saved, type Career141Search } from "@/lib/api.ts";
 import { filterRows, isFiltered, levelCounts, NO_FILTER, rowsToCsv, type RowFilter } from "@/lib/career141-filter.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Card } from "@/components/ui/card.tsx";
@@ -68,6 +68,8 @@ export default function Career141Page() {
   // Run was pressed: keep asking CAREER141 until it says "running" (9 Nov: polling only while "running" left the
   // page frozen on the rule card when the first answer after Run still said "read").
   const [started, setStarted] = useState(false);
+  // Change this search (10 Nov): the finished search's rule, being edited for a new run.
+  const [editing, setEditing] = useState<Career141Rule | null>(null);
   const [recent] = useState(loadRecent);
   const qc = useQueryClient();
 
@@ -131,7 +133,26 @@ export default function Career141Page() {
     setQuery(text);
     read.mutate(text);
   };
+  // A changed search is a new search in CAREER141: it is read once more (CAREER141 only starts a search from a
+  // sentence; that reading is set aside) and run straight away with the rule as edited here, so nothing is retyped.
+  const rerun = useMutation({
+    mutationFn: async ({ query, rule }: { query: string; rule: Career141Rule }) => {
+      const r = await api.career141.read(query);
+      await api.career141.run(r.id, rule);
+      rememberSearch({ id: r.id, query, at: Date.now() });
+      return r.id;
+    },
+    onSuccess: (newId) => {
+      setEditing(null);
+      setDraft(null);
+      setStarted(true);
+      setParams({ id: newId });
+    },
+  });
+
   const startAgain = () => {
+    setEditing(null);
+    rerun.reset();
     setDraft(null);
     setStarted(false);
     setQuery("");
@@ -287,14 +308,33 @@ export default function Career141Page() {
         <Running search={s} reconnecting={reconnecting} onStartAgain={startAgain} onStopped={() => qc.invalidateQueries({ queryKey: ["career141", id] })} />
       )}
 
-      {s?.status === "failed" && (
+      {s && editing && (s.status === "done" || s.status === "failed") && (
+        rerun.isPending ? (
+          <Working title="Starting the changed search" detail="CAREER141 is getting ready to check every candidate again with your changes." />
+        ) : (
+          <RuleCard
+            draft={{ rule: editing, readBy: s.readBy }}
+            onChange={setEditing}
+            onRun={() => rerun.mutate({ query: s.query, rule: editing })}
+            onCancel={() => { setEditing(null); rerun.reset(); }}
+            error={rerun.error?.message}
+            title="Change this search"
+            hint="Your last search is kept as it was. Running this starts a new search with your changes."
+          />
+        )
+      )}
+
+      {s?.status === "failed" && !editing && (
         <Card className="p-5 space-y-3">
           <Notice tone="error">The search could not finish: {s.error ?? "CAREER141 did not say why."}</Notice>
-          <Button variant="outline" onClick={startAgain}><RotateCcw className="size-4" />Start again</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setEditing(s.rule)}><Pencil className="size-4" />Change this search</Button>
+            <Button variant="outline" onClick={startAgain}><RotateCcw className="size-4" />Start again</Button>
+          </div>
         </Card>
       )}
 
-      {s?.status === "done" && <Results search={s} />}
+      {s?.status === "done" && !editing && <Results search={s} onChange={() => setEditing(s.rule)} />}
     </div>
   );
 }
@@ -429,11 +469,14 @@ function Fold({ title, summary, children }: { title: string; summary: string; ch
   );
 }
 
-function RuleCard({ draft, onChange, onRun, error }: {
+function RuleCard({ draft, onChange, onRun, onCancel, error, title, hint }: {
   draft: { rule: Career141Rule; readBy: "model" | "words" };
   onChange: (r: Career141Rule) => void;
   onRun: () => void;
+  onCancel?: () => void;
   error?: string;
+  title?: string;
+  hint?: string;
 }) {
   const { rule, readBy } = draft;
   const toggleLevel = (n: number) =>
@@ -441,9 +484,9 @@ function RuleCard({ draft, onChange, onRun, error }: {
   return (
     <Card className="p-5 sm:p-6 space-y-5">
       <div>
-        <h2 className="text-lg font-semibold">Here is what I will search for. Does this look right?</h2>
+        <h2 className="text-lg font-semibold">{title ?? "Here is what I will search for. Does this look right?"}</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Nothing is searched until you press Run. Remove a title that does not fit, or add one that is missing.
+          {hint ?? "Nothing is searched until you press Run. Remove a title that does not fit, or add one that is missing."}
         </p>
       </div>
       {readBy === "words" && <Notice tone="warn">Read without AI. Check the titles.</Notice>}
@@ -500,9 +543,12 @@ function RuleCard({ draft, onChange, onRun, error }: {
       {error && <Notice tone="error">{error}</Notice>}
       {rule.titles.length === 0 && <p className="text-sm text-muted-foreground">Add at least one job title to run the search.</p>}
 
-      <Button size="lg" onClick={onRun} disabled={rule.titles.length === 0}>
-        <Search className="size-4" />Run the search
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button size="lg" onClick={onRun} disabled={rule.titles.length === 0}>
+          <Search className="size-4" />Run the search
+        </Button>
+        {onCancel && <Button size="lg" variant="outline" onClick={onCancel}>Cancel</Button>}
+      </div>
     </Card>
   );
 }
@@ -541,6 +587,7 @@ function Running({ search, reconnecting, onStartAgain, onStopped }: {
             : "Starting to check people…"}
         </p>
       </div>
+      <LeftOut search={search} />
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="outline" onClick={() => stop.mutate()} disabled={stop.isPending || stop.isSuccess}>
           {stop.isPending || stop.isSuccess ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
@@ -567,6 +614,61 @@ function Running({ search, reconnecting, onStartAgain, onStopped }: {
   );
 }
 
+// What each reason CAREER141 gives means, in words a campaign person uses.
+const LEFT_OUT: Record<Career141LeftOut, string> = {
+  other_job: "do another job",
+  level: "are at a level you did not choose",
+  skills: "lack a must-have skill",
+  no_email: "have no email",
+  same_email: "share an email with someone already listed",
+  not_contactable: "asked not to be contacted, or are duplicates",
+};
+
+/**
+ * Who was left out and why (10 Nov): CAREER141 counts every person it does not keep, by reason. Shown so "only 815?"
+ * has its answer on the page, and so a level or a skill that is costing many people is easy to see and change.
+ */
+function LeftOut({ search, onChange }: { search: Career141Search; onChange?: () => void }) {
+  const counts = Object.entries(search.leftOut ?? {})
+    .filter(([, n]) => typeof n === "number" && n > 0)
+    .sort((a, b) => (b[1] as number) - (a[1] as number)) as [Career141LeftOut, number][];
+  if (counts.length === 0) return null;
+  const total = counts.reduce((sum, [, n]) => sum + n, 0);
+  const byLevel = search.leftOut?.level ?? 0;
+  const bySkill = search.leftOut?.skills ?? 0;
+  return (
+    <details className="group rounded-lg border bg-muted/30 text-sm">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
+        <span className="font-medium">Left out: {total.toLocaleString()}</span>
+        <span className="text-muted-foreground truncate">
+          {counts.slice(0, 2).map(([k, n]) => `${n.toLocaleString()} ${LEFT_OUT[k] ?? k}`).join(" · ")}
+        </span>
+        <ChevronDown className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="border-t px-3 py-2 space-y-2">
+        <ul className="space-y-0.5">
+          {counts.map(([k, n]) => (
+            <li key={k} className="flex justify-between gap-4">
+              <span>People who {LEFT_OUT[k] ?? k}</span>
+              <span className="tabular-nums text-muted-foreground">{n.toLocaleString()}</span>
+            </li>
+          ))}
+        </ul>
+        {onChange && (byLevel > 0 || bySkill > 0) && (
+          <p className="text-muted-foreground">
+            {byLevel > 0 && `${byLevel.toLocaleString()} do this job at another level. `}
+            {bySkill > 0 && `${bySkill.toLocaleString()} lack a must-have skill. `}
+            <button type="button" onClick={onChange} className="font-medium text-primary hover:underline">
+              Change this search
+            </button>{" "}
+            to include them.
+          </p>
+        )}
+      </div>
+    </details>
+  );
+}
+
 const FOUND_AS: Record<Career141Row["kind"], string> = {
   current: "Current role",
   previous: "Previous role",
@@ -575,6 +677,8 @@ const FOUND_AS: Record<Career141Row["kind"], string> = {
 
 /** Brevo's own way to open a list: its contacts, filtered to that list (as the Lists page's "View"). */
 const listLink = (r: { listId: number; listName: string }) => `/contacts?listId=${r.listId}&listName=${encodeURIComponent(r.listName)}`;
+/** A new campaign with this list already chosen (Campaigns reads ?newWithList=, 10 Nov). */
+const campaignLink = (r: { listId: number; listName: string }) => `/campaigns?newWithList=${r.listId}&listName=${encodeURIComponent(r.listName)}`;
 
 /**
  * Where to save (10 Nov, owner): a folder first, then one of its lists or a new one named here. Nothing is saved until
@@ -775,7 +879,7 @@ function SaveDialog({ open, onOpenChange, searchId, defaultName, count, emails, 
 
 const selectClass = "h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
-function Results({ search }: { search: Career141Search }) {
+function Results({ search, onChange }: { search: Career141Search; onChange: () => void }) {
   const [filter, setFilter] = useState<RowFilter>(NO_FILTER);
   const [page, setPage] = useState(0);
   const [loaded, setLoaded] = useState(0);
@@ -823,7 +927,7 @@ function Results({ search }: { search: Career141Search }) {
   const onSaved = (r: Career141Saved) => {
     setSaved(r);
     toast.success(`Saved ${r.saved.toLocaleString()} ${r.saved === 1 ? "person" : "people"} to ${r.listName}`, {
-      action: { label: "View list", onClick: () => navigate(listLink(r)) },
+      action: { label: "Start a campaign", onClick: () => navigate(campaignLink(r)) },
       duration: 10_000,
     });
   };
@@ -833,7 +937,7 @@ function Results({ search }: { search: Career141Search }) {
 
   return (
     <Card className="p-5 space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h2 className="text-lg font-semibold">
             {search.found.toLocaleString()} {search.found === 1 ? "person" : "people"} found for {search.rule.label}
@@ -846,6 +950,7 @@ function Results({ search }: { search: Career141Search }) {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="ghost" onClick={onChange}><Pencil className="size-4" />Change this search</Button>
           <Button variant="outline" onClick={() => download.mutate()} disabled={download.isPending || count === 0 || !all.data}>
             {download.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
             Download {count.toLocaleString()} (Excel)
@@ -856,6 +961,8 @@ function Results({ search }: { search: Career141Search }) {
           </Button>
         </div>
       </div>
+
+      <LeftOut search={search} onChange={onChange} />
 
       <SaveDialog
         open={saveOpen}
@@ -876,7 +983,10 @@ function Results({ search }: { search: Career141Search }) {
             {saved.alreadyInList > 0 && `, ${saved.alreadyInList.toLocaleString()} already in it and skipped`}.
             {" "}People already in Brevo keep their status, so anyone unsubscribed stays unsubscribed.
           </span>
-          <Button asChild size="sm" variant="outline"><Link to={listLink(saved)}>View list</Link></Button>
+          <div className="flex gap-2">
+            <Button asChild size="sm" variant="outline"><Link to={listLink(saved)}>View list</Link></Button>
+            <Button asChild size="sm"><Link to={campaignLink(saved)}><Megaphone className="size-4" />Start a campaign with this list</Link></Button>
+          </div>
         </div>
       )}
       {search.meaning && !search.stopped && (/could not|failed|not run|unavailable/i.test(search.meaning)

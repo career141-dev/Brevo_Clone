@@ -427,7 +427,11 @@ export type Career141Search = {
   rule: Career141Rule;
   startedAt?: number | null;
   stopped?: boolean; // a person pressed Stop: done with what was found so far
+  /** Why people were not kept, counted by CAREER141 as it checks (ta-system #369). */
+  leftOut?: Partial<Record<Career141LeftOut, number>> | null;
 };
+
+export type Career141LeftOut = "other_job" | "level" | "skills" | "no_email" | "same_email" | "not_contactable";
 
 export type Career141Row = {
   email: string;

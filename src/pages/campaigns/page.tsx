@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Mail,
   Plus,
@@ -437,6 +437,21 @@ export default function CampaignsPage() {
     resetWizard();
     setWizardOpen(true);
   };
+
+  // Find in CAREER141 (10 Nov) hands over a list it just saved: open a new campaign with that list already chosen
+  // and named after it, then take the hand-over out of the address so a refresh does not open another one.
+  const [handOver, setHandOver] = useSearchParams();
+  useEffect(() => {
+    const listId = Number(handOver.get("newWithList"));
+    if (!Number.isInteger(listId) || listId <= 0) return;
+    const listName = handOver.get("listName") ?? "";
+    resetWizard();
+    setSelectedListIds([listId]);
+    if (listName) setName(listName);
+    setWizardOpen(true);
+    setHandOver({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per hand-over; the wizard setters are stable
+  }, [handOver]);
 
   const handleOpenEdit = async (campaign: any) => {
     // A sending campaign isn't edited (the server refuses it too): its progress page has Pause.
