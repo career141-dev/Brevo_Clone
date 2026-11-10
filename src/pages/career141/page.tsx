@@ -37,6 +37,9 @@ const SUGGESTIONS = [
 const ABOUT = 92_300;
 const STALL_MS = 3 * 60_000;
 const isGone = (e: unknown) => e != null && [400, 404].includes(errorStatus(e));
+// CAREER141 answers 409 with these words when another search holds its one slot (ta-system contactDiscovery start).
+const isBusy = (e: unknown) => errorStatus(e) === 409 && /another search is running/i.test((e as Error)?.message ?? "");
+const QUEUE_RETRY_MS = 10_000;
 const PAGE = 50;
 
 // ── Recent searches: this browser only, a convenience; CAREER141 keeps a search for 7 days ──
@@ -70,6 +73,9 @@ export default function Career141Page() {
   const [started, setStarted] = useState(false);
   // Change this search (10 Nov): the finished search's rule, being edited for a new run.
   const [editing, setEditing] = useState<Career141Rule | null>(null);
+  // Waiting in line (10 Nov): CAREER141 runs one search at a time. When another person's search is running, Run
+  // keeps the search and its rule here and tries again every few seconds until CAREER141 is free.
+  const [queued, setQueued] = useState<{ id: string; rule: Career141Rule; since: number } | null>(null);
   const [recent] = useState(loadRecent);
   const qc = useQueryClient();
 
@@ -120,12 +126,25 @@ export default function Career141Page() {
     },
   });
   const run = useMutation({
-    mutationFn: () => api.career141.run(id!, draft!.rule),
-    onSuccess: () => {
+    mutationFn: (v: { id: string; rule: Career141Rule }) => api.career141.run(v.id, v.rule),
+    onSuccess: (_r, v) => {
+      setQueued(null);
       setStarted(true);
-      qc.invalidateQueries({ queryKey: ["career141", id] });
+      qc.invalidateQueries({ queryKey: ["career141", v.id] });
+    },
+    onError: (e, v) => {
+      if (isBusy(e)) setQueued((q) => q ?? { id: v.id, rule: v.rule, since: Date.now() });
     },
   });
+
+  // While in line, ask again every few seconds. The first Run that gets in starts the search.
+  useEffect(() => {
+    if (!queued) return;
+    const t = setInterval(() => {
+      if (!run.isPending) run.mutate({ id: queued.id, rule: queued.rule });
+    }, QUEUE_RETRY_MS);
+    return () => clearInterval(t);
+  }, [queued, run]);
 
   const ask = (q: string) => {
     const text = q.trim();
@@ -138,19 +157,28 @@ export default function Career141Page() {
   const rerun = useMutation({
     mutationFn: async ({ query, rule }: { query: string; rule: Career141Rule }) => {
       const r = await api.career141.read(query);
-      await api.career141.run(r.id, rule);
       rememberSearch({ id: r.id, query, at: Date.now() });
-      return r.id;
+      try {
+        await api.career141.run(r.id, rule);
+        return { id: r.id, rule, waiting: false };
+      } catch (e) {
+        if (isBusy(e)) return { id: r.id, rule, waiting: true };
+        throw e;
+      }
     },
-    onSuccess: (newId) => {
+    onSuccess: ({ id: newId, rule, waiting }) => {
       setEditing(null);
-      setDraft(null);
-      setStarted(true);
+      setDraft(waiting ? { rule, readBy: "model" } : null);
+      // `started` belongs to the search it was set for: a changed search waiting in line has not started (walk,
+      // 10 Nov: the last search's flag hid both the waiting card and the rule card, leaving an empty page).
+      setStarted(!waiting);
+      if (waiting) setQueued({ id: newId, rule, since: Date.now() });
       setParams({ id: newId });
     },
   });
 
   const startAgain = () => {
+    setQueued(null);
     setEditing(null);
     rerun.reset();
     setDraft(null);
@@ -291,15 +319,19 @@ export default function Career141Page() {
       )}
       {s && reconnecting && <Notice tone="warn">Reconnecting to the server… Your search keeps running in CAREER141.</Notice>}
 
-      {s?.status === "read" && (run.isPending || started) && (
+      {s?.status === "read" && !queued && (run.isPending || started) && (
         <Working title="Starting the search" detail="CAREER141 is getting ready to check every candidate. The count starts in a moment." />
       )}
 
-      {s?.status === "read" && draft && !run.isPending && !started && (
+      {s?.status === "read" && queued && queued.id === s.id && !started && (
+        <Waiting since={queued.since} onCancel={() => setQueued(null)} />
+      )}
+
+      {s?.status === "read" && draft && !run.isPending && !started && !queued && (
         <RuleCard
           draft={draft}
           onChange={(rule) => setDraft({ ...draft, rule })}
-          onRun={() => run.mutate()}
+          onRun={() => run.mutate({ id: s.id, rule: draft.rule })}
           error={run.error?.message}
         />
       )}
@@ -391,6 +423,26 @@ function Working({ title, detail }: { title: string; detail?: string }) {
       </div>
       <MovingBar />
       {detail && <p className="text-sm text-muted-foreground">{detail}</p>}
+    </Card>
+  );
+}
+
+/** In line behind another person's search: what is happening, a clock, and a way out. */
+function Waiting({ since, onCancel }: { since: number; onCancel: () => void }) {
+  const sec = useElapsed(since);
+  return (
+    <Card className="p-5 space-y-3" aria-live="polite">
+      <div className="flex items-center gap-2 font-medium">
+        <Clock className="size-4 text-primary" />
+        Waiting for another search to finish
+        <span className="ml-auto text-xs font-normal text-muted-foreground tabular-nums">{clock(sec)}</span>
+      </div>
+      <MovingBar />
+      <p className="text-sm text-muted-foreground">
+        CAREER141 runs one search at a time, and someone else&apos;s is running now. A full search takes about 4 minutes.
+        Yours starts by itself as soon as it is free. Keep this page open; it checks every {QUEUE_RETRY_MS / 1000} seconds.
+      </p>
+      <Button variant="outline" onClick={onCancel}>Stop waiting</Button>
     </Card>
   );
 }
